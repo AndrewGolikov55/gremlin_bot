@@ -1,0 +1,134 @@
+import asyncio
+import json
+import logging
+import os
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
+
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import Update
+
+from .bot.router_admin import router as admin_router
+from .bot.router_triggers import router as triggers_router
+from .bot.router_interjector import router as interjector_router
+from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
+
+from .infra.db import init_engine_and_sessionmaker, init_models, shutdown_engine
+from .infra.redis import init_redis, shutdown_redis
+from .services.settings import SettingsService
+
+
+# Metrics
+registry = CollectorRegistry()
+METRIC_UPDATES = Counter("tg_updates_total", "Telegram updates received", registry=registry)
+METRIC_MESSAGES = Counter("bot_messages_total", "Messages sent by bot", registry=registry)
+
+
+def setup_logging():
+    level = os.getenv("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+setup_logging()
+logger = logging.getLogger("app")
+
+
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    logger.warning("BOT_TOKEN not set. The bot won't start properly without it.")
+
+TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
+USE_POLLING = os.getenv("USE_POLLING", "0") == "1"
+PORT = int(os.getenv("PORT", "8080"))
+
+# Infra
+engine, async_sessionmaker = init_engine_and_sessionmaker()
+redis = init_redis()
+
+# Services
+settings_service = SettingsService(async_sessionmaker, redis)
+
+# Aiogram
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
+# Routers
+dp.include_router(admin_router)
+dp.include_router(triggers_router)
+dp.include_router(interjector_router)
+
+# Middlewares
+dp.message.middleware(DbSessionMiddleware(async_sessionmaker))
+dp.callback_query.middleware(DbSessionMiddleware(async_sessionmaker))
+dp.update.middleware(ServicesMiddleware(settings_service))
+
+
+app = FastAPI(title="Shutnik Bot", version="0.1.0")
+
+
+@app.on_event("startup")
+async def on_startup():
+    await init_models(engine)
+    if PUBLIC_BASE_URL and not USE_POLLING:
+        # Configure webhook with secret header
+        webhook_url = f"{PUBLIC_BASE_URL.rstrip('/')}/webhook/telegram"
+        await bot.set_webhook(url=webhook_url, secret_token=TELEGRAM_SECRET_TOKEN or None, drop_pending_updates=True)
+        logger.info("Webhook set to %s", webhook_url)
+    else:
+        # Run polling in background for development
+        async def _polling():
+            logger.info("Starting polling mode")
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+                await dp.start_polling(bot)
+            except Exception:
+                logger.exception("Polling stopped with exception")
+
+        asyncio.create_task(_polling())
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await shutdown_redis(redis)
+    await shutdown_engine(engine)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics():
+    data = generate_latest(registry)
+    return PlainTextResponse(content=data.decode(), media_type=CONTENT_TYPE_LATEST)
+
+
+def verify_telegram_secret(header_value: Optional[str]):
+    if TELEGRAM_SECRET_TOKEN and header_value != TELEGRAM_SECRET_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid secret token")
+
+
+@app.post("/webhook/telegram")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None, alias="X-Telegram-Bot-Api-Secret-Token"),
+):
+    verify_telegram_secret(x_telegram_bot_api_secret_token)
+    payload = await request.json()
+    METRIC_UPDATES.inc()
+    update_obj = Update.model_validate(payload)
+    await dp.feed_update(bot, update_obj)
+    return JSONResponse({"ok": True})
+
+
+# Expose a small helper for handlers that want to increment metrics
+def inc_messages():
+    METRIC_MESSAGES.inc()
+

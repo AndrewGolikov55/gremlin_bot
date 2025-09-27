@@ -1,0 +1,32 @@
+version: "3.9"
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./:/app
+    environment:
+      - USE_POLLING=1
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: bot
+      POSTGRES_PASSWORD: bot
+      POSTGRES_DB: botdb
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+
+volumes:
+  db_data:
