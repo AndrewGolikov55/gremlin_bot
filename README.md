@@ -28,16 +28,20 @@ docker compose up --build
    - В дев-режиме включён polling. Для прод-вебхука поставьте `USE_POLLING=0` и укажите `PUBLIC_BASE_URL`.
 
    Для разработки с live-reload можно использовать `docker compose -f docker-compose.dev.yml up --build` — код монтируется внутрь контейнера, uvicorn перезапускается при изменениях.
+   На старте контейнера автоматически выполняется `./scripts/migrate.sh` ( `alembic upgrade head` ).
 
 3) Сервисы в compose:
 - `db` (PostgreSQL 16)
 - `redis` (Redis 7)
-- `ollama` (опц.) — локальная LLM. Настройки: `OLLAMA_URL`, `OLLAMA_MODEL`.
 
 ## Команды в чате (MVP)
 - `/bot on|off|status` — управление включением в чате и краткий статус.
 - `/profanity off|soft|hard` — политика лексики (пока без фактической модерации текста).
-- `/settings` — вывод основных параметров.
+- `/trigger mode <mention|reply|all>` — режим срабатывания ответов.
+- `/interject p <0-100>` / `/interject cooldown <сек>` — вероятность и кулдаун «влезаний».
+- `/quiet <HH:MM-HH:MM|off>` — ночной режим.
+- `/style …`, `/tone 0-10`, `/length <символы>`, `/context max_turns <N>` — управление стилем и контекстом.
+- `/settings` — интерактивная панель для просмотра/переключения ключевых параметров (активация, триггер, стиль, лексика, тихие часы) и перехода в админку.
 
 Данные команд пишутся мгновенно в БД (`chat_settings`), кэшируются в Redis.
 
@@ -77,14 +81,23 @@ alembic.ini
 - `DATABASE_URL` — Postgres (по умолчанию на сервис `db`).
 - `REDIS_URL` — Redis (по умолчанию на сервис `redis`).
 - `OLLAMA_URL`, `OLLAMA_MODEL` — для LLM.
+- `ADMIN_TOKEN` — токен доступа к админ-панели FastAPI.
 
 ## Вебхук vs Polling
 - Dev: `USE_POLLING=1` — FastAPI поднимется, а aiogram запустится в фоне в режиме polling.
 - Prod: `USE_POLLING=0` + `PUBLIC_BASE_URL` — на старте выставится вебхук `/webhook/telegram` c секретом `X-Telegram-Bot-Api-Secret-Token`.
 
 ## Миграции (Alembic)
-- Создать ревизию: `alembic revision -m "init" --autogenerate`
-- Применить: `alembic upgrade head`
+- Создать ревизию: `alembic revision -m "<name>" --autogenerate`
+- Применить вручную: `./scripts/migrate.sh` или `alembic upgrade head`
+
+Контейнеры прод и дев прогоняют `alembic upgrade head` при запуске. Если меняли схему раньше напрямую, очистите volume `db_data` перед перезапуском.
+
+## Админ-панель
+
+- Доступ: `http://localhost:8080/admin/chats?token=<ADMIN_TOKEN>`
+- Страница чата позволяет менять тональность, максимальную длину ответа, глубину контекста, вероятность вмешательства и кулдаун.
+- Токен берётся из `ADMIN_TOKEN`; без него панели нет.
 
 Сейчас таблицы создаются автоматически на старте (для удобства разработки). В проде переводите на миграции.
 

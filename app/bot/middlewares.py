@@ -5,6 +5,7 @@ from aiogram.types import TelegramObject
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..services.settings import SettingsService
+from ..services.context import ContextService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -23,8 +24,9 @@ class DbSessionMiddleware(BaseMiddleware):
 
 
 class ServicesMiddleware(BaseMiddleware):
-    def __init__(self, settings: SettingsService):
+    def __init__(self, settings: SettingsService, context: ContextService):
         self.settings = settings
+        self.context = context
 
     async def __call__(
         self,
@@ -33,5 +35,5 @@ class ServicesMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         data["settings"] = self.settings
+        data["context"] = self.context
         return await handler(event, data)
-

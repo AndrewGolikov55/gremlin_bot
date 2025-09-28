@@ -1,12 +1,51 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Sequence, Tuple
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.message import Message
+from ..models.user import User
 
 
-def build_messages(system_prompt: str, turns: List[Tuple[str, str]], max_turns: int = 20):
+class ContextService:
+    """Мининструмент для выборки последних сообщений из чата."""
+
+    async def get_recent_turns(
+        self,
+        session: AsyncSession,
+        chat_id: int,
+        limit: int,
+    ) -> List[Tuple[str, str]]:
+        stmt = (
+            select(Message, User)
+            .outerjoin(User, User.tg_id == Message.user_id)
+            .where(Message.chat_id == chat_id)
+            .order_by(Message.date.desc())
+            .limit(limit)
+        )
+        res = await session.execute(stmt)
+        rows: Sequence[Tuple[Message, User | None]] = res.all()
+        turns: List[Tuple[str, str]] = []
+        for msg, user in reversed(rows):
+            speaker = _resolve_name(user, msg.user_id)
+            turns.append((speaker, msg.text or ""))
+        return turns
+
+
+def build_messages(system_prompt: str, turns: Iterable[Tuple[str, str]], max_turns: int = 20):
     msgs = [{"role": "system", "content": system_prompt}]
-    for speaker, text in turns[-max_turns:]:
+    tail = list(turns)[-max_turns:]
+    for speaker, text in tail:
         msgs.append({"role": "user", "content": f"{speaker}: {text}"})
     msgs.append({"role": "user", "content": "Ответь уместно одним сообщением."})
     return msgs
 
+
+def _resolve_name(user: User | None, user_id: int | None) -> str:
+    if user and user.username:
+        return user.username
+    if user_id:
+        return str(user_id)
+    return "unknown"

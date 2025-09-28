@@ -15,6 +15,9 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
+COPY alembic.ini ./
+COPY migrations ./migrations
+COPY scripts ./scripts
 COPY app ./app
 
 EXPOSE 8080

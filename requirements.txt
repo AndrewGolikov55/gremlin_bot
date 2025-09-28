@@ -9,3 +9,4 @@ apscheduler>=3.10
 httpx>=0.26
 prometheus-client>=0.20
 pydantic>=2.7
+python-multipart

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -11,15 +12,22 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, g
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Update
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    Update,
+)
 
 from .bot.router_admin import router as admin_router
 from .bot.router_triggers import router as triggers_router
 from .bot.router_interjector import router as interjector_router
 from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
+from .admin import create_admin_router
 
-from .infra.db import init_engine_and_sessionmaker, init_models, shutdown_engine
+from .infra.db import init_engine_and_sessionmaker, shutdown_engine
 from .infra.redis import init_redis, shutdown_redis
+from .services.context import ContextService
 from .services.settings import SettingsService
 
 
@@ -53,6 +61,7 @@ redis = init_redis()
 
 # Services
 settings_service = SettingsService(async_sessionmaker, redis)
+context_service = ContextService()
 
 # Aiogram
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -66,15 +75,18 @@ dp.include_router(interjector_router)
 # Middlewares
 dp.message.middleware(DbSessionMiddleware(async_sessionmaker))
 dp.callback_query.middleware(DbSessionMiddleware(async_sessionmaker))
-dp.update.middleware(ServicesMiddleware(settings_service))
+dp.update.middleware(ServicesMiddleware(settings_service, context_service))
 
 
 app = FastAPI(title="Shutnik Bot", version="0.1.0")
+app.include_router(create_admin_router(async_sessionmaker, settings_service))
+app.state.polling_task = None
 
 
 @app.on_event("startup")
 async def on_startup():
-    await init_models(engine)
+    await configure_bot_commands(bot)
+
     if PUBLIC_BASE_URL and not USE_POLLING:
         # Configure webhook with secret header
         webhook_url = f"{PUBLIC_BASE_URL.rstrip('/')}/webhook/telegram"
@@ -84,17 +96,30 @@ async def on_startup():
         # Run polling in background for development
         async def _polling():
             logger.info("Starting polling mode")
-            try:
-                await bot.delete_webhook(drop_pending_updates=True)
-                await dp.start_polling(bot)
-            except Exception:
-                logger.exception("Polling stopped with exception")
+            while True:
+                try:
+                    await bot.delete_webhook(drop_pending_updates=True)
+                    await dp.start_polling(bot, handle_signals=False)
+                    break
+                except asyncio.CancelledError:
+                    logger.info("Polling task cancelled")
+                    raise
+                except Exception:
+                    logger.exception("Polling crashed; retrying через 5с")
+                    await asyncio.sleep(5)
 
-        asyncio.create_task(_polling())
+        task = asyncio.create_task(_polling())
+        app.state.polling_task = task
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    task = getattr(app.state, "polling_task", None)
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
     await shutdown_redis(redis)
     await shutdown_engine(engine)
 
@@ -132,3 +157,12 @@ async def telegram_webhook(
 def inc_messages():
     METRIC_MESSAGES.inc()
 
+
+async def configure_bot_commands(bot: Bot) -> None:
+    commands = [
+        BotCommand(command="settings", description="Панель настроек"),
+    ]
+
+    await bot.set_my_commands(commands)
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())

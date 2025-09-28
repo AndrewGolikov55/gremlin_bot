@@ -13,14 +13,14 @@ from ..models.chat import Chat, ChatSetting
 DEFAULTS: Dict[str, Any] = {
     "is_active": True,
     "trigger_mode": "mention",  # mention|reply|all
-    "interject_p": 0,  # probability 0..100
+    "interject_p": 5,  # probability 0..100
     "interject_cooldown": 60,  # seconds
     "quiet_hours": None,  # e.g. "23:00-08:00"
     "style": "neutral",  # neutral|sarcastic|aggressive|dry|friendly
     "profanity": "soft",  # off|soft|hard
-    "max_length": 300,
+    "max_length": 0,  # 0 = без ограничений
     "tone": 3,  # 0..10
-    "context_max_turns": 20,
+    "context_max_turns": 100,
 }
 
 
@@ -79,4 +79,3 @@ def __serialize(value: Any) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False)
-
