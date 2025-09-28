@@ -30,13 +30,17 @@ async def cmd_bot(
     elif args == "status":
         conf = await settings.get_all(message.chat.id)
         active = conf.get("is_active", True)
-        trigger_mode = conf.get("trigger_mode", "mention")
         prob = conf.get("interject_p", 0)
         cooldown = conf.get("interject_cooldown", 60)
+        revive_enabled = conf.get("revive_enabled", False)
+        revive_hours = int(conf.get("revive_after_hours", 48) or 48)
+        revive_days = max(1, revive_hours // 24)
         return await message.reply(
             f"Статус: {'ON' if active else 'OFF'}\n"
-            f"Триггер: {trigger_mode}\n"
-            f"Вероятность: {prob}%\nКулдаун: {cooldown}s"
+            "Реакция: упоминания и ответы\n"
+            f"Вероятность вмешательства: {prob}%\n"
+            f"Кулдаун: {cooldown}с\n"
+            f"Оживление: {'включено' if revive_enabled else 'выключено'} (порог {revive_days} д.)"
         )
     else:
         return await message.reply("Использование: /bot on|off|status")
@@ -59,18 +63,7 @@ async def cmd_settings(message: types.Message, settings: SettingsService):
 
 @router.message(Command("trigger"))
 async def cmd_trigger(message: types.Message, command: CommandObject, settings: SettingsService):
-    args = (command.args or "").strip().split()
-    mode: str | None = None
-    if len(args) == 1:
-        mode = args[0].lower()
-    elif len(args) == 2 and args[0].lower() == "mode":
-        mode = args[1].lower()
-
-    if mode in {"mention", "reply", "all"}:
-        await settings.set(message.chat.id, "trigger_mode", mode)
-        return await message.reply(f"Триггер установлен: {mode}")
-
-    return await message.reply("Использование: /trigger mode mention|reply|all" , parse_mode=None)
+    await message.reply("Бот всегда отвечает на упоминания и ответы на свои сообщения. Отдельная настройка режима не требуется.")
 
 
 @router.message(Command("interject"))
@@ -176,12 +169,6 @@ def _validate_time(value: str) -> None:
     datetime.strptime(value, "%H:%M")
 
 
-TRIGGER_MODES = ["mention", "reply", "all"]
-TRIGGER_LABELS = {
-    "mention": "упоминания",
-    "reply": "ответы",
-    "all": "все сообщения",
-}
 STYLE_OPTIONS = ["neutral", "sarcastic", "aggressive", "dry", "friendly"]
 STYLE_LABELS = {
     "neutral": "нейтральный",
@@ -206,8 +193,6 @@ QUIET_LABELS = {
 
 def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup]:
     active = bool(conf.get("is_active", True))
-    trigger_raw = str(conf.get("trigger_mode", "mention"))
-    trigger_label = TRIGGER_LABELS.get(trigger_raw, trigger_raw)
     style_raw = str(conf.get("style", "neutral"))
     style_label = STYLE_LABELS.get(style_raw, style_raw)
     profanity_raw = str(conf.get("profanity", "soft"))
@@ -215,6 +200,9 @@ def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup
     quiet_value = conf.get("quiet_hours") or "off"
     quiet_label = QUIET_LABELS.get(quiet_value, quiet_value)
     interject_p = int(conf.get("interject_p", 0) or 0)
+    revive_enabled = bool(conf.get("revive_enabled", False))
+    revive_hours = int(conf.get("revive_after_hours", 48) or 48)
+    revive_days = max(1, revive_hours // 24)
 
     text = (
         "<b>⚙️ Настройки бота ⚙️</b>\n"
@@ -234,11 +222,6 @@ def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup
     )
     builder.adjust(1)
     builder.button(
-        text=f"🎯 Триггер: {trigger_label}",
-        callback_data="settings:cycle:trigger_mode",
-    )
-    builder.adjust(1)
-    builder.button(
         text=f"🌙 Тихие часы: {quiet_label}",
         callback_data="settings:cycle:quiet_hours",
     )
@@ -255,7 +238,17 @@ def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup
     builder.adjust(1)
     builder.button(
         text=f"🎲 Вероятность: {interject_p}%",
-        callback_data="settings:adjust:interject_p:step",
+        callback_data="settings:adjust:interject_p",
+    )
+    builder.adjust(1)
+    builder.button(
+        text=("💤 Оживление: ВКЛ" if revive_enabled else "💤 Оживление: ВЫКЛ"),
+        callback_data="settings:toggle:revive_enabled",
+    )
+    builder.adjust(1)
+    builder.button(
+        text=f"⏳ Порог тишины: {revive_days} д",
+        callback_data="settings:adjust:revive_after_hours",
     )
     builder.adjust(1)
 
@@ -296,7 +289,6 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
     elif action == "cycle" and len(parts) >= 3:
         key = parts[2]
         options = {
-            "trigger_mode": TRIGGER_MODES,
             "style": STYLE_OPTIONS,
             "profanity": PROFANITY_OPTIONS,
             "quiet_hours": QUIET_OPTIONS,
@@ -320,7 +312,11 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
             key = parts[2]
             if key == "interject_p":
                 current = int(conf.get("interject_p", 0) or 0)
-                if current < 50:
+                if current < 5:
+                    next_value = current + 1
+                elif current == 5:
+                    next_value = 10
+                elif current < 50:
                     next_value = min(50, current + 5)
                 else:
                     next_value = current + 10
@@ -328,6 +324,12 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
                         next_value = 0
                 await settings.set(chat_id, "interject_p", next_value)
                 await query.answer(f"Вероятность: {next_value}%")
+            elif key == "revive_after_hours":
+                current_hours = int(conf.get("revive_after_hours", 48) or 48)
+                current_days = max(1, current_hours // 24)
+                next_days = current_days + 1 if current_days < 7 else 1
+                await settings.set(chat_id, "revive_after_hours", next_days * 24)
+                await query.answer(f"Порог тишины: {next_days} д")
             else:
                 await query.answer("Недоступно", show_alert=True)
         else:

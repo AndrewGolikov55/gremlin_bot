@@ -1,4 +1,4 @@
-# Shutnik Telegram Bot (MVP Skeleton)
+# Gremlin Telegram Bot (MVP Skeleton)
 
 Минимальный каркас бота для групповых чатов на Python 3.11+ с FastAPI (вебхук/health/metrics), aiogram v3 (обработчики/роутеры), PostgreSQL + Redis, и базовой заготовкой сервисов/моделей.
 
@@ -41,7 +41,7 @@ docker compose up --build
 - `/interject p <0-100>` / `/interject cooldown <сек>` — вероятность и кулдаун «влезаний».
 - `/quiet <HH:MM-HH:MM|off>` — ночной режим.
 - `/style …`, `/tone 0-10`, `/length <символы>`, `/context max_turns <N>` — управление стилем и контекстом.
-- `/settings` — интерактивная панель для просмотра/переключения ключевых параметров (активация, триггер, стиль, лексика, тихие часы) и перехода в админку.
+- `/settings` — интерактивная панель для просмотра/переключения ключевых параметров (активация, стиль, лексика, тихие часы, вероятность, оживление) и перехода в админку.
 
 Данные команд пишутся мгновенно в БД (`chat_settings`), кэшируются в Redis.
 
@@ -80,7 +80,9 @@ alembic.ini
 - `TELEGRAM_SECRET_TOKEN` — секрет для заголовка вебхука.
 - `DATABASE_URL` — Postgres (по умолчанию на сервис `db`).
 - `REDIS_URL` — Redis (по умолчанию на сервис `redis`).
-- `OLLAMA_URL`, `OLLAMA_MODEL` — для LLM.
+- `OLLAMA_URL`, `OLLAMA_MODEL` — для локальной LLM (если используете Ollama).
+- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_APP_URL`, `OPENROUTER_APP_NAME` — для OpenRouter API.
+- `INTERJECT_TICK_SECONDS` — частота проверки неактивных чатов для "оживления".
 - `ADMIN_TOKEN` — токен доступа к админ-панели FastAPI.
 
 ## Вебхук vs Polling
@@ -96,8 +98,21 @@ alembic.ini
 ## Админ-панель
 
 - Доступ: `http://localhost:8080/admin/chats?token=<ADMIN_TOKEN>`
-- Страница чата позволяет менять тональность, максимальную длину ответа, глубину контекста, вероятность вмешательства и кулдаун.
+- Страница чата позволяет менять тональность, максимальную длину ответа, глубину контекста, вероятность вмешательства, кулдаун и параметры "оживления" чата.
 - Токен берётся из `ADMIN_TOKEN`; без него панели нет.
+
+### Подключение OpenRouter
+
+1. Получите ключ API на [openrouter.ai](https://openrouter.ai/).
+2. В `.env` добавьте переменные:
+   ```
+   OPENROUTER_API_KEY=sk-...
+   OPENROUTER_MODEL=cognitivecomputations/dolphin-mistral-24b-venice-edition:free
+   OPENROUTER_APP_URL=https://your-domain.example
+   OPENROUTER_APP_NAME=GremlinBot
+   ```
+   `OPENROUTER_APP_URL` и `OPENROUTER_APP_NAME` нужны для заголовков, чтобы OpenRouter знал источник запросов.
+3. Перезапустите контейнеры/приложение. После этого бот начнёт использовать OpenRouter вместо заглушки.
 
 Сейчас таблицы создаются автоматически на старте (для удобства разработки). В проде переводите на миграции.
 

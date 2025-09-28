@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Mapping, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,3 +49,23 @@ def _resolve_name(user: User | None, user_id: int | None) -> str:
     if user_id:
         return str(user_id)
     return "unknown"
+
+
+def build_system_prompt(conf: Mapping[str, object], focus_text: str | None = None) -> str:
+    style = conf.get("style", "neutral")
+    tone = conf.get("tone", 3)
+    profanity = conf.get("profanity", "soft")
+    base = (
+        "Ты — участник Telegram-чата. "
+        f"Текущий стиль: {style}, "
+        f"агрессивность: {tone}/10. "
+        f"Обсценная лексика: {profanity}. "
+        "Пиши кратко и по делу. Не выдавай преамбул и дисклеймеров."
+    )
+    if focus_text:
+        sanitized = focus_text.strip().replace("\n", " ")
+        sanitized = sanitized.replace('"', "'")
+        if len(sanitized) > 400:
+            sanitized = sanitized[:400] + "…"
+        base += " Ты отвечаешь на конкретный вопрос пользователя: \"" + sanitized + "\". Дай прямой, содержательный ответ."
+    return base

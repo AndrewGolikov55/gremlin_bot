@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.chat import Chat
 from ..models.message import Message
 from ..models.user import User
-from ..services.context import ContextService, build_messages
+from ..services.context import ContextService, build_messages, build_system_prompt
+from ..services.interjector import InterjectorService
 from ..services.llm.ollama import generate as llm_generate
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
@@ -28,6 +29,7 @@ async def collect_messages(
     session: AsyncSession,
     settings: SettingsService,
     context: ContextService,
+    interjector: InterjectorService,
     bot: Bot,
 ):
     bot_user = await bot.get_me()
@@ -63,62 +65,60 @@ async def collect_messages(
         logger.debug("Skip command message chat=%s text=%r", message.chat.id, message.text)
         return
 
-    trigger_mode = (conf.get("trigger_mode") or "mention").lower()
     is_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
     is_reply_to_bot = _is_reply(message, bot_user.id)
 
     logger.debug(
-        "Trigger check chat=%s type=%s trigger=%s mention=%s reply=%s text=%r entities=%s",
+        "Trigger check chat=%s type=%s mention=%s reply=%s text=%r entities=%s",
         message.chat.id,
         message.chat.type,
-        trigger_mode,
         is_mention,
         is_reply_to_bot,
         message.text,
         message.entities,
     )
 
-    if not _should_reply(trigger_mode, is_mention, is_reply_to_bot, message.chat.type):
-        return
-
     max_turns = int(conf.get("context_max_turns", 100) or 100)
     turns = await context.get_recent_turns(session, message.chat.id, max_turns)
 
-    system_prompt = (
-        "Ты — участник Telegram-чата. "
-        f"Текущий стиль: {conf.get('style', 'neutral')}, "
-        f"агрессивность: {conf.get('tone', 3)}/10. "
-        f"Обсценная лексика: {conf.get('profanity', 'soft')}. "
-        "Пиши кратко и по делу. Не выдавай преамбул и дисклеймеров."
-    )
-    messages_for_llm = build_messages(system_prompt, turns, max_turns)
+    if _should_reply(is_mention, is_reply_to_bot, message.chat.type):
+        focus_text = None
+        if is_reply_to_bot:
+            focus_text = (message.text or message.caption or "").strip()
+            if not focus_text:
+                focus_text = None
+        system_prompt = build_system_prompt(conf, focus_text)
+        messages_for_llm = build_messages(system_prompt, turns, max_turns)
 
-    try:
-        max_length_conf = conf.get("max_length")
-        max_tokens = None
-        if isinstance(max_length_conf, (int, float, str)):
-            try:
-                max_len_value = int(float(max_length_conf))
-            except (TypeError, ValueError):
-                max_len_value = None
-            if max_len_value and max_len_value > 0:
-                max_tokens = max_len_value
+        try:
+            max_length_conf = conf.get("max_length")
+            max_tokens = None
+            if isinstance(max_length_conf, (int, float, str)):
+                try:
+                    max_len_value = int(float(max_length_conf))
+                except (TypeError, ValueError):
+                    max_len_value = None
+                if max_len_value and max_len_value > 0:
+                    max_tokens = max_len_value
 
-        raw_reply = await llm_generate(
-            messages_for_llm,
-            max_tokens=max_tokens,
-            temperature=float(conf.get("temperature", 0.8) or 0.8),
-            top_p=float(conf.get("top_p", 0.9) or 0.9),
-        )
-    except Exception:
-        await message.reply("🤖 Не удалось подготовить ответ (заглушка LLM).")
+            raw_reply = await llm_generate(
+                messages_for_llm,
+                max_tokens=max_tokens,
+                temperature=float(conf.get("temperature", 0.8) or 0.8),
+                top_p=float(conf.get("top_p", 0.9) or 0.9),
+            )
+        except Exception:
+            await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
+            return
+
+        reply_text = apply_moderation(raw_reply, conf.get("profanity", "soft"))
+        if not reply_text.strip():
+            return
+
+        await message.reply(reply_text.strip())
         return
 
-    reply_text = apply_moderation(raw_reply, conf.get("profanity", "soft"))
-    if not reply_text.strip():
-        return
-
-    await message.reply(reply_text.strip())
+    await interjector.maybe_reply_to_message(message, conf, turns)
 
 
 async def _ensure_chat(session: AsyncSession, message: types.Message) -> None:
@@ -212,13 +212,9 @@ def _is_reply(message: types.Message, bot_id: int) -> bool:
     return bool(replied and replied.id == bot_id)
 
 
-def _should_reply(mode: str, is_mention: bool, is_reply: bool, chat_type: ChatType | str | None) -> bool:
+def _should_reply(is_mention: bool, is_reply: bool, chat_type: ChatType | str | None) -> bool:
     if chat_type == ChatType.PRIVATE or chat_type == "private":
         return True
-    if mode == "mention":
-        return is_mention
-    if mode == "reply":
-        return is_reply
-    if mode == "all":
-        return is_reply or is_mention
+    if is_reply:
+        return True
     return is_mention

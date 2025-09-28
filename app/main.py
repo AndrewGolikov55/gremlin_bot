@@ -27,7 +27,9 @@ from .admin import create_admin_router
 
 from .infra.db import init_engine_and_sessionmaker, shutdown_engine
 from .infra.redis import init_redis, shutdown_redis
+from .infra.scheduler import get_scheduler
 from .services.context import ContextService
+from .services.interjector import InterjectorService
 from .services.settings import SettingsService
 
 
@@ -54,6 +56,7 @@ TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 USE_POLLING = os.getenv("USE_POLLING", "0") == "1"
 PORT = int(os.getenv("PORT", "8080"))
+INTERJECT_TICK_SECONDS = int(os.getenv("INTERJECT_TICK_SECONDS", "30"))
 
 # Infra
 engine, async_sessionmaker = init_engine_and_sessionmaker()
@@ -75,12 +78,23 @@ dp.include_router(interjector_router)
 # Middlewares
 dp.message.middleware(DbSessionMiddleware(async_sessionmaker))
 dp.callback_query.middleware(DbSessionMiddleware(async_sessionmaker))
-dp.update.middleware(ServicesMiddleware(settings_service, context_service))
 
 
-app = FastAPI(title="Shutnik Bot", version="0.1.0")
+interjector_service = InterjectorService(
+    bot=bot,
+    settings=settings_service,
+    context=context_service,
+    sessionmaker=async_sessionmaker,
+    redis=redis,
+)
+dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service))
+scheduler = get_scheduler()
+
+
+app = FastAPI(title="Gremlin Bot", version="0.1.0")
 app.include_router(create_admin_router(async_sessionmaker, settings_service))
 app.state.polling_task = None
+app.state.scheduler = None
 
 
 @app.on_event("startup")
@@ -111,6 +125,17 @@ async def on_startup():
         task = asyncio.create_task(_polling())
         app.state.polling_task = task
 
+    scheduler.start()
+    scheduler.add_job(
+        interjector_service.run_idle_checks,
+        "interval",
+        seconds=max(30, INTERJECT_TICK_SECONDS),
+        id="interjector_tick",
+        replace_existing=True,
+        max_instances=1,
+    )
+    app.state.scheduler = scheduler
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -119,6 +144,10 @@ async def on_shutdown():
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+    sched = getattr(app.state, "scheduler", None)
+    if sched:
+        sched.shutdown(wait=False)
 
     await shutdown_redis(redis)
     await shutdown_engine(engine)

@@ -12,7 +12,6 @@ from ..models.chat import Chat, ChatSetting
 
 DEFAULTS: Dict[str, Any] = {
     "is_active": True,
-    "trigger_mode": "mention",  # mention|reply|all
     "interject_p": 5,  # probability 0..100
     "interject_cooldown": 60,  # seconds
     "quiet_hours": None,  # e.g. "23:00-08:00"
@@ -21,6 +20,8 @@ DEFAULTS: Dict[str, Any] = {
     "max_length": 0,  # 0 = без ограничений
     "tone": 3,  # 0..10
     "context_max_turns": 100,
+    "revive_enabled": False,
+    "revive_after_hours": 48,
 }
 
 
