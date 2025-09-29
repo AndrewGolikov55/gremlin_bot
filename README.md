@@ -1,126 +1,74 @@
-# Gremlin Telegram Bot (MVP Skeleton)
+# Gremlin Telegram Bot
 
-Минимальный каркас бота для групповых чатов на Python 3.11+ с FastAPI (вебхук/health/metrics), aiogram v3 (обработчики/роутеры), PostgreSQL + Redis, и базовой заготовкой сервисов/моделей.
+Телеграм-бот для групповых чатов, который реагирует на упоминания, умеет «вклиниваться» в диалог и поддерживает несколько ярких персон (стилей общения). Всё работает на Python, FastAPI и aiogram, с хранением данных в PostgreSQL и кэшем в Redis.
 
-## Что уже есть
-- FastAPI-приложение с эндпоинтами `/health`, `/metrics`, `/webhook/telegram`.
-- aiogram v3: базовые роутеры, команды `/bot on|off|status`, `/settings`.
-- Сохранение входящих текстовых сообщений в БД (для будущего контекста/аналитики).
-- БД: SQLAlchemy модели `chats`, `chat_settings`, `messages`, `users`; автосоздание таблиц на старте.
-- Redis: кэш настроек чата (инвалидация при изменении).
-- Заготовки: InterjectorService, LLM (Ollama), Moderation, APScheduler.
-- Prometheus-метрики: счётчики обновлений/сообщений.
-- Alembic скелет (можно генерировать миграции).
-- Dockerfile + docker-compose для локального запуска.
+## Что умеет бот
+- работает и через polling, и через вебхуки;
+- запоминает историю чатов и использует её как контекст для ответов;
+- поддерживает пять базовых персон (standup, gopnik, boss, zoomer, jarvis) и любые ваши собственные;
+- позволяет быстро менять поведение и параметры прямо в чате через `/settings`;
+- включает веб-панель администратора с Bootstrap-интерфейсом: управление чатами, просмотр истории, редактирование промтов;
+- экспортирует health-check и метрики для наблюдения.
 
 ## Быстрый старт
-1) Скопируйте `.env.example` → `.env` и задайте переменные:
-   - `BOT_TOKEN` — токен бота
-   - `USE_POLLING=1` для локальной разработки без вебхука (по умолчанию)
-   - Для вебхука: `PUBLIC_BASE_URL=https://your.domain` и `TELEGRAM_SECRET_TOKEN=...`
+1. Скопируйте `.env.example` в `.env` и заполните минимум:
+   ```
+   BOT_TOKEN=123456:ABC...
+   USE_POLLING=1            # для локального запуска
+   ADMIN_TOKEN=supersecret
+   ```
+   Для вебхуков добавьте `PUBLIC_BASE_URL=https://bot.example.com` и `TELEGRAM_SECRET_TOKEN=...`.
 
-2) Запуск:
-```
-docker compose up --build
-```
-   - Приложение: `http://localhost:8080/health`
-   - Метрики: `http://localhost:8080/metrics`
-   - В дев-режиме включён polling. Для прод-вебхука поставьте `USE_POLLING=0` и укажите `PUBLIC_BASE_URL`.
+2. Запустите контейнеры:
+   ```bash
+   docker compose up --build
+   ```
+   Проверьте `http://localhost:8080/health` и `http://localhost:8080/metrics`.
 
-   Для разработки с live-reload можно использовать `docker compose -f docker-compose.dev.yml up --build` — код монтируется внутрь контейнера, uvicorn перезапускается при изменениях.
-   На старте контейнера автоматически выполняется `./scripts/migrate.sh` ( `alembic upgrade head` ).
+3. Нужен hot reload? Используйте дев-конфиг:
+   ```bash
+   docker compose -f docker-compose.dev.yml up --build
+   ```
+   Код будет примонтирован, `uvicorn` перезапускается автоматически.
 
-3) Сервисы в compose:
-- `db` (PostgreSQL 16)
-- `redis` (Redis 7)
+При старте каждый контейнер прогоняет `alembic upgrade head`, так что таблицы всегда актуальные.
 
-## Команды в чате (MVP)
-- `/bot on|off|status` — управление включением в чате и краткий статус.
-- `/trigger mode <mention|reply|all>` — режим срабатывания ответов.
-- `/interject p <0-100>` / `/interject cooldown <сек>` — вероятность и кулдаун «влезаний».
-- `/quiet <HH:MM-HH:MM|off>` — ночной режим.
-- `/style standup|gopnik|boss|zoomer|jarvis`, `/length <символы>`, `/context max_turns <N>`, `/context max_tokens <N>` — выбор персоны и глубины контекста.
-- `/settings` — интерактивная панель для просмотра/переключения ключевых параметров (активация, стиль, тихие часы, вероятность, оживление) и перехода в админку.
+## Основные переменные окружения
+- `BOT_TOKEN` — токен Telegram бота.
+- `USE_POLLING` — `1` для long-polling, `0` для вебхуков.
+- `PUBLIC_BASE_URL` — внешний адрес (только для вебхука).
+- `TELEGRAM_SECRET_TOKEN` — секрет, Telegram добавляет его в заголовок `X-Telegram-Bot-Api-Secret-Token`.
+- `DATABASE_URL` — строка подключения к Postgres (по умолчанию указывает на сервис `db`).
+- `REDIS_URL` — адрес Redis (`redis://redis:6379/0`).
+- `OLLAMA_URL`/`OLLAMA_MODEL` или `OPENROUTER_*` — настройки LLM по вашему выбору.
+- `PORT` — порт приложения внутри контейнера (по умолчанию `8080`).
+- `INTERJECT_TICK_SECONDS` — как часто проверять «спящие» чаты.
+- `ADMIN_TOKEN` — токен доступа к админ-панели.
 
-Админ-панель (`/admin/chats?token=...`) позволяет редактировать и дополнять набор персон: изменить тексты базовых промтов или добавить собственные образы, доступные затем в `/settings`.
+Все переменные уже описаны в `.env.example`; в `docker-compose.yml` они прокидываются через `${...}` и легко настраиваются в Portainer.
 
-Данные команд пишутся мгновенно в БД (`chat_settings`), кэшируются в Redis.
-
-## Структура
-```
-app/
-  main.py                # FastAPI + webhook/polling, инициализация инфраструктуры
-  bot/
-    router_admin.py      # /bot, /settings
-    router_triggers.py   # сбор входящих сообщений, простая реакция на упоминание
-    router_interjector.py# заглушка под APScheduler
-    middlewares.py       # DI: сессии БД, сервисы
-  services/
-    settings.py          # CRUD настроек чата + кэш Redis
-    context.py           # построение сообщений для LLM
-    interjector.py       # заглушка логики «влезания»
-    llm/ollama.py        # простой клиент Ollama
-    moderation.py        # заглушка локальной модерации
-  models/
-    base.py, chat.py, message.py, user.py
-  infra/
-    db.py, redis.py, scheduler.py
-migrations/              # Alembic (env.py, README)
-Dockerfile
-requirements.txt
-alembic.ini
-```
-
-## Переменные окружения
-См. `.env.example`.
-
-Ключевые:
-- `BOT_TOKEN` — токен бота.
-- `USE_POLLING` — `1` (дефолт, без вебхука) или `0` (вебхук).
-- `PUBLIC_BASE_URL` — базовый URL для вебхука (когда `USE_POLLING=0`).
-- `TELEGRAM_SECRET_TOKEN` — секрет для заголовка вебхука.
-- `DATABASE_URL` — Postgres (по умолчанию на сервис `db`).
-- `REDIS_URL` — Redis (по умолчанию на сервис `redis`).
-- `OLLAMA_URL`, `OLLAMA_MODEL` — для локальной LLM (если используете Ollama).
-- `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_APP_URL`, `OPENROUTER_APP_NAME` — для OpenRouter API.
-- `INTERJECT_TICK_SECONDS` — частота проверки неактивных чатов для "оживления".
-- `ADMIN_TOKEN` — токен доступа к админ-панели FastAPI.
-
-## Вебхук vs Polling
-- Dev: `USE_POLLING=1` — FastAPI поднимется, а aiogram запустится в фоне в режиме polling.
-- Prod: `USE_POLLING=0` + `PUBLIC_BASE_URL` — на старте выставится вебхук `/webhook/telegram` c секретом `X-Telegram-Bot-Api-Secret-Token`.
-
-## Миграции (Alembic)
-- Создать ревизию: `alembic revision -m "<name>" --autogenerate`
-- Применить вручную: `./scripts/migrate.sh` или `alembic upgrade head`
-
-Контейнеры прод и дев прогоняют `alembic upgrade head` при запуске. Если меняли схему раньше напрямую, очистите volume `db_data` перед перезапуском.
+## Команды в чате
+- `/bot on|off|status` — включить/выключить бота в чате и посмотреть текущие параметры.
+- `/trigger mode <mention|reply|all>` — настроить, когда бот отвечает автоматически.
+- `/interject p <0-100>` / `/interject cooldown <сек>` — шанс «влезть» в разговор и минимальный кулдаун.
+- `/quiet <HH:MM-HH:MM|off>` — задать тихие часы.
+- `/style <persona>` — выбрать активную персону, учитываются как базовые, так и ваши кастомные.
+- `/length <символы>` — ограничить длину ответа.
+- `/context max_turns <N>` или `/context max_tokens <N>` — настроить глубину контекста.
+- `/settings` — открыть интерактивное меню с кнопками (активация, стиль, тихие часы, вмешательства, оживление).
 
 ## Админ-панель
+- URL: `http://localhost:8080/admin/chats?token=<ADMIN_TOKEN>`
+- Раздел «Чаты»: переключение параметров, просмотр истории сообщений, быстрые ссылки на команды.
+- Раздел «Персоны»: редактируйте базовые промты, добавляйте свои образы, удаляйте ненужные. Новые стили сразу доступны через `/style`.
 
-- Доступ: `http://localhost:8080/admin/chats?token=<ADMIN_TOKEN>`
-- Страница чата позволяет менять тональность, максимальную длину ответа, глубину контекста, вероятность вмешательства, кулдаун и параметры "оживления" чата.
-- Токен берётся из `ADMIN_TOKEN`; без него панели нет.
+## Вебхук или polling
+- **Polling** (`USE_POLLING=1`) — удобно для локальной разработки: бот сам опрашивает Telegram, внешний URL не нужен.
+- **Webhook** (`USE_POLLING=0` + `PUBLIC_BASE_URL`) — Telegram присылает запросы сам. Нужен доступный снаружи HTTPS-домен. При старте бота webhook выставляется автоматически.
 
-### Подключение OpenRouter
+## Разработка и миграции
+- Создать новую миграцию: `alembic revision -m "add something" --autogenerate`
+- Применить вручную: `alembic upgrade head` или `./scripts/migrate.sh`
+- Откатиться: `alembic downgrade -1`
 
-1. Получите ключ API на [openrouter.ai](https://openrouter.ai/).
-2. В `.env` добавьте переменные:
-   ```
-   OPENROUTER_API_KEY=sk-...
-   OPENROUTER_MODEL=cognitivecomputations/dolphin-mistral-24b-venice-edition:free
-   OPENROUTER_APP_URL=https://your-domain.example
-   OPENROUTER_APP_NAME=GremlinBot
-   ```
-   `OPENROUTER_APP_URL` и `OPENROUTER_APP_NAME` нужны для заголовков, чтобы OpenRouter знал источник запросов.
-3. Перезапустите контейнеры/приложение. После этого бот начнёт использовать OpenRouter вместо заглушки.
-
-Сейчас таблицы создаются автоматически на старте (для удобства разработки). В проде переводите на миграции.
-
-## Дальше по плану
-- Добавить роутеры: `mentions`, `replies`, `interjector` с вероятностями и кулдаунами.
-- Реальная логика InterjectorService + APScheduler.
-- Политики стиля/лексики, лимиты, таргет-листы, контекст с суммаризацией.
-- Admin API (FastAPI): `/admin/chats/<id>/settings`.
-
-Готов двигаться к следующим фичам — скажите, что делать первым.
+База хранится в volume `db_data`. Если нужно начать с чистого листа, остановите compose и удалите volume (`docker volume rm gremlin_bot_db_data`).
