@@ -56,8 +56,18 @@ if not BOT_TOKEN:
 TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 USE_POLLING = os.getenv("USE_POLLING", "0") == "1"
-PORT = int(os.getenv("PORT", "8080"))
-INTERJECT_TICK_SECONDS = int(os.getenv("INTERJECT_TICK_SECONDS", "30"))
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"Environment variable {name} must be an integer, got {raw!r}") from exc
+
+
+PORT = _env_int("PORT", 8080)
+INTERJECT_TICK_SECONDS = _env_int("INTERJECT_TICK_SECONDS", 30)
 
 # Infra
 engine, async_sessionmaker = init_engine_and_sessionmaker()
