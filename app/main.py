@@ -31,6 +31,7 @@ from .infra.scheduler import get_scheduler
 from .services.context import ContextService
 from .services.interjector import InterjectorService
 from .services.settings import SettingsService
+from .services.persona import StylePromptService, BASE_STYLE_DATA
 
 
 # Metrics
@@ -65,6 +66,7 @@ redis = init_redis()
 # Services
 settings_service = SettingsService(async_sessionmaker, redis)
 context_service = ContextService()
+persona_service = StylePromptService(async_sessionmaker, redis, BASE_STYLE_DATA)
 
 # Aiogram
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -86,19 +88,21 @@ interjector_service = InterjectorService(
     context=context_service,
     sessionmaker=async_sessionmaker,
     redis=redis,
+    personas=persona_service,
 )
-dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service))
+dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service, persona_service))
 scheduler = get_scheduler()
 
 
 app = FastAPI(title="Gremlin Bot", version="0.1.0")
-app.include_router(create_admin_router(async_sessionmaker, settings_service))
+app.include_router(create_admin_router(async_sessionmaker, settings_service, persona_service))
 app.state.polling_task = None
 app.state.scheduler = None
 
 
 @app.on_event("startup")
 async def on_startup():
+    await persona_service.ensure_defaults()
     await configure_bot_commands(bot)
 
     if PUBLIC_BASE_URL and not USE_POLLING:

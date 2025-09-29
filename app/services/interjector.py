@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..models.chat import Chat
 from ..models.message import Message as DBMessage
 from ..services.context import ContextService, build_messages, build_system_prompt
+from ..services.persona import StylePromptService
 from ..services.llm.ollama import generate as llm_generate
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
@@ -30,12 +31,14 @@ class InterjectorService:
         context: ContextService,
         sessionmaker: async_sessionmaker[AsyncSession],
         redis: Redis,
+        personas: StylePromptService,
     ) -> None:
         self.bot = bot
         self.settings = settings
         self.context = context
         self.sessionmaker = sessionmaker
         self.redis = redis
+        self.personas = personas
         self._cooldown_prefix = "interject:last:"
         self._revive_prefix = "interject:revive:last:"
 
@@ -67,7 +70,11 @@ class InterjectorService:
             )
             return
 
-        reply_text = await self._generate_reply(conf, turns)
+        focus_text = (message.text or message.caption or "").strip()
+        if not focus_text:
+            focus_text = None
+
+        reply_text = await self._generate_reply(conf, turns, focus_text)
         if not reply_text:
             return
 
@@ -114,19 +121,20 @@ class InterjectorService:
             return
 
         turns = await self.context.get_recent_turns(session, chat.id, 50)
-        system_prompt = build_system_prompt(conf)
+        style_prompts = await self.personas.get_all()
+        system_prompt = build_system_prompt(conf, style_prompts=style_prompts)
+        prompt_tokens = self._prompt_token_limit(conf)
+        context_turns = min(int(conf.get("context_max_turns", 100) or 100), 20)
 
-        messages = [{"role": "system", "content": system_prompt}]
-        for speaker, text in turns[-20:]:
-            messages.append({"role": "user", "content": f"{speaker}: {text}"})
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "В чате давно тишина. Напиши одно лаконичное сообщение, чтобы оживить разговор,"
-                    " задай интересный вопрос или предложи тему."
-                ),
-            }
+        messages = build_messages(
+            system_prompt,
+            turns,
+            context_turns,
+            prompt_tokens,
+            closing_text=(
+                "В чате давно тишина. Напиши одно лаконичное сообщение, чтобы оживить разговор,"
+                " задай интересный вопрос или предложи тему."
+            ),
         )
 
         try:
@@ -140,7 +148,7 @@ class InterjectorService:
             logger.exception("OpenRouter request failed during idle revival (chat %s)", chat.id)
             return
 
-        reply_text = apply_moderation(raw_reply, conf.get("profanity", "soft"))
+        reply_text = apply_moderation(raw_reply)
         if not reply_text.strip():
             return
 
@@ -209,9 +217,27 @@ class InterjectorService:
             return start_t <= now_time < end_t
         return now_time >= start_t or now_time < end_t
 
-    async def _generate_reply(self, conf: dict[str, object], turns: Iterable[tuple[str, str]]) -> str | None:
-        system_prompt = build_system_prompt(conf)
-        messages = build_messages(system_prompt, list(turns), int(conf.get("context_max_turns", 100) or 100))
+    async def _generate_reply(
+        self,
+        conf: dict[str, object],
+        turns: Iterable[tuple[str, str]],
+        focus_text: str | None,
+    ) -> str | None:
+        style_prompts = await self.personas.get_all()
+        system_prompt = build_system_prompt(
+            conf,
+            focus_text,
+            interject=True,
+            style_prompts=style_prompts,
+        )
+        max_turns = int(conf.get("context_max_turns", 100) or 100)
+        prompt_tokens = self._prompt_token_limit(conf)
+        messages = build_messages(
+            system_prompt,
+            list(turns),
+            max_turns,
+            prompt_tokens,
+        )
 
         try:
             raw_reply = await llm_generate(
@@ -224,7 +250,7 @@ class InterjectorService:
             logger.exception("OpenRouter request failed during spontaneous reply")
             return None
 
-        reply_text = apply_moderation(raw_reply, conf.get("profanity", "soft"))
+        reply_text = apply_moderation(raw_reply)
         return reply_text.strip() if reply_text else None
 
     def _max_tokens_from_config(self, conf: dict[str, object]) -> int | None:
@@ -236,3 +262,13 @@ class InterjectorService:
         if value and value > 0:
             return value
         return None
+
+    def _prompt_token_limit(self, conf: dict[str, object]) -> int | None:
+        raw = conf.get("context_max_prompt_tokens", 32000)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 32000
+        if value <= 0:
+            return None
+        return max(2000, min(60000, value))

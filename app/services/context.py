@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Iterable, List, Mapping, Sequence, Tuple
 
 from sqlalchemy import select
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.message import Message
 from ..models.user import User
+from .persona import DEFAULT_STYLE_PROMPTS
 
 
 class ContextService:
@@ -34,12 +36,48 @@ class ContextService:
         return turns
 
 
-def build_messages(system_prompt: str, turns: Iterable[Tuple[str, str]], max_turns: int = 20):
+def build_messages(
+    system_prompt: str,
+    turns: Iterable[Tuple[str, str]],
+    max_turns: int = 20,
+    max_tokens: int | None = None,
+    closing_text: str | None = "Ответь уместно одним сообщением.",
+):
+    def _estimate_tokens(text: str) -> int:
+        # Простая оценка, чтобы не превышать окно модели (≈4 символа на токен)
+        return max(1, math.ceil(len(text) / 4))
+
+    system_prompt = system_prompt.strip()
     msgs = [{"role": "system", "content": system_prompt}]
+    tokens_budget = _estimate_tokens(system_prompt)
+
     tail = list(turns)[-max_turns:]
-    for speaker, text in tail:
-        msgs.append({"role": "user", "content": f"{speaker}: {text}"})
-    msgs.append({"role": "user", "content": "Ответь уместно одним сообщением."})
+    collected: List[dict[str, str]] = []
+    for speaker, text in reversed(tail):
+        sanitized = (text or "").strip()
+        if not sanitized:
+            continue
+        sanitized = sanitized.replace("\n", " ")
+        sanitized = " ".join(sanitized.split())
+        prefix = f"{speaker}: " if speaker else ""
+        content = f"{prefix}{sanitized}".strip()
+        if not content:
+            continue
+        est = _estimate_tokens(content)
+        if max_tokens and tokens_budget + est > max_tokens:
+            break
+        tokens_budget += est
+        collected.append({"role": "user", "content": content})
+
+    for message in reversed(collected):
+        msgs.append(message)
+
+    if closing_text:
+        closing = closing_text.strip()
+        if closing:
+            closing_tokens = _estimate_tokens(closing)
+            if not max_tokens or tokens_budget + closing_tokens <= max_tokens:
+                msgs.append({"role": "user", "content": closing})
     return msgs
 
 
@@ -51,21 +89,35 @@ def _resolve_name(user: User | None, user_id: int | None) -> str:
     return "unknown"
 
 
-def build_system_prompt(conf: Mapping[str, object], focus_text: str | None = None) -> str:
-    style = conf.get("style", "neutral")
-    tone = conf.get("tone", 3)
-    profanity = conf.get("profanity", "soft")
+def build_system_prompt(
+    conf: Mapping[str, object],
+    focus_text: str | None = None,
+    *,
+    interject: bool = False,
+    style_prompts: Mapping[str, str] | None = None,
+) -> str:
+    style = str(conf.get("style", "standup"))
+    prompts = style_prompts or DEFAULT_STYLE_PROMPTS
+    style_block = prompts.get(style, prompts.get("standup", DEFAULT_STYLE_PROMPTS["standup"]))
+
     base = (
         "Ты — участник Telegram-чата. "
-        f"Текущий стиль: {style}, "
-        f"агрессивность: {tone}/10. "
-        f"Обсценная лексика: {profanity}. "
-        "Пиши кратко и по делу. Не выдавай преамбул и дисклеймеров."
+        "Отвечай строго в рамках роли, описанной ниже. "
+        "Не выдавай преамбул, дисклеймеров и внутренних рассуждений.\n\n"
+        f"{style_block}\n"
     )
+
+    if interject:
+        base += "\nТы вмешиваешься в диалог без приглашения: отвечай реплаем на выбранное сообщение, сохраняя роль."
+
     if focus_text:
-        sanitized = focus_text.strip().replace("\n", " ")
-        sanitized = sanitized.replace('"', "'")
+        sanitized = focus_text.strip().replace("\n", " ").replace('"', "'")
         if len(sanitized) > 400:
             sanitized = sanitized[:400] + "…"
-        base += " Ты отвечаешь на конкретный вопрос пользователя: \"" + sanitized + "\". Дай прямой, содержательный ответ."
+        base += (
+            '\nСейчас тебе задали конкретный вопрос: "'
+            + sanitized
+            + '". Дай прямой, уместный ответ одним сообщением.'
+        )
+
     return base

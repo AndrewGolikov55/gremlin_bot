@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 
-def apply_moderation(text: str, mode: str) -> str:
-    # Placeholder: implement softening/bleeping depending on mode
+def apply_moderation(text: str) -> str:
+    # Заглушка: дальнейшая модерация может добавиться позже
     return text
-

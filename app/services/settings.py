@@ -15,12 +15,11 @@ DEFAULTS: Dict[str, Any] = {
     "interject_p": 5,  # probability 0..100
     "interject_cooldown": 60,  # seconds
     "quiet_hours": None,  # e.g. "23:00-08:00"
-    "style": "neutral",  # neutral|sarcastic|aggressive|dry|friendly
-    "profanity": "soft",  # off|soft|hard
+    "style": "standup",  # standup|gopnik|boss|zoomer|jarvis
     "max_length": 0,  # 0 = без ограничений
-    "tone": 3,  # 0..10
     "context_max_turns": 100,
-    "revive_enabled": False,
+    "context_max_prompt_tokens": 32000,
+    "revive_enabled": True,
     "revive_after_hours": 48,
 }
 

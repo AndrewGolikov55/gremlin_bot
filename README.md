@@ -4,7 +4,7 @@
 
 ## Что уже есть
 - FastAPI-приложение с эндпоинтами `/health`, `/metrics`, `/webhook/telegram`.
-- aiogram v3: базовые роутеры, команды `/bot on|off|status`, `/profanity`, `/settings`.
+- aiogram v3: базовые роутеры, команды `/bot on|off|status`, `/settings`.
 - Сохранение входящих текстовых сообщений в БД (для будущего контекста/аналитики).
 - БД: SQLAlchemy модели `chats`, `chat_settings`, `messages`, `users`; автосоздание таблиц на старте.
 - Redis: кэш настроек чата (инвалидация при изменении).
@@ -36,12 +36,13 @@ docker compose up --build
 
 ## Команды в чате (MVP)
 - `/bot on|off|status` — управление включением в чате и краткий статус.
-- `/profanity off|soft|hard` — политика лексики (пока без фактической модерации текста).
 - `/trigger mode <mention|reply|all>` — режим срабатывания ответов.
 - `/interject p <0-100>` / `/interject cooldown <сек>` — вероятность и кулдаун «влезаний».
 - `/quiet <HH:MM-HH:MM|off>` — ночной режим.
-- `/style …`, `/tone 0-10`, `/length <символы>`, `/context max_turns <N>` — управление стилем и контекстом.
-- `/settings` — интерактивная панель для просмотра/переключения ключевых параметров (активация, стиль, лексика, тихие часы, вероятность, оживление) и перехода в админку.
+- `/style standup|gopnik|boss|zoomer|jarvis`, `/length <символы>`, `/context max_turns <N>`, `/context max_tokens <N>` — выбор персоны и глубины контекста.
+- `/settings` — интерактивная панель для просмотра/переключения ключевых параметров (активация, стиль, тихие часы, вероятность, оживление) и перехода в админку.
+
+Админ-панель (`/admin/chats?token=...`) позволяет редактировать и дополнять набор персон: изменить тексты базовых промтов или добавить собственные образы, доступные затем в `/settings`.
 
 Данные команд пишутся мгновенно в БД (`chat_settings`), кэшируются в Redis.
 
@@ -50,7 +51,7 @@ docker compose up --build
 app/
   main.py                # FastAPI + webhook/polling, инициализация инфраструктуры
   bot/
-    router_admin.py      # /bot, /profanity, /settings
+    router_admin.py      # /bot, /settings
     router_triggers.py   # сбор входящих сообщений, простая реакция на упоминание
     router_interjector.py# заглушка под APScheduler
     middlewares.py       # DI: сессии БД, сервисы

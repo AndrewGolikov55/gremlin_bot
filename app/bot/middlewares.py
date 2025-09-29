@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..services.settings import SettingsService
 from ..services.context import ContextService
 from ..services.interjector import InterjectorService
+from ..services.persona import StylePromptService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -25,10 +26,17 @@ class DbSessionMiddleware(BaseMiddleware):
 
 
 class ServicesMiddleware(BaseMiddleware):
-    def __init__(self, settings: SettingsService, context: ContextService, interjector: InterjectorService):
+    def __init__(
+        self,
+        settings: SettingsService,
+        context: ContextService,
+        interjector: InterjectorService,
+        personas: StylePromptService,
+    ):
         self.settings = settings
         self.context = context
         self.interjector = interjector
+        self.personas = personas
 
     async def __call__(
         self,
@@ -39,4 +47,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["settings"] = self.settings
         data["context"] = self.context
         data["interjector"] = self.interjector
+        data["personas"] = self.personas
         return await handler(event, data)

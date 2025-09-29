@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..services.settings import SettingsService
+from ..services.persona import StylePromptService
 
 
 router = Router(name="admin")
@@ -46,19 +47,14 @@ async def cmd_bot(
         return await message.reply("Использование: /bot on|off|status")
 
 
-@router.message(Command("profanity"))
-async def cmd_profanity(message: types.Message, command: CommandObject, settings: SettingsService):
-    value = (command.args or "").strip().lower()
-    if value not in {"off", "soft", "hard"}:
-        return await message.reply("Использование: /profanity <hard|soft|off>")
-    await settings.set(message.chat.id, "profanity", value)
-    await message.reply(f"Установлено: profanity={value}")
-
-
 @router.message(Command("settings"))
-async def cmd_settings(message: types.Message, settings: SettingsService):
+async def cmd_settings(
+    message: types.Message,
+    settings: SettingsService,
+    personas: StylePromptService,
+):
     conf = await settings.get_all(message.chat.id)
-    await _send_settings(message, conf)
+    await _send_settings(message, conf, personas)
 
 
 @router.message(Command("trigger"))
@@ -111,25 +107,23 @@ async def cmd_quiet(message: types.Message, command: CommandObject, settings: Se
 
 
 @router.message(Command("style"))
-async def cmd_style(message: types.Message, command: CommandObject, settings: SettingsService):
+async def cmd_style(
+    message: types.Message,
+    command: CommandObject,
+    settings: SettingsService,
+    personas: StylePromptService,
+):
     value = (command.args or "").strip().lower()
-    allowed = {"neutral", "sarcastic", "aggressive", "dry", "friendly"}
+    style_options = await personas.list_styles()
+    allowed = {slug for slug, _ in style_options}
     if value not in allowed:
-        return await message.reply("Использование: /style neutral|sarcastic|aggressive|dry|friendly", parse_mode=None)
+        options_text = ", ".join(
+            f"{title} ({slug})" for slug, title in style_options
+        ) or "<нет доступных персон>"
+        return await message.reply(f"Доступные стили: {options_text}")
     await settings.set(message.chat.id, "style", value)
-    await message.reply(f"Стиль ответа: {value}")
-
-
-@router.message(Command("tone"))
-async def cmd_tone(message: types.Message, command: CommandObject, settings: SettingsService):
-    value = (command.args or "").strip()
-    if not value.isdigit():
-        return await message.reply("Использование: /tone 0-10")
-    tone = int(value)
-    if not 0 <= tone <= 10:
-        return await message.reply("Тон должен быть в диапазоне 0-10")
-    await settings.set(message.chat.id, "tone", tone)
-    await message.reply(f"Тональность установлена: {tone}")
+    labels = {slug: title for slug, title in style_options}
+    await message.reply(f"Стиль ответа: {labels.get(value, value)}")
 
 
 @router.message(Command("length"))
@@ -147,13 +141,33 @@ async def cmd_length(message: types.Message, command: CommandObject, settings: S
 @router.message(Command("context"))
 async def cmd_context(message: types.Message, command: CommandObject, settings: SettingsService):
     args = (command.args or "").strip().split()
-    if len(args) != 2 or args[0].lower() != "max_turns" or not args[1].isdigit():
-        return await message.reply("Использование: /context max_turns число", parse_mode=None)
-    turns = int(args[1])
-    if turns < 5 or turns > 100:
-        return await message.reply("Количество сообщений в контексте должно быть между 5 и 100")
-    await settings.set(message.chat.id, "context_max_turns", turns)
-    await message.reply(f"Контекст: последние {turns} сообщений")
+    if len(args) != 2 or not args[1].isdigit():
+        return await message.reply(
+            "Использование: /context max_turns N или /context max_tokens N",
+            parse_mode=None,
+        )
+
+    key = args[0].lower()
+    value = int(args[1])
+
+    if key == "max_turns":
+        if value < 5 or value > 100:
+            return await message.reply("Количество сообщений в контексте должно быть между 5 и 100")
+        await settings.set(message.chat.id, "context_max_turns", value)
+        await message.reply(f"Контекст: последние {value} сообщений")
+        return
+
+    if key == "max_tokens":
+        if value < 2000 or value > 60000:
+            return await message.reply("Окно контекста должно быть в пределах 2000-60000 токенов")
+        await settings.set(message.chat.id, "context_max_prompt_tokens", value)
+        await message.reply(f"Макс. окно контекста: {value} токенов")
+        return
+
+    await message.reply(
+        "Использование: /context max_turns N или /context max_tokens N",
+        parse_mode=None,
+    )
 
 
 def _parse_time_range(value: str) -> tuple[str, str]:
@@ -169,20 +183,6 @@ def _validate_time(value: str) -> None:
     datetime.strptime(value, "%H:%M")
 
 
-STYLE_OPTIONS = ["neutral", "sarcastic", "aggressive", "dry", "friendly"]
-STYLE_LABELS = {
-    "neutral": "нейтральный",
-    "sarcastic": "саркастичный",
-    "aggressive": "агрессивный",
-    "dry": "сухой",
-    "friendly": "дружелюбный",
-}
-PROFANITY_OPTIONS = ["off", "soft", "hard"]
-PROFANITY_LABELS = {
-    "off": "запрещена",
-    "soft": "мягкая",
-    "hard": "разрешена",
-}
 QUIET_OPTIONS = ["off", "23:00-08:00", "00:00-06:00"]
 QUIET_LABELS = {
     "off": "нет",
@@ -191,12 +191,14 @@ QUIET_LABELS = {
 }
 
 
-def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup]:
+def _render_settings(
+    conf: dict[str, object],
+    style_options: list[tuple[str, str]],
+) -> tuple[str, InlineKeyboardMarkup]:
     active = bool(conf.get("is_active", True))
-    style_raw = str(conf.get("style", "neutral"))
-    style_label = STYLE_LABELS.get(style_raw, style_raw)
-    profanity_raw = str(conf.get("profanity", "soft"))
-    profanity_label = PROFANITY_LABELS.get(profanity_raw, profanity_raw)
+    style_raw = str(conf.get("style", style_options[0][0] if style_options else "standup"))
+    labels_map = {slug: title for slug, title in style_options}
+    style_label = labels_map.get(style_raw, style_raw)
     quiet_value = conf.get("quiet_hours") or "off"
     quiet_label = QUIET_LABELS.get(quiet_value, quiet_value)
     interject_p = int(conf.get("interject_p", 0) or 0)
@@ -206,13 +208,8 @@ def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup
 
     text = (
         "<b>⚙️ Настройки бота ⚙️</b>\n"
-        #"<i>Подберите поведение прямо в чате:</i>\n"
-        #"• 🎯 Режим реакции\n"
-        #"• 🌙 Тихие часы\n"
-        #"• 🎭 Стиль поведения\n"
-        #"• 🛡️ Политика лексики\n"
-        #"• 🎲 Вероятность вмешательств\n"
-        #"<i>Кулдаун и прочие тонкие параметры настраиваются в админ-панели.</i>"
+        #f"Стиль: {style_label}\n"
+        #f"Вероятность вмешательства: {interject_p}%\n"
     )
 
     builder = InlineKeyboardBuilder()
@@ -232,16 +229,6 @@ def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup
     )
     builder.adjust(1)
     builder.button(
-        text=f"🛡️ Брань: {profanity_label}",
-        callback_data="settings:cycle:profanity",
-    )
-    builder.adjust(1)
-    builder.button(
-        text=f"🎲 Вероятность: {interject_p}%",
-        callback_data="settings:adjust:interject_p",
-    )
-    builder.adjust(1)
-    builder.button(
         text=("💤 Оживление: ВКЛ" if revive_enabled else "💤 Оживление: ВЫКЛ"),
         callback_data="settings:toggle:revive_enabled",
     )
@@ -255,18 +242,32 @@ def _render_settings(conf: dict[str, object]) -> tuple[str, InlineKeyboardMarkup
     return text, builder.as_markup()
 
 
-async def _send_settings(message: types.Message, conf: dict[str, object]) -> None:
-    text, keyboard = _render_settings(conf)
+async def _send_settings(
+    message: types.Message,
+    conf: dict[str, object],
+    personas: StylePromptService,
+) -> None:
+    style_options = await personas.list_styles()
+    if not style_options:
+        style_options = [("standup", "standup")]
+    text, keyboard = _render_settings(conf, style_options)
     await message.reply(text, reply_markup=keyboard)
 
 
-async def _edit_settings(message: types.Message, conf: dict[str, object]) -> None:
-    text, keyboard = _render_settings(conf)
+async def _edit_settings(
+    message: types.Message,
+    conf: dict[str, object],
+    personas: StylePromptService,
+) -> None:
+    style_options = await personas.list_styles()
+    if not style_options:
+        style_options = [("standup", "standup")]
+    text, keyboard = _render_settings(conf, style_options)
     await message.edit_text(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("settings:"))
-async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
+async def cb_settings(query: types.CallbackQuery, settings: SettingsService, personas: StylePromptService):
     chat_id = query.message.chat.id if query.message else None
     if chat_id is None:
         await query.answer()
@@ -279,6 +280,9 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
 
     action = parts[1]
     conf = await settings.get_all(chat_id)
+    style_options = await personas.list_styles()
+    if not style_options:
+        style_options = [("standup", "standup")]
 
     if action == "toggle" and len(parts) >= 3:
         key = parts[2]
@@ -289,11 +293,23 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
     elif action == "cycle" and len(parts) >= 3:
         key = parts[2]
         options = {
-            "style": STYLE_OPTIONS,
-            "profanity": PROFANITY_OPTIONS,
             "quiet_hours": QUIET_OPTIONS,
         }.get(key)
-        if options:
+        if key == "style":
+            slugs = [slug for slug, _ in style_options]
+            current = str(conf.get("style", slugs[0] if slugs else "standup"))
+            if not slugs:
+                await query.answer("Нет доступных стилей", show_alert=True)
+            else:
+                try:
+                    idx = slugs.index(current)
+                except ValueError:
+                    idx = 0
+                new_style = slugs[(idx + 1) % len(slugs)]
+                await settings.set(chat_id, "style", new_style)
+                labels_map = {slug: title for slug, title in style_options}
+                await query.answer(f"Стиль: {labels_map.get(new_style, new_style)}")
+        elif options:
             if key == "quiet_hours":
                 raw_value = conf.get(key)
                 current = raw_value if raw_value else "off"
@@ -310,21 +326,7 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
     elif action == "adjust":
         if len(parts) >= 3:
             key = parts[2]
-            if key == "interject_p":
-                current = int(conf.get("interject_p", 0) or 0)
-                if current < 5:
-                    next_value = current + 1
-                elif current == 5:
-                    next_value = 10
-                elif current < 50:
-                    next_value = min(50, current + 5)
-                else:
-                    next_value = current + 10
-                    if next_value > 100:
-                        next_value = 0
-                await settings.set(chat_id, "interject_p", next_value)
-                await query.answer(f"Вероятность: {next_value}%")
-            elif key == "revive_after_hours":
+            if key == "revive_after_hours":
                 current_hours = int(conf.get("revive_after_hours", 48) or 48)
                 current_days = max(1, current_hours // 24)
                 next_days = current_days + 1 if current_days < 7 else 1
@@ -340,4 +342,4 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService):
         await query.answer()
 
     updated = await settings.get_all(chat_id)
-    await _edit_settings(query.message, updated)
+    await _edit_settings(query.message, updated, personas)

@@ -15,6 +15,7 @@ from ..services.interjector import InterjectorService
 from ..services.llm.ollama import generate as llm_generate
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
+from ..services.persona import StylePromptService
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ async def collect_messages(
     settings: SettingsService,
     context: ContextService,
     interjector: InterjectorService,
+    personas: StylePromptService,
     bot: Bot,
 ):
     bot_user = await bot.get_me()
@@ -79,6 +81,8 @@ async def collect_messages(
     )
 
     max_turns = int(conf.get("context_max_turns", 100) or 100)
+    prompt_token_limit = _resolve_prompt_token_limit(conf)
+    style_prompts = await personas.get_all()
     turns = await context.get_recent_turns(session, message.chat.id, max_turns)
 
     if _should_reply(is_mention, is_reply_to_bot, message.chat.type):
@@ -87,8 +91,17 @@ async def collect_messages(
             focus_text = (message.text or message.caption or "").strip()
             if not focus_text:
                 focus_text = None
-        system_prompt = build_system_prompt(conf, focus_text)
-        messages_for_llm = build_messages(system_prompt, turns, max_turns)
+        system_prompt = build_system_prompt(
+            conf,
+            focus_text,
+            style_prompts=style_prompts,
+        )
+        messages_for_llm = build_messages(
+            system_prompt,
+            turns,
+            max_turns,
+            prompt_token_limit,
+        )
 
         try:
             max_length_conf = conf.get("max_length")
@@ -111,7 +124,7 @@ async def collect_messages(
             await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
             return
 
-        reply_text = apply_moderation(raw_reply, conf.get("profanity", "soft"))
+        reply_text = apply_moderation(raw_reply)
         if not reply_text.strip():
             return
 
@@ -218,3 +231,12 @@ def _should_reply(is_mention: bool, is_reply: bool, chat_type: ChatType | str | 
     if is_reply:
         return True
     return is_mention
+
+
+def _resolve_prompt_token_limit(conf: dict[str, object]) -> int:
+    raw = conf.get("context_max_prompt_tokens", 32000)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 32000
+    return max(2000, min(60000, value))
