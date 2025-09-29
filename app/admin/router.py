@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import os
-from html import escape
 import re
+from html import escape
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models.chat import Chat
+from ..models.message import Message
 from ..models.persona import StylePrompt
-from ..services.settings import SettingsService
+from ..models.user import User
 from ..services.persona import StylePromptService, BASE_STYLE_DATA
-
+from ..services.settings import SettingsService
 
 STYLE_ORDER = ["standup", "gopnik", "boss", "zoomer", "jarvis"]
+BOOTSTRAP_CSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+BOOTSTRAP_JS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
 
 
 def create_admin_router(
@@ -44,24 +48,8 @@ def create_admin_router(
     ) -> str:
         result = await session.execute(select(Chat).order_by(Chat.created_at.desc()))
         chats = result.scalars().all()
-        rows = "".join(
-            f"<tr><td>{escape(str(chat.id))}</td><td>{escape(chat.title)}</td>"
-            f"<td>{'ON' if chat.is_active else 'OFF'}</td>"
-            f"<td><a href=\"/admin/chats/{chat.id}?token={escape(token)}\">Настроить</a></td></tr>"
-            for chat in chats
-        )
-        html = (
-            "<html><head><title>Chats</title></head><body>"
-            "<h1>Список чатов</h1>"
-            f"<p><a href='/admin/styles?token={escape(token)}'>Настроить персоны</a></p>"
-            "<p>Токен проверен. Нажмите «Настроить», чтобы изменить параметры.</p>"
-            "<table border='1' cellpadding='6'>"
-            "<tr><th>ID</th><th>Название</th><th>Статус</th><th></th></tr>"
-            f"{rows or '<tr><td colspan=4>Нет чатов</td></tr>'}"
-            "</table>"
-            "</body></html>"
-        )
-        return HTMLResponse(html)
+        body = _render_chats_body(chats, token)
+        return HTMLResponse(_render_page("Чаты", token, "chats", body))
 
     @router.get("/chats/{chat_id}", response_class=HTMLResponse)
     async def chat_settings_view(
@@ -73,10 +61,9 @@ def create_admin_router(
         if chat is None:
             raise HTTPException(status_code=404, detail="Chat not found")
         conf = await settings.get_all(chat_id)
-        style_options = await personas.list_styles()
-        if not style_options:
-            style_options = [(slug, data["display_name"]) for slug, data in BASE_STYLE_DATA.items()]
-        return HTMLResponse(_render_settings_page(chat, conf, style_options, token=token))
+        style_options = await _ensure_style_options(personas)
+        body = _render_chat_settings_body(chat, conf, style_options, token, saved=False)
+        return HTMLResponse(_render_page(f"Чат {chat.id}", token, "chats", body))
 
     @router.post("/chats/{chat_id}", response_class=HTMLResponse)
     async def chat_settings_update(
@@ -107,9 +94,7 @@ def create_admin_router(
         revive_days = max(1, min(30, revive_days))
         revive_hours = revive_days * 24
 
-        style_options = await personas.list_styles()
-        if not style_options:
-            style_options = [(slug, data["display_name"]) for slug, data in BASE_STYLE_DATA.items()]
+        style_options = await _ensure_style_options(personas)
         allowed_styles = {slug for slug, _ in style_options}
         if style not in allowed_styles:
             raise HTTPException(status_code=400, detail="Unknown style persona")
@@ -124,14 +109,46 @@ def create_admin_router(
         await settings.set(chat_id, "revive_after_hours", revive_hours)
 
         conf = await settings.get_all(chat_id)
-        page = _render_settings_page(chat, conf, style_options, saved=True, token=token)
-        return HTMLResponse(page)
+        body = _render_chat_settings_body(chat, conf, style_options, token, saved=True)
+        return HTMLResponse(_render_page(f"Чат {chat.id}", token, "chats", body))
+
+    @router.get("/chats/{chat_id}/history", response_class=HTMLResponse)
+    async def chat_history_view(
+        chat_id: int,
+        page: int = Query(1, ge=1),
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
+        page_size = 50
+        offset = (page - 1) * page_size
+
+        stmt = (
+            select(Message, User)
+            .outerjoin(User, User.tg_id == Message.user_id)
+            .where(Message.chat_id == chat_id)
+            .order_by(Message.date.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        result = await session.execute(stmt)
+        rows = result.fetchall()
+
+        total_stmt = select(func.count()).select_from(Message).where(Message.chat_id == chat_id)
+        total = (await session.execute(total_stmt)).scalar() or 0
+
+        body = _render_history_body(chat, rows, page, page_size, total, token)
+        return HTMLResponse(_render_page(f"История чата {chat.id}", token, "chats", body))
 
     @router.get("/styles", response_class=HTMLResponse)
     async def style_prompts_view(token: str = Depends(require_token)) -> str:
         entries = await personas.get_entries()
         prompts = _merge_style_entries(entries)
-        return HTMLResponse(_render_style_prompts(prompts, token=token))
+        body = _render_style_prompts_body(prompts, token)
+        return HTMLResponse(_render_page("Персоны", token, "styles", body))
 
     @router.post("/styles", response_class=HTMLResponse)
     async def style_prompts_update(
@@ -144,7 +161,7 @@ def create_admin_router(
 
         errors: list[str] = []
 
-        # Process deletions first
+        # deletions
         for key, value in form.items():
             if key.startswith("delete__") and value:
                 slug = key.split("__", 1)[1]
@@ -153,7 +170,6 @@ def create_admin_router(
                 except ValueError as exc:
                     errors.append(str(exc))
 
-        # Refresh entries after deletions
         entries = await personas.get_entries()
         prompts = _merge_style_entries(entries)
 
@@ -167,16 +183,14 @@ def create_admin_router(
                 updates.setdefault(slug, {})["prompt"] = value
 
         for slug, data in updates.items():
-            prompt = data.get("prompt")
-            display = data.get("display")
-            existing = entries.get(slug)
-            if existing is None:
+            record = entries.get(slug)
+            if record is None:
                 errors.append(f"Стиль {slug} не найден")
                 continue
-            final_prompt = prompt if prompt is not None else existing.prompt
-            final_display = display if display is not None else existing.display_name
+            prompt = data.get("prompt", record.prompt)
+            display = data.get("display", record.display_name)
             try:
-                await personas.set(slug, final_prompt, display_name=final_display)
+                await personas.set(slug, prompt, display_name=display)
             except ValueError as exc:
                 errors.append(str(exc))
 
@@ -201,10 +215,316 @@ def create_admin_router(
         entries = await personas.get_entries()
         prompts = _merge_style_entries(entries)
         saved = not errors
-        page = _render_style_prompts(prompts, saved=saved, token=token, errors=errors)
-        return HTMLResponse(page)
+        body = _render_style_prompts_body(prompts, token, saved=saved, errors=errors)
+        return HTMLResponse(_render_page("Персоны", token, "styles", body))
 
     return router
+
+
+def _build_url(path: str, token: str | None, **params: object) -> str:
+    query: list[tuple[str, object]] = []
+    if token:
+        query.append(("token", token))
+    for key, value in params.items():
+        if value is None:
+            continue
+        query.append((key, value))
+    if not query:
+        return path
+    return f"{path}?{urlencode([(k, str(v)) for k, v in query])}"
+
+
+def _render_page(title: str, token: str | None, active: str, body: str) -> str:
+    nav_items = [
+        ("chats", "Чаты", _build_url("/admin/chats", token)),
+        ("styles", "Персоны", _build_url("/admin/styles", token)),
+    ]
+    nav_html = "".join(
+        f"<li class='nav-item'><a class='nav-link{' active' if key == active else ''}' href='{escape(url)}'>{escape(label)}</a></li>"
+        for key, label, url in nav_items
+    )
+    return f"""<!doctype html>
+<html lang='ru'>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <link rel='stylesheet' href='{BOOTSTRAP_CSS}'>
+  <title>{escape(title)} — Gremlin Admin</title>
+</head>
+<body class='bg-light'>
+  <nav class='navbar navbar-expand-lg navbar-dark bg-dark'>
+    <div class='container-fluid'>
+      <a class='navbar-brand' href='{escape(_build_url('/admin/chats', token))}'>Gremlin Admin</a>
+      <button class='navbar-toggler' type='button' data-bs-toggle='collapse' data-bs-target='#adminNav' aria-controls='adminNav' aria-expanded='false' aria-label='Toggle navigation'>
+        <span class='navbar-toggler-icon'></span>
+      </button>
+      <div class='collapse navbar-collapse' id='adminNav'>
+        <ul class='navbar-nav me-auto mb-2 mb-lg-0'>
+          {nav_html}
+        </ul>
+      </div>
+    </div>
+  </nav>
+  <main>{body}</main>
+  <script src='{BOOTSTRAP_JS}'></script>
+</body>
+</html>"""
+
+
+def _render_chats_body(chats: list[Chat], token: str | None) -> str:
+    rows = []
+    for chat in chats:
+        status = "bg-success" if chat.is_active else "bg-secondary"
+        status_label = "ON" if chat.is_active else "OFF"
+        settings_url = _build_url(f"/admin/chats/{chat.id}", token)
+        history_url = _build_url(f"/admin/chats/{chat.id}/history", token)
+        rows.append(
+            "<tr>"
+            f"<td class='text-nowrap'>{escape(str(chat.id))}</td>"
+            f"<td>{escape(chat.title)}</td>"
+            f"<td><span class='badge {status}'>{status_label}</span></td>"
+            "<td class='text-end'>"
+            f"<a class='btn btn-sm btn-primary me-1' href='{escape(settings_url)}'>Настройки</a>"
+            f"<a class='btn btn-sm btn-outline-secondary' href='{escape(history_url)}'>История</a>"
+            "</td>"
+            "</tr>"
+        )
+
+    table = (
+        "<div class='table-responsive'><table class='table table-hover align-middle'>"
+        "<thead><tr><th scope='col'>ID</th><th scope='col'>Название</th><th scope='col'>Статус</th><th scope='col' class='text-end'>Действия</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>"
+        if rows
+        else "<div class='alert alert-info'>Чаты ещё не созданы.</div>"
+    )
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        "<h1 class='h3 mb-0'>Чаты</h1>"
+        f"<span class='text-muted'>Всего: {len(chats)}</span>"
+        "</div>"
+        f"{table}"
+        "</div>"
+    )
+
+
+def _render_chat_settings_body(
+    chat: Chat,
+    conf: dict[str, object],
+    styles: list[tuple[str, str]],
+    token: str | None,
+    saved: bool,
+) -> str:
+    max_length_raw = conf.get("max_length", 0)
+    max_length = int(max_length_raw) if max_length_raw is not None else 0
+    context_turns = int(conf.get("context_max_turns", 100) or 100)
+    context_tokens = int(conf.get("context_max_prompt_tokens", 32000) or 32000)
+    probability = int(conf.get("interject_p", 0) or 0)
+    cooldown = int(conf.get("interject_cooldown", 60) or 60)
+    revive_enabled = bool(conf.get("revive_enabled", False))
+    revive_hours = int(conf.get("revive_after_hours", 48) or 48)
+    revive_days = max(1, revive_hours // 24)
+    style_current = str(conf.get("style", styles[0][0] if styles else "standup"))
+
+    message = "<div class='alert alert-success'>Сохранено</div>" if saved else ""
+    history_url = _build_url(f"/admin/chats/{chat.id}/history", token)
+
+    options_html = "".join(
+        f"<option value='{escape(slug)}'{' selected' if slug == style_current else ''}>{escape(title)}</option>"
+        for slug, title in styles
+    )
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        f"<div><h1 class='h3 mb-0'>Настройки чата</h1><div class='text-muted'>{escape(chat.title)}</div></div>"
+        f"<a class='btn btn-outline-secondary' href='{escape(history_url)}'>История чата</a>"
+        "</div>"
+        f"{message}"
+        "<form method='post' class='row g-3'>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Макс. длина ответа (0 = без ограничения)</label>"
+        f"<input class='form-control' type='number' name='max_length' min='0' max='2000' value='{max_length}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Контекст (5-150 сообщений)</label>"
+        f"<input class='form-control' type='number' name='context_turns' min='5' max='150' value='{context_turns}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Лимит окна (токены 2k-60k)</label>"
+        f"<input class='form-control' type='number' name='context_tokens' min='2000' max='60000' value='{context_tokens}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Персона</label>"
+        f"<select class='form-select' name='style'>{options_html}</select>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Вероятность вмешательства (0-100%)</label>"
+        f"<input class='form-control' type='number' name='probability' min='0' max='100' value='{probability}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Кулдаун (10-3600 сек)</label>"
+        f"<input class='form-control' type='number' name='cooldown' min='10' max='3600' value='{cooldown}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Оживление через (дней)</label>"
+        f"<input class='form-control' type='number' name='revive_days' min='1' max='30' value='{revive_days}'>"
+        "</div>"
+        "<div class='col-md-6 d-flex align-items-end'>"
+        f"<div class='form-check'><input class='form-check-input' type='checkbox' name='revive_enabled' value='1'{' checked' if revive_enabled else ''}>"
+        "<label class='form-check-label'>Оживление при тишине</label></div>"
+        "</div>"
+        "<div class='col-12'>"
+        "<button class='btn btn-primary' type='submit'>Сохранить</button>"
+        "</div>"
+        "</form>"
+        "</div>"
+    )
+
+
+def _render_history_body(
+    chat: Chat,
+    rows: list[tuple[Message, User | None]],
+    page: int,
+    page_size: int,
+    total: int,
+    token: str | None,
+) -> str:
+    items = []
+    for message, user in rows:
+        speaker = user.username if user and user.username else str(message.user_id)
+        date_str = message.date.strftime("%Y-%m-%d %H:%M:%S") if message.date else "—"
+        text = escape((message.text or "").replace("\n", " "))
+        badge = "bg-secondary" if message.is_bot else "bg-info"
+        author_label = "бот" if message.is_bot else "пользователь"
+        items.append(
+            "<tr>"
+            f"<td class='text-nowrap'>{escape(str(message.message_id))}</td>"
+            f"<td class='text-nowrap'>{escape(date_str)}</td>"
+            f"<td>{escape(speaker)}</td>"
+            f"<td><span class='badge {badge}'>{author_label}</span></td>"
+            f"<td>{text}</td>"
+            "</tr>"
+        )
+
+    table = (
+        "<div class='table-responsive'><table class='table table-striped align-middle'>"
+        "<thead><tr><th>ID</th><th>Время</th><th>Автор</th><th>Тип</th><th>Текст</th></tr></thead>"
+        f"<tbody>{''.join(items)}</tbody></table></div>"
+        if items
+        else "<div class='alert alert-warning'>Сообщений для отображения нет.</div>"
+    )
+
+    max_page = (total + page_size - 1) // page_size if total else 1
+    has_prev = page > 1
+    has_next = page * page_size < total
+    pagination = ""
+    if has_prev or has_next:
+        prev_url = _build_url(f"/admin/chats/{chat.id}/history", token, page=page - 1 if has_prev else 1)
+        next_url = _build_url(f"/admin/chats/{chat.id}/history", token, page=page + 1 if has_next else page)
+        pagination = (
+            "<nav><ul class='pagination'>"
+            f"<li class='page-item{' disabled' if not has_prev else ''}'><a class='page-link' href='{escape(prev_url)}'>Предыдущая</a></li>"
+            f"<li class='page-item disabled'><span class='page-link'>Страница {page} из {max(1, max_page)}</span></li>"
+            f"<li class='page-item{' disabled' if not has_next else ''}'><a class='page-link' href='{escape(next_url)}'>Следующая</a></li>"
+            "</ul></nav>"
+        )
+
+    settings_url = _build_url(f"/admin/chats/{chat.id}", token)
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        f"<div><h1 class='h3 mb-0'>История чата</h1><div class='text-muted'>{escape(chat.title)}</div></div>"
+        f"<a class='btn btn-outline-secondary' href='{escape(settings_url)}'>← Настройки</a>"
+        "</div>"
+        f"<p class='text-muted'>Всего сообщений: {total}</p>"
+        f"{table}"
+        f"{pagination}"
+        "</div>"
+    )
+
+
+def _render_style_prompts_body(
+    prompts: list[dict[str, object]],
+    token: str | None,
+    saved: bool = False,
+    errors: list[str] | None = None,
+) -> str:
+    messages = []
+    if saved and not errors:
+        messages.append("<div class='alert alert-success'>Изменения сохранены</div>")
+    if errors:
+        msg = "".join(f"<li>{escape(err)}</li>" for err in errors)
+        messages.append(f"<div class='alert alert-danger'><ul class='mb-0'>{msg}</ul></div>")
+
+    fields = []
+    for item in prompts:
+        style = str(item["style"])
+        display = str(item["display_name"])
+        prompt = str(item["prompt"])
+        is_default = bool(item.get("is_default", False))
+        delete_control = (
+            "<div class='form-check form-switch mt-2'>"
+            f"<input class='form-check-input' type='checkbox' name='delete__{escape(style)}' value='1'>"
+            "<label class='form-check-label'>Удалить эту персону</label>"
+            "</div>"
+        ) if not is_default else ""
+        fields.append(
+            "<div class='card mb-4'>"
+            "<div class='card-body'>"
+            f"<h2 class='h5 card-title'>{escape(display)} <span class='text-muted'>({escape(style)})</span>"
+            f"{' <span class=\'badge bg-secondary ms-2\'>базовая</span>' if is_default else ''}</h2>"
+            "<div class='mb-3'>"
+            "<label class='form-label'>Название</label>"
+            f"<input class='form-control' type='text' name='display__{escape(style)}' value='{escape(display)}' maxlength='120'>"
+            "</div>"
+            "<div class='mb-3'>"
+            "<label class='form-label'>Промт</label>"
+            f"<textarea class='form-control' name='prompt__{escape(style)}' rows='6'>{escape(prompt)}</textarea>"
+            "</div>"
+            f"{delete_control}"
+            "</div></div>"
+        )
+
+    new_persona_card = (
+        "<div class='card border-dashed'>"
+        "<div class='card-body'>"
+        "<h2 class='h5 card-title'>Добавить новую персону</h2>"
+        "<div class='row g-3'>"
+        "<div class='col-md-4'>"
+        "<label class='form-label'>Код</label>"
+        "<input class='form-control' type='text' name='new_style' maxlength='32' placeholder='например, chill'>"
+        "</div>"
+        "<div class='col-md-4'>"
+        "<label class='form-label'>Название</label>"
+        "<input class='form-control' type='text' name='new_display' maxlength='120' placeholder='Отображаемое имя'>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Промт</label>"
+        "<textarea class='form-control' name='new_prompt' rows='6' placeholder='Описание поведения'></textarea>"
+        "</div>"
+        "</div>"
+        "</div></div>"
+    )
+
+    chats_url = _build_url("/admin/chats", token)
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        "<h1 class='h3 mb-0'>Персоны</h1>"
+        f"<a class='btn btn-outline-secondary' href='{escape(chats_url)}'>← К чатам</a>"
+        "</div>"
+        + "".join(messages)
+        + "<form method='post'>"
+        + "".join(fields)
+        + new_persona_card
+        + "<div class='d-flex justify-content-end'><button class='btn btn-primary' type='submit'>Сохранить изменения</button></div>"
+        "</form>"
+        "</div>"
+    )
 
 
 def _merge_style_entries(entries: dict[str, StylePrompt]) -> list[dict[str, object]]:
@@ -246,124 +566,8 @@ def _merge_style_entries(entries: dict[str, StylePrompt]) -> list[dict[str, obje
     return merged
 
 
-def _render_settings_page(
-    chat: Chat,
-    conf: dict[str, object],
-    styles: list[tuple[str, str]],
-    saved: bool = False,
-    token: str | None = None,
-) -> str:
-    max_length_raw = conf.get("max_length", 0)
-    max_length = int(max_length_raw) if max_length_raw is not None else 0
-    context_turns = int(conf.get("context_max_turns", 100) or 100)
-    context_tokens = int(conf.get("context_max_prompt_tokens", 32000) or 32000)
-    probability = int(conf.get("interject_p", 0) or 0)
-    cooldown = int(conf.get("interject_cooldown", 60) or 60)
-    revive_enabled = bool(conf.get("revive_enabled", False))
-    revive_hours = int(conf.get("revive_after_hours", 48) or 48)
-    revive_days = max(1, revive_hours // 24)
-    message = "<p style='color:green;'>Сохранено</p>" if saved else ""
-    suffix = f"?token={escape(token)}" if token else ""
-    styles_link = f"/admin/styles?token={escape(token)}" if token else "/admin/styles"
-    style_current = str(conf.get("style", styles[0][0] if styles else "standup"))
-
-    return (
-        "<html><head><title>Chat Settings</title></head><body>"
-        f"<h1>Чат {escape(chat.title)} ({chat.id})</h1>"
-        f"{message}"
-        "<form method='post'>"
-        "<label>Макс. длина ответа (0 = без ограничения, иначе 50-2000): <input type='number' name='max_length' min='0' max='2000' value='" + str(max_length) + "'></label><br><br>"
-        "<label>Контекст (5-150 сообщений): <input type='number' name='context_turns' min='5' max='150' value='" + str(context_turns) + "'></label><br><br>"
-        "<label>Лимит окна (токены 2k-60k): <input type='number' name='context_tokens' min='2000' max='60000' value='" + str(context_tokens) + "'></label><br><br>"
-        + "<label>Стиль: <select name='style'>"
-        + "".join(
-            "<option value='" + escape(slug) + ("' selected>" if slug == style_current else "'>") + escape(title) + "</option>"
-            for slug, title in styles
-        )
-        + "</select></label><br><br>"
-        "<label>Вероятность вмешательства (0-100%): <input type='number' name='probability' min='0' max='100' value='" + str(probability) + "'></label><br><br>"
-        "<label>Кулдаун (10-3600 сек): <input type='number' name='cooldown' min='10' max='3600' value='" + str(cooldown) + "'></label><br><br>"
-        f"<label><input type='checkbox' name='revive_enabled' value='1' {'checked' if revive_enabled else ''}> Оживление при тишине</label><br><br>"
-        "<label>Оживление через (дней): <input type='number' name='revive_days' min='1' max='30' value='" + str(revive_days) + "'></label><br><br>"
-        "<button type='submit'>Сохранить</button>"
-        "</form>"
-        + "<hr>"
-        + "<h2>Персоны</h2>"
-        + "<p>Доступные стили: "
-        + ", ".join(
-            f"<b>{escape(title)}</b> (<code>{escape(slug)}</code>)" for slug, title in styles
-        )
-        + "</p>"
-        + (f"<p><a href='{styles_link}'>Настроить промты →</a></p>"
-           if styles_link else "")
-        + (f"<p><a href='/admin/chats{suffix}'>← Назад к списку</a></p>" if token else "")
-        + "</body></html>"
-    )
-
-
-def _render_style_prompts(
-    prompts: list[dict[str, object]],
-    *,
-    saved: bool = False,
-    token: str | None = None,
-    errors: list[str] | None = None,
-) -> str:
-    messages = []
-    if saved and not errors:
-        messages.append("<p style='color:green;'>Сохранено</p>")
-    if errors:
-        escaped_errors = "".join(f"<li>{escape(err)}</li>" for err in errors)
-        messages.append(f"<div style='color:red;'><ul>{escaped_errors}</ul></div>")
-    suffix = f"?token={escape(token)}" if token else ""
-
-    rows: list[str] = []
-    for item in prompts:
-        style = str(item["style"])
-        display = str(item["display_name"])
-        prompt = str(item["prompt"])
-        is_default = bool(item.get("is_default", False))
-        rows.append("<fieldset style='margin-bottom:16px;'>")
-        rows.append(
-            "<legend>" + escape(display) + (" (базовая)" if is_default else "") + " — " + escape(style) + "</legend>"
-        )
-        rows.append(
-            "<label>Название:<br><input type='text' name='display__"
-            + escape(style)
-            + "' value='"
-            + escape(display)
-            + "' maxlength='120'></label><br><br>"
-        )
-        rows.append(
-            "<label>Промт:<br><textarea name='prompt__"
-            + escape(style)
-            + "' rows='8' cols='120'>"
-            + escape(prompt)
-            + "</textarea></label><br>"
-        )
-        if not is_default:
-            rows.append(
-                "<label><input type='checkbox' name='delete__"
-                + escape(style)
-                + "' value='1'> Удалить эту персону</label><br>"
-            )
-        rows.append("</fieldset>")
-
-    rows.append("<hr><h2>Добавить новую персону</h2>")
-    rows.append(
-        "<label>Код (латиница/цифры/-/_): <input type='text' name='new_style' maxlength='32'></label><br><br>"
-        "<label>Название: <input type='text' name='new_display' maxlength='120'></label><br><br>"
-        "<label>Промт:<br><textarea name='new_prompt' rows='8' cols='120'></textarea></label><br>"
-    )
-
-    body = (
-        "<html><head><title>Style Prompts</title></head><body>"
-        "<h1>Промты персон</h1>"
-        + "".join(messages)
-        + "<form method='post'>"
-        + "".join(rows)
-        + "<button type='submit'>Сохранить изменения</button>"
-        "</form>"
-        + (f"<p><a href='/admin/chats{suffix}'>← К списку чатов</a></p>" if token else "")
-        + "</body></html>"
-    )
-    return body
+async def _ensure_style_options(personas: StylePromptService) -> list[tuple[str, str]]:
+    styles = await personas.list_styles()
+    if styles:
+        return styles
+    return [(slug, data["display_name"]) for slug, data in BASE_STYLE_DATA.items()]
