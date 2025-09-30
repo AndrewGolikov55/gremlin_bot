@@ -12,7 +12,11 @@ from ..models.message import Message
 from ..models.user import User
 from ..services.context import ContextService, build_messages, build_system_prompt
 from ..services.interjector import InterjectorService
-from ..services.llm.ollama import generate as llm_generate
+from ..services.llm.ollama import (
+    OpenRouterError,
+    OpenRouterRateLimitError,
+    generate as llm_generate,
+)
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.persona import StylePromptService
@@ -120,6 +124,15 @@ async def collect_messages(
                 temperature=float(conf.get("temperature", 0.8) or 0.8),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
             )
+        except OpenRouterRateLimitError as exc:
+            wait_hint = ""
+            if exc.retry_after and exc.retry_after > 0:
+                wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
+            await message.reply("🤖 Модель перегружена." + wait_hint)
+            return
+        except OpenRouterError:
+            await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
+            return
         except Exception:
             await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
             return

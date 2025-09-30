@@ -15,7 +15,11 @@ from ..models.chat import Chat
 from ..models.message import Message as DBMessage
 from ..services.context import ContextService, build_messages, build_system_prompt
 from ..services.persona import StylePromptService
-from ..services.llm.ollama import generate as llm_generate
+from ..services.llm.ollama import (
+    OpenRouterError,
+    OpenRouterRateLimitError,
+    generate as llm_generate,
+)
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 
@@ -74,7 +78,7 @@ class InterjectorService:
         if not focus_text:
             focus_text = None
 
-        reply_text = await self._generate_reply(conf, turns, focus_text)
+        reply_text = await self._generate_reply(conf, turns, focus_text, chat_id=message.chat.id)
         if not reply_text:
             return
 
@@ -144,8 +148,13 @@ class InterjectorService:
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 max_tokens=self._max_tokens_from_config(conf),
             )
-        except Exception:
-            logger.exception("OpenRouter request failed during idle revival (chat %s)", chat.id)
+        except OpenRouterRateLimitError as exc:
+            logger.warning(
+                "Rate limit during idle revival chat=%s retry_after=%s", chat.id, exc.retry_after
+            )
+            return
+        except OpenRouterError:
+            logger.exception("OpenRouter failed during idle revival chat=%s", chat.id)
             return
 
         reply_text = apply_moderation(raw_reply)
@@ -222,6 +231,8 @@ class InterjectorService:
         conf: dict[str, object],
         turns: Iterable[tuple[str, str]],
         focus_text: str | None,
+        *,
+        chat_id: int | None = None,
     ) -> str | None:
         style_prompts = await self.personas.get_all()
         system_prompt = build_system_prompt(
@@ -246,7 +257,14 @@ class InterjectorService:
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 max_tokens=self._max_tokens_from_config(conf),
             )
-        except Exception:
+        except OpenRouterRateLimitError as exc:
+            logger.warning(
+                "Rate limit during interject chat=%s retry_after=%s",
+                chat_id,
+                exc.retry_after,
+            )
+            return None
+        except OpenRouterError:
             logger.exception("OpenRouter request failed during spontaneous reply")
             return None
 

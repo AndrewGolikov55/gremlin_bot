@@ -4,6 +4,11 @@ import os
 from typing import Iterable, Mapping, Optional
 
 import httpx
+import logging
+from math import inf
+
+
+logger = logging.getLogger(__name__)
 
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -17,7 +22,27 @@ OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "GremlinBot")
 
 
 class OpenRouterError(RuntimeError):
-    pass
+    """Базовая ошибка общения с OpenRouter."""
+
+
+class OpenRouterRateLimitError(OpenRouterError):
+    """OpenRouter вернул 429 Too Many Requests."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 async def generate(
@@ -48,13 +73,29 @@ async def generate(
 
     url = f"{OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
     async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(url, headers=headers, json=payload)
         try:
+            response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            text = exc.response.text
+            if status == 429:
+                retry_after = _parse_retry_after(exc.response.headers.get("Retry-After"))
+                logger.warning(
+                    "OpenRouter rate limit hit (retry_after=%s, body=%s)",
+                    retry_after,
+                    text,
+                )
+                raise OpenRouterRateLimitError(text or "rate limit", retry_after=retry_after) from exc
+            logger.error(
+                "OpenRouter request failed status=%s body=%s", status, text
+            )
             raise OpenRouterError(
-                f"OpenRouter request failed: {exc.response.status_code} {exc.response.text}"
+                f"OpenRouter request failed: {status} {text}"
             ) from exc
+        except httpx.HTTPError as exc:
+            logger.exception("OpenRouter network error: %s", exc)
+            raise OpenRouterError(f"OpenRouter network error: {exc}") from exc
 
     data = response.json()
     try:
