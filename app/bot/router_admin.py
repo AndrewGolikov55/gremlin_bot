@@ -7,6 +7,7 @@ from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardMarkup, ForceReply
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.exceptions import TelegramBadRequest
 
 from ..services.settings import SettingsService
 from ..services.persona import StylePromptService
@@ -311,11 +312,25 @@ async def _edit_settings(
     app_conf: dict[str, object],
     personas: StylePromptService,
 ) -> None:
+    if message is None:
+        return
     style_options = await personas.list_styles()
     if not style_options:
         style_options = [("standup", "standup")]
     text, keyboard = _render_settings(conf, app_conf, style_options)
     await message.edit_text(text, reply_markup=keyboard)
+
+
+async def _safe_answer(query: types.CallbackQuery | None, *args, **kwargs) -> None:
+    if query is None:
+        return
+    try:
+        await query.answer(*args, **kwargs)
+    except TelegramBadRequest as exc:
+        msg = str(exc).lower()
+        if "query is too old" in msg or "query id is invalid" in msg:
+            return
+        raise
 
 
 @router.callback_query(F.data.startswith("settings:"))
@@ -327,12 +342,12 @@ async def cb_settings(
 ):
     chat_id = query.message.chat.id if query.message else None
     if chat_id is None:
-        await query.answer()
+        await _safe_answer(query)
         return
 
     parts = query.data.split(":") if query.data else []
     if len(parts) < 2:
-        await query.answer()
+        await _safe_answer(query)
         return
 
     action = parts[1]
@@ -342,18 +357,20 @@ async def cb_settings(
     if not style_options:
         style_options = [("standup", "standup")]
 
+    should_refresh = True
+
     if action == "toggle" and len(parts) >= 3:
         key = parts[2]
         if key == "roulette_auto":
             current = bool(conf.get("roulette_auto_enabled", False))
             new_value = not current
             await settings.set(chat_id, "roulette_auto_enabled", new_value)
-            await query.answer("Авто-рулетка включена" if new_value else "Авто-рулетка выключена")
+            await _safe_answer(query, "Авто-рулетка включена" if new_value else "Авто-рулетка выключена")
         else:
             current = bool(conf.get(key, False))
             new_value = not current
             await settings.set(chat_id, key, new_value)
-            await query.answer("Включено" if new_value else "Выключено", show_alert=False)
+            await _safe_answer(query, "Включено" if new_value else "Выключено", show_alert=False)
     elif action == "cycle" and len(parts) >= 3:
         key = parts[2]
         options = {
@@ -363,7 +380,7 @@ async def cb_settings(
             slugs = [slug for slug, _ in style_options]
             current = str(conf.get("style", slugs[0] if slugs else "standup"))
             if not slugs:
-                await query.answer("Нет доступных стилей", show_alert=True)
+                await _safe_answer(query, "Нет доступных стилей", show_alert=True)
             else:
                 try:
                     idx = slugs.index(current)
@@ -372,7 +389,7 @@ async def cb_settings(
                 new_style = slugs[(idx + 1) % len(slugs)]
                 await settings.set(chat_id, "style", new_style)
                 labels_map = {slug: title for slug, title in style_options}
-                await query.answer(f"Стиль: {labels_map.get(new_style, new_style)}")
+                await _safe_answer(query, f"Стиль: {labels_map.get(new_style, new_style)}")
         elif options:
             if key == "quiet_hours":
                 raw_value = conf.get(key)
@@ -386,13 +403,15 @@ async def cb_settings(
             new_value = options[(idx + 1) % len(options)]
             stored = None if key == "quiet_hours" and new_value == "off" else new_value
             await settings.set(chat_id, key, stored)
-            await query.answer(f"{key}: {new_value}")
+            await _safe_answer(query, f"{key}: {new_value}")
     elif action == "prompt" and len(parts) >= 3 and parts[2] == "roulette_title":
-        await query.answer("Жду новое прозвище", show_alert=False)
-        await query.message.answer(PROMPT_TEXT, reply_markup=ForceReply(selective=True))
+        should_refresh = False
+        await _safe_answer(query, "Жду новое прозвище", show_alert=False)
+        if query.message:
+            await query.message.answer(PROMPT_TEXT, reply_markup=ForceReply(selective=True))
     elif action == "clear" and len(parts) >= 3 and parts[2] == "roulette_title":
         await settings.set(chat_id, "roulette_custom_title", None)
-        await query.answer("Прозвище сброшено")
+        await _safe_answer(query, "Прозвище сброшено")
     elif action == "adjust":
         if len(parts) >= 3:
             key = parts[2]
@@ -401,16 +420,22 @@ async def cb_settings(
                 current_days = max(1, current_hours // 24)
                 next_days = current_days + 1 if current_days < 7 else 1
                 await settings.set(chat_id, "revive_after_hours", next_days * 24)
-                await query.answer(f"Порог тишины: {next_days} д")
+                await _safe_answer(query, f"Порог тишины: {next_days} д")
             else:
-                await query.answer("Недоступно", show_alert=True)
+                await _safe_answer(query, "Недоступно", show_alert=True)
         else:
-            await query.answer("Недоступно", show_alert=True)
+            await _safe_answer(query, "Недоступно", show_alert=True)
     elif action == "refresh":
-        await query.answer("Обновлено")
+        await _safe_answer(query, "Обновлено")
     else:
-        await query.answer()
+        await _safe_answer(query)
 
-    updated = await settings.get_all(chat_id)
-    app_conf = await app_config.get_all()
-    await _edit_settings(query.message, updated, app_conf, personas)
+    if should_refresh:
+        updated = await settings.get_all(chat_id)
+        app_conf = await app_config.get_all()
+        try:
+            await _edit_settings(query.message, updated, app_conf, personas)
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            raise
