@@ -21,6 +21,7 @@ from aiogram.types import (
 
 from .bot.router_admin import router as admin_router
 from .bot.router_triggers import router as triggers_router
+from .bot.router_fun import router as fun_router
 from .bot.router_interjector import router as interjector_router
 from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
 from .admin import create_admin_router
@@ -33,6 +34,8 @@ from .services.interjector import InterjectorService
 from .services.settings import SettingsService
 from .services.persona import StylePromptService, BASE_STYLE_DATA
 from .services.app_config import AppConfigService
+from .services.roulette import RouletteService
+from zoneinfo import ZoneInfo
 
 
 # Metrics
@@ -74,18 +77,27 @@ INTERJECT_TICK_SECONDS = _env_int("INTERJECT_TICK_SECONDS", 30)
 engine, async_sessionmaker = init_engine_and_sessionmaker()
 redis = init_redis()
 
+# Aiogram
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
+
 # Services
 settings_service = SettingsService(async_sessionmaker, redis)
 context_service = ContextService()
 app_config_service = AppConfigService(async_sessionmaker, redis)
 persona_service = StylePromptService(async_sessionmaker, redis, BASE_STYLE_DATA)
-
-# Aiogram
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+roulette_service = RouletteService(
+    bot=bot,
+    sessionmaker=async_sessionmaker,
+    settings=settings_service,
+    app_config=app_config_service,
+    context=context_service,
+    personas=persona_service,
+)
 
 # Routers
 dp.include_router(admin_router)
+dp.include_router(fun_router)
 dp.include_router(triggers_router)
 dp.include_router(interjector_router)
 
@@ -103,12 +115,12 @@ interjector_service = InterjectorService(
     redis=redis,
     personas=persona_service,
 )
-dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service, persona_service, app_config_service))
+dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service, persona_service, app_config_service, roulette_service))
 scheduler = get_scheduler()
 
 
 app = FastAPI(title="Gremlin Bot", version="0.1.0")
-app.include_router(create_admin_router(async_sessionmaker, settings_service, persona_service, app_config_service))
+app.include_router(create_admin_router(async_sessionmaker, settings_service, persona_service, app_config_service, bot, roulette_service))
 app.state.polling_task = None
 app.state.scheduler = None
 
@@ -150,6 +162,15 @@ async def on_startup():
         id="interjector_tick",
         replace_existing=True,
         max_instances=1,
+    )
+    scheduler.add_job(
+        roulette_service.run_auto_roll,
+        "cron",
+        hour=10,
+        minute=0,
+        timezone=ZoneInfo("Europe/Moscow"),
+        id="roulette_auto_roll",
+        replace_existing=True,
     )
     app.state.scheduler = scheduler
 
@@ -207,6 +228,8 @@ def inc_messages():
 async def configure_bot_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="settings", description="Панель настроек"),
+        BotCommand(command="roll", description="Запустить рулетку"),
+        BotCommand(command="rollstats", description="Статистика рулетки"),
     ]
 
     await bot.set_my_commands(commands)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from html import escape
@@ -10,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from aiogram import Bot
 from ..models.chat import Chat
 from ..models.message import Message
 from ..models.persona import StylePrompt
@@ -17,10 +19,13 @@ from ..models.user import User
 from ..services.persona import StylePromptService, BASE_STYLE_DATA
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
+from ..services.roulette import RouletteService
 
 STYLE_ORDER = ["standup", "gopnik", "boss", "zoomer", "jarvis"]
 BOOTSTRAP_CSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
 BOOTSTRAP_JS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+
+logger = logging.getLogger("admin")
 
 
 def create_admin_router(
@@ -28,6 +33,8 @@ def create_admin_router(
     settings: SettingsService,
     personas: StylePromptService,
     app_config: AppConfigService,
+    bot: Bot,
+    roulette: RouletteService,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -96,6 +103,22 @@ def create_admin_router(
         conf = await settings.get_all(chat_id)
         app_conf = await app_config.get_all()
         body = _render_chat_settings_body(chat, conf, app_conf, style_options, token, saved=True)
+        return HTMLResponse(_render_page(f"Чат {chat.id}", token, "chats", body))
+
+    @router.post("/chats/{chat_id}/roulette/reset", response_class=HTMLResponse)
+    async def reset_daily_winner(
+        chat_id: int,
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        await roulette.reset_daily_winner(chat_id)
+        conf = await settings.get_all(chat_id)
+        app_conf = await app_config.get_all()
+        style_options = await _ensure_style_options(personas)
+        body = _render_chat_settings_body(chat, conf, app_conf, style_options, token, saved=True, note="Победитель дня сброшен")
         return HTMLResponse(_render_page(f"Чат {chat.id}", token, "chats", body))
 
     @router.get("/chats/{chat_id}/history", response_class=HTMLResponse)
@@ -178,6 +201,63 @@ def create_admin_router(
         conf = await app_config.get_all()
         body = _render_app_config_body(conf, token, saved=not errors, errors=errors)
         return HTMLResponse(_render_page("Настройки", token, "config", body))
+
+    @router.get("/messages", response_class=HTMLResponse)
+    async def broadcast_view(
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chats = await _fetch_chats(session)
+        body = _render_broadcast_body(chats, token)
+        return HTMLResponse(_render_page("Сообщения", token, "messages", body))
+
+    @router.post("/messages", response_class=HTMLResponse)
+    async def broadcast_send(
+        message_text: str = Form(...),
+        scope: str = Form("all"),
+        chat_id: int | None = Form(None),
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        message_text = message_text.strip()
+        errors: list[str] = []
+        chats = await _fetch_chats(session)
+        chat_ids = [chat.id for chat in chats]
+
+        if not message_text:
+            errors.append("Текст сообщения не может быть пустым.")
+        targets: list[int] = []
+        if scope == "single":
+            if chat_id is None:
+                errors.append("Выберите чат.")
+            elif chat_id not in chat_ids:
+                errors.append("Чат не найден.")
+            else:
+                targets = [chat_id]
+        else:
+            targets = chat_ids
+
+        delivered = 0
+        if not errors and targets:
+            for target in targets:
+                try:
+                    await bot.send_message(target, message_text)
+                    delivered += 1
+                except Exception as exc:
+                    logger.exception("Broadcast failed chat=%s", target)
+                    errors.append(f"Не удалось отправить в чат {target}: {exc}")
+        saved = delivered > 0 and not errors
+        body = _render_broadcast_body(
+            chats,
+            token,
+            saved=saved,
+            errors=None if saved else errors,
+            last_message=message_text,
+            last_scope=scope,
+            last_chat_id=chat_id,
+            delivered=delivered,
+        )
+        return HTMLResponse(_render_page("Сообщения", token, "messages", body))
 
     @router.post("/styles", response_class=HTMLResponse)
     async def style_prompts_update(
@@ -267,6 +347,7 @@ def _render_page(title: str, token: str | None, active: str, body: str) -> str:
     nav_items = [
         ("chats", "Чаты", _build_url("/admin/chats", token)),
         ("config", "Настройки", _build_url("/admin/config", token)),
+        ("messages", "Сообщения", _build_url("/admin/messages", token)),
         ("styles", "Персоны", _build_url("/admin/styles", token)),
     ]
     nav_html = "".join(
@@ -346,13 +427,21 @@ def _render_chat_settings_body(
     styles: list[tuple[str, str]],
     token: str | None,
     saved: bool,
+    note: str | None = None,
 ) -> str:
     revive_enabled = bool(conf.get("revive_enabled", False))
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
     style_current = str(conf.get("style", styles[0][0] if styles else "standup"))
+    custom_title = conf.get("roulette_custom_title")
+    title_label = custom_title if custom_title else "по умолчанию"
 
-    message = "<div class='alert alert-success'>Сохранено</div>" if saved else ""
+    alerts = []
+    if saved:
+        alerts.append("<div class='alert alert-success'>Сохранено</div>")
+    if note:
+        alerts.append(f"<div class='alert alert-info'>{escape(note)}</div>")
+    message = "".join(alerts)
     history_url = _build_url(f"/admin/chats/{chat.id}/history", token)
 
     options_html = "".join(
@@ -365,6 +454,7 @@ def _render_chat_settings_body(
         f"<tr><td>Макс. длина ответа</td><td>{escape(str(app_conf.get('max_length', 0)))} символов</td></tr>"
         f"<tr><td>Лимит окна</td><td>{escape(str(app_conf.get('context_max_prompt_tokens', 32000)))} токенов</td></tr>"
         f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, кулдаун {escape(str(app_conf.get('interject_cooldown', 60)))}с</td></tr>"
+        f"<tr><td>Прозвище рулетки</td><td>{escape(title_label)}</td></tr>"
     )
 
     return (
@@ -390,6 +480,9 @@ def _render_chat_settings_body(
         "<div class='col-12'>"
         "<button class='btn btn-primary' type='submit'>Сохранить</button>"
         "</div>"
+        "</form>"
+        f"<form method='post' action='{escape(_build_url(f'/admin/chats/{chat.id}/roulette/reset', token))}' class='mt-3'>"
+        "<button class='btn btn-outline-danger btn-sm' type='submit'>Сбросить победителя дня</button>"
         "</form>"
         "<div class='card mt-4'>"
         "<div class='card-header'>Глобальные параметры</div>"
@@ -527,6 +620,7 @@ def _render_app_config_body(
 def _render_style_prompts_body(
     prompts: list[dict[str, object]],
     token: str | None,
+    *,
     saved: bool = False,
     errors: list[str] | None = None,
 ) -> str:
@@ -649,3 +743,62 @@ async def _ensure_style_options(personas: StylePromptService) -> list[tuple[str,
     if styles:
         return styles
     return [(slug, data["display_name"]) for slug, data in BASE_STYLE_DATA.items()]
+
+
+async def _fetch_chats(session: AsyncSession) -> list[Chat]:
+    res = await session.execute(select(Chat).order_by(Chat.created_at.desc()))
+    return list(res.scalars())
+
+
+def _render_broadcast_body(
+    chats: list[Chat],
+    token: str | None,
+    *,
+    saved: bool = False,
+    errors: list[str] | None = None,
+    last_message: str | None = None,
+    last_scope: str = "all",
+    last_chat_id: int | None = None,
+    delivered: int = 0,
+) -> str:
+    messages = []
+    if saved:
+        messages.append(f"<div class='alert alert-success'>Отправлено в {delivered} чатов.</div>")
+    if errors:
+        items = "".join(f"<li>{escape(err)}</li>" for err in errors)
+        messages.append(f"<div class='alert alert-danger'><ul class='mb-0'>{items}</ul></div>")
+
+    options = "".join(
+        f"<option value='{chat.id}'{' selected' if last_chat_id == chat.id else ''}>{escape(chat.title)}</option>"
+        for chat in chats
+    )
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        "<h1 class='h3 mb-0'>Сообщения</h1>"
+        f"<span class='text-muted'>Доступно чатов: {len(chats)}</span>"
+        "</div>"
+        + "".join(messages)
+        + "<form method='post' class='row g-3'>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Текст сообщения</label>"
+        f"<textarea class='form-control' name='message_text' rows='4'>{escape(last_message or '')}</textarea>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Куда отправить</label>"
+        "<select class='form-select' name='scope'>"
+        f"<option value='all'{' selected' if last_scope != 'single' else ''}>Во все чаты</option>"
+        f"<option value='single'{' selected' if last_scope == 'single' else ''}>Только выбранный чат</option>"
+        "</select>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Чат</label>"
+        f"<select class='form-select' name='chat_id'><option value=''>—</option>{options}</select>"
+        "</div>"
+        "<div class='col-12'>"
+        "<button class='btn btn-primary' type='submit'>Отправить</button>"
+        "</div>"
+        "</form>"
+        "</div>"
+    )

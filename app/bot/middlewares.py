@@ -9,6 +9,7 @@ from ..services.context import ContextService
 from ..services.interjector import InterjectorService
 from ..services.persona import StylePromptService
 from ..services.app_config import AppConfigService
+from ..services.roulette import RouletteService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -34,12 +35,14 @@ class ServicesMiddleware(BaseMiddleware):
         interjector: InterjectorService,
         personas: StylePromptService,
         app_config: AppConfigService,
+        roulette: RouletteService,
     ):
         self.settings = settings
         self.context = context
         self.interjector = interjector
         self.personas = personas
         self.app_config = app_config
+        self.roulette = roulette
 
     async def __call__(
         self,
@@ -52,4 +55,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["interjector"] = self.interjector
         data["personas"] = self.personas
         data["app_config"] = self.app_config
+        data["roulette"] = self.roulette
         return await handler(event, data)

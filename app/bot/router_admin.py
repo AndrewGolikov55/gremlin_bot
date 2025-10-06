@@ -5,7 +5,7 @@ from html import escape
 
 from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, ForceReply
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..services.settings import SettingsService
@@ -14,6 +14,8 @@ from ..services.app_config import AppConfigService
 
 
 router = Router(name="admin")
+
+PROMPT_TEXT = "Введите новое прозвище для рулетки (или напишите 'reset' чтобы сбросить)."
 
 
 @router.message(Command("bot"))
@@ -232,14 +234,17 @@ def _render_settings(
     revive_enabled = bool(conf.get("revive_enabled", False))
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
+    roulette_auto = bool(conf.get("roulette_auto_enabled", False))
+    custom_title = conf.get("roulette_custom_title")
+    title_label = custom_title if custom_title else "по умолчанию"
 
     text = (
         "<b>⚙️ Настройки бота ⚙️</b>\n"
-        #f"Стиль: {style_label}\n"
-        #f"Тихие часы: {quiet_label}\n"
-        #f"Вмешательства: {interject_p}% (кулдаун {interject_cooldown}с)\n"
-        #f"Контекст: {context_turns} сообщений, окно {context_tokens} токенов\n"
-        #"<i>Глобальные параметры меняются в админ-панели.</i>"
+        f"Стиль: {style_label}\n"
+        f"Тихие часы: {quiet_label}\n"
+        f"Вмешательства: {interject_p}% (кулдаун {interject_cooldown}с)\n"
+        f"Контекст: {context_turns} сообщений, окно {context_tokens} токенов\n"
+        "<i>Глобальные параметры меняются в админ-панели.</i>"
     )
 
     builder = InlineKeyboardBuilder()
@@ -266,6 +271,21 @@ def _render_settings(
     builder.button(
         text=f"⏳ Порог тишины: {revive_days} д",
         callback_data="settings:adjust:revive_after_hours",
+    )
+    builder.adjust(1)
+    builder.button(
+        text=f"🎲 Авто-рулетка: {'ВКЛ' if roulette_auto else 'ВЫКЛ'}",
+        callback_data="settings:toggle:roulette_auto",
+    )
+    builder.adjust(1)
+    builder.button(
+        text=f"🏷️ Прозвище: {title_label}",
+        callback_data="settings:prompt:roulette_title",
+    )
+    builder.adjust(1)
+    builder.button(
+        text="🧹 Сбросить прозвище",
+        callback_data="settings:clear:roulette_title",
     )
     builder.adjust(1)
 
@@ -324,10 +344,16 @@ async def cb_settings(
 
     if action == "toggle" and len(parts) >= 3:
         key = parts[2]
-        current = bool(conf.get(key, False))
-        new_value = not current
-        await settings.set(chat_id, key, new_value)
-        await query.answer("Включено" if new_value else "Выключено", show_alert=False)
+        if key == "roulette_auto":
+            current = bool(conf.get("roulette_auto_enabled", False))
+            new_value = not current
+            await settings.set(chat_id, "roulette_auto_enabled", new_value)
+            await query.answer("Авто-рулетка включена" if new_value else "Авто-рулетка выключена")
+        else:
+            current = bool(conf.get(key, False))
+            new_value = not current
+            await settings.set(chat_id, key, new_value)
+            await query.answer("Включено" if new_value else "Выключено", show_alert=False)
     elif action == "cycle" and len(parts) >= 3:
         key = parts[2]
         options = {
@@ -361,6 +387,12 @@ async def cb_settings(
             stored = None if key == "quiet_hours" and new_value == "off" else new_value
             await settings.set(chat_id, key, stored)
             await query.answer(f"{key}: {new_value}")
+    elif action == "prompt" and len(parts) >= 3 and parts[2] == "roulette_title":
+        await query.answer("Жду новое прозвище", show_alert=False)
+        await query.message.answer(PROMPT_TEXT, reply_markup=ForceReply(selective=True))
+    elif action == "clear" and len(parts) >= 3 and parts[2] == "roulette_title":
+        await settings.set(chat_id, "roulette_custom_title", None)
+        await query.answer("Прозвище сброшено")
     elif action == "adjust":
         if len(parts) >= 3:
             key = parts[2]
