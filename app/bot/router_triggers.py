@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import logging
+import re
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ChatType, MessageEntityType
@@ -19,6 +20,7 @@ from ..services.llm.ollama import (
 )
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
+from ..services.app_config import AppConfigService
 from ..services.persona import StylePromptService
 
 
@@ -36,6 +38,7 @@ async def collect_messages(
     context: ContextService,
     interjector: InterjectorService,
     personas: StylePromptService,
+    app_config: AppConfigService,
     bot: Bot,
 ):
     bot_user = await bot.get_me()
@@ -84,17 +87,22 @@ async def collect_messages(
         message.entities,
     )
 
-    max_turns = int(conf.get("context_max_turns", 100) or 100)
-    prompt_token_limit = _resolve_prompt_token_limit(conf)
+    app_conf = await app_config.get_all()
+
+    max_turns = int(app_conf.get("context_max_turns", 100) or 100)
+    prompt_token_limit = _resolve_prompt_token_limit(app_conf)
     style_prompts = await personas.get_all()
     turns = await context.get_recent_turns(session, message.chat.id, max_turns)
 
     if _should_reply(is_mention, is_reply_to_bot, message.chat.type):
+        raw_focus = (message.text or message.caption or "").strip()
         focus_text = None
-        if is_reply_to_bot:
-            focus_text = (message.text or message.caption or "").strip()
-            if not focus_text:
-                focus_text = None
+        if raw_focus and (is_reply_to_bot or is_mention):
+            cleaned = raw_focus
+            if bot_user.username:
+                pattern = re.compile(rf"@{re.escape(bot_user.username)}", re.IGNORECASE)
+                cleaned = pattern.sub("", cleaned)
+            focus_text = " ".join(cleaned.split()) or None
         system_prompt = build_system_prompt(
             conf,
             focus_text,
@@ -108,7 +116,7 @@ async def collect_messages(
         )
 
         try:
-            max_length_conf = conf.get("max_length")
+            max_length_conf = app_conf.get("max_length")
             max_tokens = None
             if isinstance(max_length_conf, (int, float, str)):
                 try:

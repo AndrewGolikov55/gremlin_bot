@@ -10,6 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..services.settings import SettingsService
 from ..services.persona import StylePromptService
+from ..services.app_config import AppConfigService
 
 
 router = Router(name="admin")
@@ -20,6 +21,7 @@ async def cmd_bot(
     message: types.Message,
     command: CommandObject,
     settings: SettingsService,
+    app_config: AppConfigService,
 ):
     args = (command.args or "").strip().lower()
     if args == "on":
@@ -30,15 +32,19 @@ async def cmd_bot(
         return await message.reply("Бот выключен в этом чате ⛔")
     elif args == "status":
         conf = await settings.get_all(message.chat.id)
+        app_conf = await app_config.get_all()
         active = conf.get("is_active", True)
-        prob = conf.get("interject_p", 0)
-        cooldown = conf.get("interject_cooldown", 60)
+        prob = app_conf.get("interject_p", 0)
+        cooldown = app_conf.get("interject_cooldown", 60)
         revive_enabled = conf.get("revive_enabled", False)
         revive_hours = int(conf.get("revive_after_hours", 48) or 48)
         revive_days = max(1, revive_hours // 24)
+        quiet_value = conf.get("quiet_hours") or "off"
+        quiet_label = QUIET_LABELS.get(quiet_value, quiet_value)
         return await message.reply(
             f"Статус: {'ON' if active else 'OFF'}\n"
             "Реакция: упоминания и ответы\n"
+            f"Тихие часы: {quiet_label}\n"
             f"Вероятность вмешательства: {prob}%\n"
             f"Кулдаун: {cooldown}с\n"
             f"Оживление: {'включено' if revive_enabled else 'выключено'} (порог {revive_days} д.)"
@@ -52,9 +58,11 @@ async def cmd_settings(
     message: types.Message,
     settings: SettingsService,
     personas: StylePromptService,
+    app_config: AppConfigService,
 ):
     conf = await settings.get_all(message.chat.id)
-    await _send_settings(message, conf, personas)
+    app_conf = await app_config.get_all()
+    await _send_settings(message, conf, app_conf, personas)
 
 
 @router.message(Command("trigger"))
@@ -63,7 +71,12 @@ async def cmd_trigger(message: types.Message, command: CommandObject, settings: 
 
 
 @router.message(Command("interject"))
-async def cmd_interject(message: types.Message, command: CommandObject, settings: SettingsService):
+async def cmd_interject(
+    message: types.Message,
+    command: CommandObject,
+    _settings: SettingsService,
+    app_config: AppConfigService,
+):
     args = (command.args or "").strip().split()
     if len(args) != 2 or args[0].lower() not in {"p", "cooldown"}:
         return await message.reply("Использование: /interject p 0-100 или /interject cooldown секунды", parse_mode=None)
@@ -76,16 +89,16 @@ async def cmd_interject(message: types.Message, command: CommandObject, settings
         prob = int(value)
         if not 0 <= prob <= 100:
             return await message.reply("Вероятность должна быть в диапазоне 0-100")
-        await settings.set(message.chat.id, "interject_p", prob)
-        return await message.reply(f"Вероятность вмешательства {prob}%")
+        await app_config.set("interject_p", prob)
+        return await message.reply(f"Вероятность вмешательства {prob}% (глобально)")
 
     if not value.isdigit():
         return await message.reply("Кулдаун задаётся целым числом секунд")
     cooldown = int(value)
     if cooldown < 10:
         return await message.reply("Кулдаун должен быть не меньше 10 секунд")
-    await settings.set(message.chat.id, "interject_cooldown", cooldown)
-    return await message.reply(f"Кулдаун вмешательства {cooldown} сек")
+    await app_config.set("interject_cooldown", cooldown)
+    return await message.reply(f"Кулдаун вмешательства {cooldown} сек (глобально)")
 
 
 @router.message(Command("quiet"))
@@ -127,19 +140,29 @@ async def cmd_style(
 
 
 @router.message(Command("length"))
-async def cmd_length(message: types.Message, command: CommandObject, settings: SettingsService):
+async def cmd_length(
+    message: types.Message,
+    command: CommandObject,
+    _settings: SettingsService,
+    app_config: AppConfigService,
+):
     value = (command.args or "").strip()
     if not value.isdigit():
         return await message.reply("Использование: /length число_символов")
     length = int(value)
     if length < 50 or length > 1000:
         return await message.reply("Длина ответа должна быть в диапазоне 50-1000 символов")
-    await settings.set(message.chat.id, "max_length", length)
-    await message.reply(f"Максимальная длина ответа: {length}")
+    await app_config.set("max_length", length)
+    await message.reply(f"Максимальная длина ответа (глобально): {length}")
 
 
 @router.message(Command("context"))
-async def cmd_context(message: types.Message, command: CommandObject, settings: SettingsService):
+async def cmd_context(
+    message: types.Message,
+    command: CommandObject,
+    _settings: SettingsService,
+    app_config: AppConfigService,
+):
     args = (command.args or "").strip().split()
     if len(args) != 2 or not args[1].isdigit():
         return await message.reply(
@@ -153,15 +176,15 @@ async def cmd_context(message: types.Message, command: CommandObject, settings: 
     if key == "max_turns":
         if value < 5 or value > 100:
             return await message.reply("Количество сообщений в контексте должно быть между 5 и 100")
-        await settings.set(message.chat.id, "context_max_turns", value)
-        await message.reply(f"Контекст: последние {value} сообщений")
+        await app_config.set("context_max_turns", value)
+        await message.reply(f"Контекст: последние {value} сообщений (глобально)")
         return
 
     if key == "max_tokens":
         if value < 2000 or value > 60000:
             return await message.reply("Окно контекста должно быть в пределах 2000-60000 токенов")
-        await settings.set(message.chat.id, "context_max_prompt_tokens", value)
-        await message.reply(f"Макс. окно контекста: {value} токенов")
+        await app_config.set("context_max_prompt_tokens", value)
+        await message.reply(f"Макс. окно контекста: {value} токенов (глобально)")
         return
 
     await message.reply(
@@ -193,6 +216,7 @@ QUIET_LABELS = {
 
 def _render_settings(
     conf: dict[str, object],
+    app_conf: dict[str, object],
     style_options: list[tuple[str, str]],
 ) -> tuple[str, InlineKeyboardMarkup]:
     active = bool(conf.get("is_active", True))
@@ -201,7 +225,10 @@ def _render_settings(
     style_label = labels_map.get(style_raw, style_raw)
     quiet_value = conf.get("quiet_hours") or "off"
     quiet_label = QUIET_LABELS.get(quiet_value, quiet_value)
-    interject_p = int(conf.get("interject_p", 0) or 0)
+    interject_p = int(app_conf.get("interject_p", 0) or 0)
+    interject_cooldown = int(app_conf.get("interject_cooldown", 60) or 60)
+    context_turns = int(app_conf.get("context_max_turns", 100) or 100)
+    context_tokens = int(app_conf.get("context_max_prompt_tokens", 32000) or 32000)
     revive_enabled = bool(conf.get("revive_enabled", False))
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
@@ -209,7 +236,10 @@ def _render_settings(
     text = (
         "<b>⚙️ Настройки бота ⚙️</b>\n"
         #f"Стиль: {style_label}\n"
-        #f"Вероятность вмешательства: {interject_p}%\n"
+        #f"Тихие часы: {quiet_label}\n"
+        #f"Вмешательства: {interject_p}% (кулдаун {interject_cooldown}с)\n"
+        #f"Контекст: {context_turns} сообщений, окно {context_tokens} токенов\n"
+        #"<i>Глобальные параметры меняются в админ-панели.</i>"
     )
 
     builder = InlineKeyboardBuilder()
@@ -245,29 +275,36 @@ def _render_settings(
 async def _send_settings(
     message: types.Message,
     conf: dict[str, object],
+    app_conf: dict[str, object],
     personas: StylePromptService,
 ) -> None:
     style_options = await personas.list_styles()
     if not style_options:
         style_options = [("standup", "standup")]
-    text, keyboard = _render_settings(conf, style_options)
+    text, keyboard = _render_settings(conf, app_conf, style_options)
     await message.reply(text, reply_markup=keyboard)
 
 
 async def _edit_settings(
     message: types.Message,
     conf: dict[str, object],
+    app_conf: dict[str, object],
     personas: StylePromptService,
 ) -> None:
     style_options = await personas.list_styles()
     if not style_options:
         style_options = [("standup", "standup")]
-    text, keyboard = _render_settings(conf, style_options)
+    text, keyboard = _render_settings(conf, app_conf, style_options)
     await message.edit_text(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("settings:"))
-async def cb_settings(query: types.CallbackQuery, settings: SettingsService, personas: StylePromptService):
+async def cb_settings(
+    query: types.CallbackQuery,
+    settings: SettingsService,
+    personas: StylePromptService,
+    app_config: AppConfigService,
+):
     chat_id = query.message.chat.id if query.message else None
     if chat_id is None:
         await query.answer()
@@ -280,6 +317,7 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService, per
 
     action = parts[1]
     conf = await settings.get_all(chat_id)
+    app_conf = await app_config.get_all()
     style_options = await personas.list_styles()
     if not style_options:
         style_options = [("standup", "standup")]
@@ -342,4 +380,5 @@ async def cb_settings(query: types.CallbackQuery, settings: SettingsService, per
         await query.answer()
 
     updated = await settings.get_all(chat_id)
-    await _edit_settings(query.message, updated, personas)
+    app_conf = await app_config.get_all()
+    await _edit_settings(query.message, updated, app_conf, personas)

@@ -8,6 +8,7 @@ from ..services.settings import SettingsService
 from ..services.context import ContextService
 from ..services.interjector import InterjectorService
 from ..services.persona import StylePromptService
+from ..services.app_config import AppConfigService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -32,11 +33,13 @@ class ServicesMiddleware(BaseMiddleware):
         context: ContextService,
         interjector: InterjectorService,
         personas: StylePromptService,
+        app_config: AppConfigService,
     ):
         self.settings = settings
         self.context = context
         self.interjector = interjector
         self.personas = personas
+        self.app_config = app_config
 
     async def __call__(
         self,
@@ -48,4 +51,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["context"] = self.context
         data["interjector"] = self.interjector
         data["personas"] = self.personas
+        data["app_config"] = self.app_config
         return await handler(event, data)

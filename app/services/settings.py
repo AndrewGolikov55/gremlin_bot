@@ -12,13 +12,8 @@ from ..models.chat import Chat, ChatSetting
 
 DEFAULTS: Dict[str, Any] = {
     "is_active": True,
-    "interject_p": 5,  # probability 0..100
-    "interject_cooldown": 60,  # seconds
     "quiet_hours": None,  # e.g. "23:00-08:00"
     "style": "standup",  # standup|gopnik|boss|zoomer|jarvis
-    "max_length": 0,  # 0 = без ограничений
-    "context_max_turns": 100,
-    "context_max_prompt_tokens": 32000,
     "revive_enabled": True,
     "revive_after_hours": 48,
 }

@@ -22,6 +22,7 @@ from ..services.llm.ollama import (
 )
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
+from ..services.app_config import AppConfigService
 
 logger = logging.getLogger("interjector")
 
@@ -32,6 +33,7 @@ class InterjectorService:
         *,
         bot: Bot,
         settings: SettingsService,
+        app_config: AppConfigService,
         context: ContextService,
         sessionmaker: async_sessionmaker[AsyncSession],
         redis: Redis,
@@ -39,6 +41,7 @@ class InterjectorService:
     ) -> None:
         self.bot = bot
         self.settings = settings
+        self.app_config = app_config
         self.context = context
         self.sessionmaker = sessionmaker
         self.redis = redis
@@ -52,7 +55,9 @@ class InterjectorService:
         conf: dict[str, object],
         turns: list[tuple[str, str]],
     ) -> None:
-        probability = int(conf.get("interject_p", 0) or 0)
+        app_conf = await self.app_config.get_all()
+
+        probability = int(app_conf.get("interject_p", 0) or 0)
         if probability <= 0:
             return
 
@@ -60,7 +65,7 @@ class InterjectorService:
         if self._is_quiet(conf.get("quiet_hours"), now):
             return
 
-        cooldown = int(conf.get("interject_cooldown", 60) or 60)
+        cooldown = int(app_conf.get("interject_cooldown", 60) or 60)
         if await self._is_on_cooldown(message.chat.id, cooldown, now):
             return
 
@@ -78,7 +83,7 @@ class InterjectorService:
         if not focus_text:
             focus_text = None
 
-        reply_text = await self._generate_reply(conf, turns, focus_text, chat_id=message.chat.id)
+        reply_text = await self._generate_reply(conf, app_conf, turns, focus_text, chat_id=message.chat.id)
         if not reply_text:
             return
 
@@ -97,16 +102,23 @@ class InterjectorService:
 
     async def run_idle_checks(self) -> None:
         now = datetime.utcnow()
+        app_conf = await self.app_config.get_all()
         async with self.sessionmaker() as session:
             result = await session.execute(select(Chat).where(Chat.is_active.is_(True)))
             chats = list(result.scalars())
             for chat in chats:
                 try:
-                    await self._maybe_revive_chat(session, chat, now)
+                    await self._maybe_revive_chat(session, chat, now, app_conf)
                 except Exception:
                     logger.exception("Idle revival failed for chat %s", chat.id)
 
-    async def _maybe_revive_chat(self, session: AsyncSession, chat: Chat, now: datetime) -> None:
+    async def _maybe_revive_chat(
+        self,
+        session: AsyncSession,
+        chat: Chat,
+        now: datetime,
+        app_conf: dict[str, object],
+    ) -> None:
         conf = await self.settings.get_all(chat.id)
         if not conf.get("revive_enabled", False):
             return
@@ -127,8 +139,8 @@ class InterjectorService:
         turns = await self.context.get_recent_turns(session, chat.id, 50)
         style_prompts = await self.personas.get_all()
         system_prompt = build_system_prompt(conf, style_prompts=style_prompts)
-        prompt_tokens = self._prompt_token_limit(conf)
-        context_turns = min(int(conf.get("context_max_turns", 100) or 100), 20)
+        prompt_tokens = self._prompt_token_limit(app_conf)
+        context_turns = min(int(app_conf.get("context_max_turns", 100) or 100), 20)
 
         messages = build_messages(
             system_prompt,
@@ -146,7 +158,7 @@ class InterjectorService:
                 messages,
                 temperature=float(conf.get("temperature", 0.8) or 0.8),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
-                max_tokens=self._max_tokens_from_config(conf),
+                max_tokens=self._max_tokens_from_config(app_conf),
             )
         except OpenRouterRateLimitError as exc:
             logger.warning(
@@ -229,6 +241,7 @@ class InterjectorService:
     async def _generate_reply(
         self,
         conf: dict[str, object],
+        app_conf: dict[str, object],
         turns: Iterable[tuple[str, str]],
         focus_text: str | None,
         *,
@@ -241,8 +254,8 @@ class InterjectorService:
             interject=True,
             style_prompts=style_prompts,
         )
-        max_turns = int(conf.get("context_max_turns", 100) or 100)
-        prompt_tokens = self._prompt_token_limit(conf)
+        max_turns = int(app_conf.get("context_max_turns", 100) or 100)
+        prompt_tokens = self._prompt_token_limit(app_conf)
         messages = build_messages(
             system_prompt,
             list(turns),
@@ -255,7 +268,7 @@ class InterjectorService:
                 messages,
                 temperature=float(conf.get("temperature", 0.8) or 0.8),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
-                max_tokens=self._max_tokens_from_config(conf),
+                max_tokens=self._max_tokens_from_config(app_conf),
             )
         except OpenRouterRateLimitError as exc:
             logger.warning(
@@ -271,8 +284,8 @@ class InterjectorService:
         reply_text = apply_moderation(raw_reply)
         return reply_text.strip() if reply_text else None
 
-    def _max_tokens_from_config(self, conf: dict[str, object]) -> int | None:
-        max_length = conf.get("max_length")
+    def _max_tokens_from_config(self, app_conf: dict[str, object]) -> int | None:
+        max_length = app_conf.get("max_length")
         try:
             value = int(max_length)
         except (TypeError, ValueError):
@@ -281,8 +294,8 @@ class InterjectorService:
             return value
         return None
 
-    def _prompt_token_limit(self, conf: dict[str, object]) -> int | None:
-        raw = conf.get("context_max_prompt_tokens", 32000)
+    def _prompt_token_limit(self, app_conf: dict[str, object]) -> int | None:
+        raw = app_conf.get("context_max_prompt_tokens", 32000)
         try:
             value = int(raw)
         except (TypeError, ValueError):

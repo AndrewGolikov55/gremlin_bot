@@ -16,6 +16,7 @@ from ..models.persona import StylePrompt
 from ..models.user import User
 from ..services.persona import StylePromptService, BASE_STYLE_DATA
 from ..services.settings import SettingsService
+from ..services.app_config import AppConfigService
 
 STYLE_ORDER = ["standup", "gopnik", "boss", "zoomer", "jarvis"]
 BOOTSTRAP_CSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
@@ -26,6 +27,7 @@ def create_admin_router(
     sessionmaker: async_sessionmaker[AsyncSession],
     settings: SettingsService,
     personas: StylePromptService,
+    app_config: AppConfigService,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -62,18 +64,14 @@ def create_admin_router(
             raise HTTPException(status_code=404, detail="Chat not found")
         conf = await settings.get_all(chat_id)
         style_options = await _ensure_style_options(personas)
-        body = _render_chat_settings_body(chat, conf, style_options, token, saved=False)
+        app_conf = await app_config.get_all()
+        body = _render_chat_settings_body(chat, conf, app_conf, style_options, token, saved=False)
         return HTMLResponse(_render_page(f"Чат {chat.id}", token, "chats", body))
 
     @router.post("/chats/{chat_id}", response_class=HTMLResponse)
     async def chat_settings_update(
         chat_id: int,
-        max_length: int = Form(...),
-        context_turns: int = Form(...),
-        context_tokens: int = Form(...),
         style: str = Form(...),
-        probability: int = Form(...),
-        cooldown: int = Form(...),
         revive_enabled: bool = Form(False),
         revive_days: int = Form(2),
         token: str = Depends(require_token),
@@ -83,14 +81,6 @@ def create_admin_router(
         if chat is None:
             raise HTTPException(status_code=404, detail="Chat not found")
 
-        if max_length < 0:
-            max_length = 0
-        elif max_length > 0:
-            max_length = max(50, min(2000, max_length))
-        context_turns = max(5, min(150, context_turns))
-        context_tokens = max(2000, min(60000, context_tokens))
-        probability = max(0, min(100, probability))
-        cooldown = max(10, min(3600, cooldown))
         revive_days = max(1, min(30, revive_days))
         revive_hours = revive_days * 24
 
@@ -99,17 +89,13 @@ def create_admin_router(
         if style not in allowed_styles:
             raise HTTPException(status_code=400, detail="Unknown style persona")
 
-        await settings.set(chat_id, "max_length", max_length)
-        await settings.set(chat_id, "context_max_turns", context_turns)
-        await settings.set(chat_id, "context_max_prompt_tokens", context_tokens)
         await settings.set(chat_id, "style", style)
-        await settings.set(chat_id, "interject_p", probability)
-        await settings.set(chat_id, "interject_cooldown", cooldown)
         await settings.set(chat_id, "revive_enabled", bool(revive_enabled))
         await settings.set(chat_id, "revive_after_hours", revive_hours)
 
         conf = await settings.get_all(chat_id)
-        body = _render_chat_settings_body(chat, conf, style_options, token, saved=True)
+        app_conf = await app_config.get_all()
+        body = _render_chat_settings_body(chat, conf, app_conf, style_options, token, saved=True)
         return HTMLResponse(_render_page(f"Чат {chat.id}", token, "chats", body))
 
     @router.get("/chats/{chat_id}/history", response_class=HTMLResponse)
@@ -149,6 +135,49 @@ def create_admin_router(
         prompts = _merge_style_entries(entries)
         body = _render_style_prompts_body(prompts, token)
         return HTMLResponse(_render_page("Персоны", token, "styles", body))
+
+    @router.get("/config", response_class=HTMLResponse)
+    async def app_config_view(token: str = Depends(require_token)) -> str:
+        conf = await app_config.get_all()
+        body = _render_app_config_body(conf, token)
+        return HTMLResponse(_render_page("Настройки", token, "config", body))
+
+    @router.post("/config", response_class=HTMLResponse)
+    async def app_config_update(
+        context_turns: int = Form(...),
+        max_length: int = Form(...),
+        context_tokens: int = Form(...),
+        interject_p: int = Form(...),
+        interject_cooldown: int = Form(...),
+        token: str = Depends(require_token),
+    ) -> str:
+        errors: list[str] = []
+
+        context_turns = max(5, min(150, context_turns))
+        context_tokens = max(2000, min(60000, context_tokens))
+        interject_p = max(0, min(100, interject_p))
+        interject_cooldown = max(10, min(3600, interject_cooldown))
+
+        if max_length < 0:
+            max_length = 0
+        elif max_length > 0:
+            if max_length < 50:
+                max_length = 50
+            elif max_length > 2000:
+                max_length = 2000
+
+        try:
+            await app_config.set("context_max_turns", context_turns)
+            await app_config.set("max_length", max_length)
+            await app_config.set("context_max_prompt_tokens", context_tokens)
+            await app_config.set("interject_p", interject_p)
+            await app_config.set("interject_cooldown", interject_cooldown)
+        except Exception as exc:
+            errors.append(str(exc))
+
+        conf = await app_config.get_all()
+        body = _render_app_config_body(conf, token, saved=not errors, errors=errors)
+        return HTMLResponse(_render_page("Настройки", token, "config", body))
 
     @router.post("/styles", response_class=HTMLResponse)
     async def style_prompts_update(
@@ -237,6 +266,7 @@ def _build_url(path: str, token: str | None, **params: object) -> str:
 def _render_page(title: str, token: str | None, active: str, body: str) -> str:
     nav_items = [
         ("chats", "Чаты", _build_url("/admin/chats", token)),
+        ("config", "Настройки", _build_url("/admin/config", token)),
         ("styles", "Персоны", _build_url("/admin/styles", token)),
     ]
     nav_html = "".join(
@@ -312,16 +342,11 @@ def _render_chats_body(chats: list[Chat], token: str | None) -> str:
 def _render_chat_settings_body(
     chat: Chat,
     conf: dict[str, object],
+    app_conf: dict[str, object],
     styles: list[tuple[str, str]],
     token: str | None,
     saved: bool,
 ) -> str:
-    max_length_raw = conf.get("max_length", 0)
-    max_length = int(max_length_raw) if max_length_raw is not None else 0
-    context_turns = int(conf.get("context_max_turns", 100) or 100)
-    context_tokens = int(conf.get("context_max_prompt_tokens", 32000) or 32000)
-    probability = int(conf.get("interject_p", 0) or 0)
-    cooldown = int(conf.get("interject_cooldown", 60) or 60)
     revive_enabled = bool(conf.get("revive_enabled", False))
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
@@ -335,6 +360,13 @@ def _render_chat_settings_body(
         for slug, title in styles
     )
 
+    global_settings = (
+        f"<tr><td>Контекст</td><td>{escape(str(app_conf.get('context_max_turns', 100)))} сообщений</td></tr>"
+        f"<tr><td>Макс. длина ответа</td><td>{escape(str(app_conf.get('max_length', 0)))} символов</td></tr>"
+        f"<tr><td>Лимит окна</td><td>{escape(str(app_conf.get('context_max_prompt_tokens', 32000)))} токенов</td></tr>"
+        f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, кулдаун {escape(str(app_conf.get('interject_cooldown', 60)))}с</td></tr>"
+    )
+
     return (
         "<div class='container py-4'>"
         "<div class='d-flex justify-content-between align-items-center mb-3'>"
@@ -344,28 +376,8 @@ def _render_chat_settings_body(
         f"{message}"
         "<form method='post' class='row g-3'>"
         "<div class='col-md-6'>"
-        "<label class='form-label'>Макс. длина ответа (0 = без ограничения)</label>"
-        f"<input class='form-control' type='number' name='max_length' min='0' max='2000' value='{max_length}'>"
-        "</div>"
-        "<div class='col-md-6'>"
-        "<label class='form-label'>Контекст (5-150 сообщений)</label>"
-        f"<input class='form-control' type='number' name='context_turns' min='5' max='150' value='{context_turns}'>"
-        "</div>"
-        "<div class='col-md-6'>"
-        "<label class='form-label'>Лимит окна (токены 2k-60k)</label>"
-        f"<input class='form-control' type='number' name='context_tokens' min='2000' max='60000' value='{context_tokens}'>"
-        "</div>"
-        "<div class='col-md-6'>"
         "<label class='form-label'>Персона</label>"
         f"<select class='form-select' name='style'>{options_html}</select>"
-        "</div>"
-        "<div class='col-md-6'>"
-        "<label class='form-label'>Вероятность вмешательства (0-100%)</label>"
-        f"<input class='form-control' type='number' name='probability' min='0' max='100' value='{probability}'>"
-        "</div>"
-        "<div class='col-md-6'>"
-        "<label class='form-label'>Кулдаун (10-3600 сек)</label>"
-        f"<input class='form-control' type='number' name='cooldown' min='10' max='3600' value='{cooldown}'>"
         "</div>"
         "<div class='col-md-6'>"
         "<label class='form-label'>Оживление через (дней)</label>"
@@ -379,6 +391,14 @@ def _render_chat_settings_body(
         "<button class='btn btn-primary' type='submit'>Сохранить</button>"
         "</div>"
         "</form>"
+        "<div class='card mt-4'>"
+        "<div class='card-header'>Глобальные параметры</div>"
+        "<div class='card-body p-0'>"
+        "<div class='table-responsive mb-0'>"
+        f"<table class='table table-sm table-borderless mb-0'><tbody>{global_settings}</tbody></table>"
+        "</div>"
+        "<div class='p-3 text-muted small'>Изменить можно на вкладке «Настройки».</div>"
+        "</div></div>"
         "</div>"
     )
 
@@ -442,6 +462,64 @@ def _render_history_body(
         f"<p class='text-muted'>Всего сообщений: {total}</p>"
         f"{table}"
         f"{pagination}"
+        "</div>"
+    )
+
+
+def _render_app_config_body(
+    conf: dict[str, object],
+    token: str | None,
+    *,
+    saved: bool = False,
+    errors: list[str] | None = None,
+) -> str:
+    messages = []
+    if saved and not errors:
+        messages.append("<div class='alert alert-success'>Изменения сохранены</div>")
+    if errors:
+        items = "".join(f"<li>{escape(err)}</li>" for err in errors)
+        messages.append(f"<div class='alert alert-danger'><ul class='mb-0'>{items}</ul></div>")
+
+    context_turns = int(conf.get("context_max_turns", 100) or 100)
+    max_length = int(conf.get("max_length", 0) or 0)
+    context_tokens = int(conf.get("context_max_prompt_tokens", 32000) or 32000)
+    interject_p = int(conf.get("interject_p", 0) or 0)
+    interject_cooldown = int(conf.get("interject_cooldown", 60) or 60)
+
+    chats_url = _build_url("/admin/chats", token)
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        "<h1 class='h3 mb-0'>Глобальные настройки</h1>"
+        f"<a class='btn btn-outline-secondary' href='{escape(chats_url)}'>← К чатам</a>"
+        "</div>"
+        + "".join(messages)
+        + "<form method='post' class='row g-3'>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Контекст (5-150 сообщений)</label>"
+        f"<input class='form-control' type='number' name='context_turns' min='5' max='150' value='{context_turns}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Лимит окна (токены 2k-60k)</label>"
+        f"<input class='form-control' type='number' name='context_tokens' min='2000' max='60000' value='{context_tokens}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Макс. длина ответа (0 = без ограничения)</label>"
+        f"<input class='form-control' type='number' name='max_length' min='0' max='2000' value='{max_length}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Вероятность вмешательства (0-100%)</label>"
+        f"<input class='form-control' type='number' name='interject_p' min='0' max='100' value='{interject_p}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Кулдаун вмешательств (10-3600 сек)</label>"
+        f"<input class='form-control' type='number' name='interject_cooldown' min='10' max='3600' value='{interject_cooldown}'>"
+        "</div>"
+        "<div class='col-12'>"
+        "<button class='btn btn-primary' type='submit'>Сохранить</button>"
+        "</div>"
+        "</form>"
         "</div>"
     )
 

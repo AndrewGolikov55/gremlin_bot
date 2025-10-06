@@ -32,6 +32,7 @@ from .services.context import ContextService
 from .services.interjector import InterjectorService
 from .services.settings import SettingsService
 from .services.persona import StylePromptService, BASE_STYLE_DATA
+from .services.app_config import AppConfigService
 
 
 # Metrics
@@ -76,6 +77,7 @@ redis = init_redis()
 # Services
 settings_service = SettingsService(async_sessionmaker, redis)
 context_service = ContextService()
+app_config_service = AppConfigService(async_sessionmaker, redis)
 persona_service = StylePromptService(async_sessionmaker, redis, BASE_STYLE_DATA)
 
 # Aiogram
@@ -95,17 +97,18 @@ dp.callback_query.middleware(DbSessionMiddleware(async_sessionmaker))
 interjector_service = InterjectorService(
     bot=bot,
     settings=settings_service,
+    app_config=app_config_service,
     context=context_service,
     sessionmaker=async_sessionmaker,
     redis=redis,
     personas=persona_service,
 )
-dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service, persona_service))
+dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service, persona_service, app_config_service))
 scheduler = get_scheduler()
 
 
 app = FastAPI(title="Gremlin Bot", version="0.1.0")
-app.include_router(create_admin_router(async_sessionmaker, settings_service, persona_service))
+app.include_router(create_admin_router(async_sessionmaker, settings_service, persona_service, app_config_service))
 app.state.polling_task = None
 app.state.scheduler = None
 
