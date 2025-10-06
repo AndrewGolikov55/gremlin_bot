@@ -84,16 +84,15 @@ async def cmd_unreg(message: types.Message, roulette: RouletteService):
         await message.reply(f"Вас не было в списке участников{suffix}.")
 
 
-@router.message(F.reply_to_message)
+@router.message(
+    F.reply_to_message,
+    F.reply_to_message.from_user.id == F.bot.id,
+    F.reply_to_message.text == PROMPT_TEXT,
+)
 async def handle_custom_title_reply(
     message: types.Message,
     settings: SettingsService,
 ):
-    reply = message.reply_to_message
-    if not reply or reply.from_user is None or reply.from_user.id != message.bot.id:
-        return
-    if PROMPT_TEXT not in (reply.text or ""):
-        return
     chat_id = message.chat.id
     text = (message.text or "").strip()
     if not text or text.lower() in {"reset", "сброс", "отмена"}:

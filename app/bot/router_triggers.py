@@ -75,7 +75,7 @@ async def collect_messages(
         return
 
     is_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
-    is_reply_to_bot = _is_reply(message, bot_user.id)
+    is_reply_to_bot = _is_reply(message, bot_user.id, bot_user.username)
 
     logger.debug(
         "Trigger check chat=%s type=%s mention=%s reply=%s text=%r entities=%s",
@@ -239,11 +239,29 @@ def _is_bot_mentioned(
     return f"@{bot_username}" in text.lower()
 
 
-def _is_reply(message: types.Message, bot_id: int) -> bool:
+def _is_reply(message: types.Message, bot_id: int, bot_username: str | None) -> bool:
     if not message.reply_to_message:
         return False
-    replied = message.reply_to_message.from_user
-    return bool(replied and replied.id == bot_id)
+    replied = message.reply_to_message
+    if replied.from_user and replied.from_user.id == bot_id:
+        return True
+    if replied.from_user and bot_username and replied.from_user.username:
+        if replied.from_user.username.lower() == bot_username.lower():
+            return True
+    # Messages sent via inline mode reference the bot in via_bot
+    if replied.via_bot and replied.via_bot.id == bot_id:
+        return True
+    if replied.via_bot and bot_username and replied.via_bot.username:
+        if replied.via_bot.username.lower() == bot_username.lower():
+            return True
+    # Some chats can substitute sender_chat instead of from_user (e.g. topics or protected content)
+    if replied.sender_chat and replied.sender_chat.id == bot_id:
+        return True
+    if replied.sender_chat and bot_username and replied.sender_chat.username:
+        if replied.sender_chat.username.lower() == bot_username.lower():
+            return True
+    return False
+    return False
 
 
 def _should_reply(is_mention: bool, is_reply: bool, chat_type: ChatType | str | None) -> bool:
