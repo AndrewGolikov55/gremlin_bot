@@ -223,13 +223,62 @@ class RouletteService:
         await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
 
     async def get_stats(self, chat_id: int) -> str:
+        heading_title, monthly, overall = await self._prepare_stats(
+            chat_id,
+            include_monthly=True,
+            include_total=True,
+        )
+        lines = self._build_stats_header(heading_title)
+        lines.extend(self._format_stats("За месяц:", monthly))
+        lines.extend(self._format_stats("За всё время:", overall))
+        return "\n".join(lines)
+
+    async def get_stats_monthly(self, chat_id: int) -> str:
+        heading_title, monthly, _ = await self._prepare_stats(
+            chat_id,
+            include_monthly=True,
+            include_total=False,
+        )
+        lines = self._build_stats_header(heading_title)
+        lines.extend(self._format_stats("За месяц:", monthly))
+        return "\n".join(lines)
+
+    async def get_stats_total(self, chat_id: int) -> str:
+        heading_title, _, overall = await self._prepare_stats(
+            chat_id,
+            include_monthly=False,
+            include_total=True,
+        )
+        lines = self._build_stats_header(heading_title)
+        lines.extend(self._format_stats("За всё время:", overall))
+        return "\n".join(lines)
+
+    async def _prepare_stats(
+        self,
+        chat_id: int,
+        *,
+        include_monthly: bool,
+        include_total: bool,
+    ) -> tuple[
+        str,
+        dict[str, tuple[int, str | None, int]],
+        dict[str, tuple[int, str | None, int]],
+    ]:
         conf = await self.settings.get_all(chat_id)
         today = datetime.now(MoscowTZ)
         month_start = today.replace(day=1).date()
 
         async with self.sessionmaker() as session:
-            monthly = await self._aggregate(session, chat_id, start=month_start)
-            overall = await self._aggregate(session, chat_id)
+            monthly: dict[str, tuple[int, str | None, int]]
+            overall: dict[str, tuple[int, str | None, int]]
+            if include_monthly:
+                monthly = await self._aggregate(session, chat_id, start=month_start)
+            else:
+                monthly = {}
+            if include_total:
+                overall = await self._aggregate(session, chat_id)
+            else:
+                overall = {}
             last_winner = (
                 await session.execute(
                     select(RouletteWinner.title)
@@ -244,11 +293,10 @@ class RouletteService:
         display_map["custom"] = custom_title or "Прозвище"
 
         heading_title = last_winner or display_map.get("custom") or "«Пидор/Скуф/…»"
+        return heading_title, monthly, overall
 
-        lines = ["🏅 Результаты рулетки", f"Текущее звание: {heading_title}"]
-        lines.extend(self._format_stats("За месяц:", monthly))
-        lines.extend(self._format_stats("За всё время:", overall))
-        return "\n".join(lines)
+    def _build_stats_header(self, heading_title: str) -> list[str]:
+        return ["🏅 Результаты рулетки", f"Текущее звание: {heading_title}"]
 
     async def _aggregate(
         self,

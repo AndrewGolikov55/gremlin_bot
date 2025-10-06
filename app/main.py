@@ -229,7 +229,10 @@ async def configure_bot_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="settings", description="Панель настроек"),
         BotCommand(command="roll", description="Запустить рулетку"),
-        BotCommand(command="rollstats", description="Статистика рулетки"),
+        BotCommand(command="rollstats_montly", description="Статистика рулетки за месяц"),
+        BotCommand(command="rollstats_total", description="Статистика рулетки за всё время"),
+        BotCommand(command="reg", description="Зарегистрироваться в рулетке"),
+        BotCommand(command="unreg", description="Выйти из рулетки"),
     ]
 
     await bot.set_my_commands(commands)

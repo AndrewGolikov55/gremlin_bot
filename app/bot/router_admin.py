@@ -240,11 +240,11 @@ def _render_settings(
 
     text = (
         "<b>⚙️ Настройки бота ⚙️</b>\n"
-        f"Стиль: {style_label}\n"
-        f"Тихие часы: {quiet_label}\n"
-        f"Вмешательства: {interject_p}% (кулдаун {interject_cooldown}с)\n"
-        f"Контекст: {context_turns} сообщений, окно {context_tokens} токенов\n"
-        "<i>Глобальные параметры меняются в админ-панели.</i>"
+        #f"Стиль: {style_label}\n"
+        #f"Тихие часы: {quiet_label}\n"
+        #f"Вмешательства: {interject_p}% (кулдаун {interject_cooldown}с)\n"
+        #f"Контекст: {context_turns} сообщений, окно {context_tokens} токенов\n"
+        #"<i>Глобальные параметры меняются в админ-панели.</i>"
     )
 
     builder = InlineKeyboardBuilder()

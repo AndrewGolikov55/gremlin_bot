@@ -25,12 +25,21 @@ async def cmd_roll(
         await message.reply(result.message)
 
 
-@router.message(Command("rollstats"))
-async def cmd_rollstats(message: types.Message, roulette: RouletteService):
+@router.message(Command("rollstats_montly"))
+async def cmd_rollstats_monthly(message: types.Message, roulette: RouletteService):
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
-    stats = await roulette.get_stats(message.chat.id)
+    stats = await roulette.get_stats_monthly(message.chat.id)
+    await message.reply(stats)
+
+
+@router.message(Command("rollstats_total"))
+async def cmd_rollstats_total(message: types.Message, roulette: RouletteService):
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.reply("Команда доступна только в групповых чатах.")
+        return
+    stats = await roulette.get_stats_total(message.chat.id)
     await message.reply(stats)
 
 
