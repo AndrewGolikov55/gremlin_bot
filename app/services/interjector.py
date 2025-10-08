@@ -23,6 +23,7 @@ from ..services.llm.ollama import (
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
+from ..services.usage_limits import UsageLimiter
 
 logger = logging.getLogger("interjector")
 
@@ -38,6 +39,7 @@ class InterjectorService:
         sessionmaker: async_sessionmaker[AsyncSession],
         redis: Redis,
         personas: StylePromptService,
+        usage_limits: UsageLimiter,
     ) -> None:
         self.bot = bot
         self.settings = settings
@@ -46,6 +48,7 @@ class InterjectorService:
         self.sessionmaker = sessionmaker
         self.redis = redis
         self.personas = personas
+        self.usage_limits = usage_limits
         self._cooldown_prefix = "interject:last:"
         self._revive_prefix = "interject:revive:last:"
 
@@ -134,6 +137,10 @@ class InterjectorService:
             return
 
         if await self._recently_revived(chat.id, threshold, now):
+            return
+
+        if not await self._consume_llm_budget(chat.id, app_conf):
+            logger.debug("LLM limit reached for chat %s during revive check", chat.id)
             return
 
         turns = await self.context.get_recent_turns(session, chat.id, 50)
@@ -247,6 +254,11 @@ class InterjectorService:
         *,
         chat_id: int | None = None,
     ) -> str | None:
+        if chat_id is not None and not await self._consume_llm_budget(chat_id, app_conf):
+            if chat_id is not None:
+                logger.debug("LLM limit reached for chat %s during interject", chat_id)
+            return None
+
         style_prompts = await self.personas.get_all()
         system_prompt = build_system_prompt(
             conf,
@@ -293,6 +305,19 @@ class InterjectorService:
         if value and value > 0:
             return value
         return None
+
+    async def _consume_llm_budget(self, chat_id: int | None, app_conf: dict[str, object]) -> bool:
+        if chat_id is None:
+            return True
+        limit_raw = app_conf.get("llm_daily_limit", 0) or 0
+        try:
+            limit = int(limit_raw)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            return True
+        allowed, _, _ = await self.usage_limits.consume(chat_id, [("llm", limit)])
+        return allowed
 
     def _prompt_token_limit(self, app_conf: dict[str, object]) -> int | None:
         raw = app_conf.get("context_max_prompt_tokens", 32000)

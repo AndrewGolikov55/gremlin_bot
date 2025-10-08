@@ -172,6 +172,8 @@ def create_admin_router(
         context_tokens: int = Form(...),
         interject_p: int = Form(...),
         interject_cooldown: int = Form(...),
+        summary_daily_limit: int = Form(...),
+        llm_daily_limit: int = Form(...),
         token: str = Depends(require_token),
     ) -> str:
         errors: list[str] = []
@@ -180,6 +182,8 @@ def create_admin_router(
         context_tokens = max(2000, min(60000, context_tokens))
         interject_p = max(0, min(100, interject_p))
         interject_cooldown = max(10, min(3600, interject_cooldown))
+        summary_daily_limit = max(0, min(20, summary_daily_limit))
+        llm_daily_limit = max(0, min(5000, llm_daily_limit))
 
         if max_length < 0:
             max_length = 0
@@ -195,6 +199,8 @@ def create_admin_router(
             await app_config.set("context_max_prompt_tokens", context_tokens)
             await app_config.set("interject_p", interject_p)
             await app_config.set("interject_cooldown", interject_cooldown)
+            await app_config.set("summary_daily_limit", summary_daily_limit)
+            await app_config.set("llm_daily_limit", llm_daily_limit)
         except Exception as exc:
             errors.append(str(exc))
 
@@ -578,6 +584,8 @@ def _render_app_config_body(
     context_tokens = int(conf.get("context_max_prompt_tokens", 32000) or 32000)
     interject_p = int(conf.get("interject_p", 0) or 0)
     interject_cooldown = int(conf.get("interject_cooldown", 60) or 60)
+    summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
+    llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
 
     chats_url = _build_url("/admin/chats", token)
 
@@ -608,6 +616,14 @@ def _render_app_config_body(
         "<div class='col-md-6'>"
         "<label class='form-label'>Кулдаун вмешательств (10-3600 сек)</label>"
         f"<input class='form-control' type='number' name='interject_cooldown' min='10' max='3600' value='{interject_cooldown}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Сводки в сутки (0 = без ограничения)</label>"
+        f"<input class='form-control' type='number' name='summary_daily_limit' min='0' max='20' value='{summary_daily_limit}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Запросы к модели в сутки (0 = без ограничения)</label>"
+        f"<input class='form-control' type='number' name='llm_daily_limit' min='0' max='5000' value='{llm_daily_limit}'>"
         "</div>"
         "<div class='col-12'>"
         "<button class='btn btn-primary' type='submit'>Сохранить</button>"

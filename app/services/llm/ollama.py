@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import json
 from typing import Iterable, Mapping, Optional
 
 import httpx
 import logging
 from math import inf
+from ...utils.logging import TRACE_LEVEL
 
 
 logger = logging.getLogger(__name__)
@@ -63,6 +65,12 @@ async def generate(
     }
     if max_tokens and max_tokens > 0:
         payload["max_tokens"] = max_tokens
+
+    if logger.isEnabledFor(TRACE_LEVEL):
+        try:
+            logger.log(TRACE_LEVEL, "LLM request payload: %s", json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            logger.log(TRACE_LEVEL, "LLM request payload (repr): %r", payload)
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",

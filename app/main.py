@@ -35,7 +35,9 @@ from .services.settings import SettingsService
 from .services.persona import StylePromptService, BASE_STYLE_DATA
 from .services.app_config import AppConfigService
 from .services.roulette import RouletteService
+from .services.usage_limits import UsageLimiter
 from zoneinfo import ZoneInfo
+from .utils.logging import ensure_trace_level
 
 
 # Metrics
@@ -45,7 +47,9 @@ METRIC_MESSAGES = Counter("bot_messages_total", "Messages sent by bot", registry
 
 
 def setup_logging():
-    level = os.getenv("LOG_LEVEL", "INFO").upper()
+    ensure_trace_level()
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = logging._nameToLevel.get(level_name, logging.INFO)
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
@@ -94,6 +98,7 @@ roulette_service = RouletteService(
     context=context_service,
     personas=persona_service,
 )
+usage_limits_service = UsageLimiter(redis, timezone=ZoneInfo("Europe/Moscow"))
 
 # Routers
 dp.include_router(admin_router)
@@ -114,8 +119,19 @@ interjector_service = InterjectorService(
     sessionmaker=async_sessionmaker,
     redis=redis,
     personas=persona_service,
+    usage_limits=usage_limits_service,
 )
-dp.update.middleware(ServicesMiddleware(settings_service, context_service, interjector_service, persona_service, app_config_service, roulette_service))
+dp.update.middleware(
+    ServicesMiddleware(
+        settings_service,
+        context_service,
+        interjector_service,
+        persona_service,
+        app_config_service,
+        roulette_service,
+        usage_limits_service,
+    )
+)
 scheduler = get_scheduler()
 
 

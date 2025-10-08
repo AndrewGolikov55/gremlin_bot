@@ -19,6 +19,7 @@ from ..services.persona import StylePromptService
 from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
 from ..services.settings import SettingsService
+from ..services.usage_limits import UsageLimiter
 
 
 router = Router(name="fun")
@@ -139,6 +140,7 @@ async def cmd_summary(
     context: ContextService,
     personas: StylePromptService,
     app_config: AppConfigService,
+    usage_limits: UsageLimiter,
 ):
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
@@ -163,6 +165,38 @@ async def cmd_summary(
             max_turns = 100
         max_turns = max(10, min(500, max_turns))
         prompt_token_limit = _resolve_prompt_token_limit(app_conf)
+
+        summary_limit_raw = app_conf.get("summary_daily_limit", 2) or 0
+        llm_limit_raw = app_conf.get("llm_daily_limit", 0) or 0
+        try:
+            summary_limit = int(summary_limit_raw)
+        except (TypeError, ValueError):
+            summary_limit = 0
+        try:
+            llm_limit = int(llm_limit_raw)
+        except (TypeError, ValueError):
+            llm_limit = 0
+
+        requests: list[tuple[str, int]] = []
+        if summary_limit > 0:
+            requests.append(("summary", summary_limit))
+        if llm_limit > 0:
+            requests.append(("llm", llm_limit))
+
+        if requests:
+            allowed, counts, exceeded = await usage_limits.consume(message.chat.id, requests)
+            if not allowed:
+                if "summary" in exceeded:
+                    used = counts.get("summary", summary_limit)
+                    await message.reply(
+                        f"🤖 Лимит сводок на сегодня исчерпан ({used}/{summary_limit})."
+                    )
+                else:
+                    used = counts.get("llm", llm_limit)
+                    await message.reply(
+                        f"🤖 Лимит запросов к модели исчерпан ({used}/{llm_limit}). Попробуй завтра."
+                    )
+                return
 
         turns = await context.get_recent_turns(session, message.chat.id, max_turns)
         if not turns:

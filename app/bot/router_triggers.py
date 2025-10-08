@@ -22,6 +22,7 @@ from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.persona import StylePromptService
+from ..services.usage_limits import UsageLimiter
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ async def collect_messages(
     interjector: InterjectorService,
     personas: StylePromptService,
     app_config: AppConfigService,
+    usage_limits: UsageLimiter,
     bot: Bot,
 ):
     bot_user = await bot.get_me()
@@ -95,6 +97,19 @@ async def collect_messages(
     turns = await context.get_recent_turns(session, message.chat.id, max_turns)
 
     if _should_reply(is_mention, is_reply_to_bot, message.chat.type):
+        llm_limit_raw = app_conf.get("llm_daily_limit", 0) or 0
+        try:
+            llm_limit = int(llm_limit_raw)
+        except (TypeError, ValueError):
+            llm_limit = 0
+        if llm_limit > 0:
+            allowed, counts, _ = await usage_limits.consume(message.chat.id, [("llm", llm_limit)])
+            if not allowed:
+                used = counts.get("llm", llm_limit)
+                await message.reply(
+                    f"🤖 Лимит ответов модели на сегодня исчерпан ({used}/{llm_limit}). Попробуй завтра."
+                )
+                return
         raw_focus = (message.text or message.caption or "").strip()
         focus_text = None
         if raw_focus and (is_reply_to_bot or is_mention):

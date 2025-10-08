@@ -45,6 +45,13 @@ class RollResult:
     message: str
 
 
+@dataclass
+class StatsEntry:
+    user_id: int
+    username: str | None
+    wins: int
+
+
 class RouletteService:
     def __init__(
         self,
@@ -259,26 +266,22 @@ class RouletteService:
         *,
         include_monthly: bool,
         include_total: bool,
-    ) -> tuple[
-        str,
-        dict[str, tuple[int, str | None, int]],
-        dict[str, tuple[int, str | None, int]],
-    ]:
+    ) -> tuple[str, list[StatsEntry], list[StatsEntry]]:
         conf = await self.settings.get_all(chat_id)
         today = datetime.now(MoscowTZ)
         month_start = today.replace(day=1).date()
 
         async with self.sessionmaker() as session:
-            monthly: dict[str, tuple[int, str | None, int]]
-            overall: dict[str, tuple[int, str | None, int]]
+            monthly: list[StatsEntry]
+            overall: list[StatsEntry]
             if include_monthly:
                 monthly = await self._aggregate(session, chat_id, start=month_start)
             else:
-                monthly = {}
+                monthly = []
             if include_total:
                 overall = await self._aggregate(session, chat_id)
             else:
-                overall = {}
+                overall = []
             last_winner = (
                 await session.execute(
                     select(RouletteWinner.title)
@@ -304,40 +307,38 @@ class RouletteService:
         chat_id: int,
         *,
         start: date | None = None,
-    ) -> dict[str, tuple[int, str | None, int]]:
+    ) -> list[StatsEntry]:
+        count_col = func.count().label("cnt")
         stmt = (
             select(
-                RouletteWinner.title_code,
                 RouletteWinner.user_id,
-                RouletteWinner.username,
-                func.count().label("cnt"),
+                func.max(RouletteWinner.username).label("username"),
+                count_col,
             )
             .where(RouletteWinner.chat_id == chat_id)
         )
         if start:
             stmt = stmt.where(RouletteWinner.won_at >= start)
-        stmt = stmt.group_by(RouletteWinner.title_code, RouletteWinner.user_id, RouletteWinner.username)
+        stmt = (
+            stmt.group_by(RouletteWinner.user_id)
+            .order_by(count_col.desc(), RouletteWinner.user_id)
+        )
 
         rows = await session.execute(stmt)
-        data: dict[str, tuple[int, str | None, int]] = {}
-        for title_code, user_id, username, cnt in rows.fetchall():
-            current = data.get(title_code)
-            if current is None or cnt > current[2]:
-                data[title_code] = (user_id, username, cnt)
-        return data
+        return [StatsEntry(user_id=row.user_id, username=row.username, wins=row.cnt) for row in rows]
 
     def _format_stats(
         self,
         header: str,
-        stats: dict[str, tuple[int, str | None, int]],
+        stats: list[StatsEntry],
     ) -> list[str]:
         lines = ["", header]
         if not stats:
             lines.append("— пока пусто")
             return lines
-        for _title_code, (user_id, username, cnt) in stats.items():
-            mention = f"@{username}" if username else f"ID {user_id}"
-            lines.append(f"• {mention} — {cnt}")
+        for entry in stats:
+            mention = f"@{entry.username}" if entry.username else f"ID {entry.user_id}"
+            lines.append(f"• {mention} — {entry.wins}")
         return lines
 
     async def reset_daily_winner(self, chat_id: int) -> None:

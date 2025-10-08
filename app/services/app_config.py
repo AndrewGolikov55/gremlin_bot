@@ -16,6 +16,8 @@ APP_CONFIG_DEFAULTS: Dict[str, Any] = {
     "context_max_prompt_tokens": 32000,
     "interject_p": 5,
     "interject_cooldown": 60,
+    "summary_daily_limit": 2,
+    "llm_daily_limit": 200,
 }
 
 
