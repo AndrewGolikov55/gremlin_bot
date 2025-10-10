@@ -30,7 +30,7 @@ PROMPT_TEXT = "Введите новое прозвище для рулетки 
 DEFAULT_SUMMARY_PROMPT = (
     "Ты — {style_label}. Сделай краткую, но живую сводку последних сообщений в своей манере."
     " Включи атмосферу, ключевые участки разговора и финальный вывод."
-    " Никаких выдуманных фактов и @-упоминаний."
+    " Никаких выдуманных фактов, @-упоминаний и Markdown-форматирования."
 )
 
 DEFAULT_SUMMARY_CLOSING = "Собери одно сообщение по последним {count} сообщениям чата."
@@ -96,8 +96,11 @@ def _split_message(text: str, limit: int = 4096) -> List[str]:
     return chunks
 
 
-def _strip_mentions(text: str) -> str:
-    return re.sub(r"@([\w]{1,32})", r"\1", text)
+def _sanitize_summary_body(text: str) -> str:
+    text = re.sub(r"@([\w]{1,32})", r"\1", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.S)
+    text = re.sub(r"__(.+?)__", r"\1", text, flags=re.S)
+    return text
 
 
 @router.message(Command("roll"))
@@ -265,7 +268,7 @@ async def cmd_summary(
             return
 
         heading = f"<b>Сводка по чату за последние {len(turns)} сообщений</b>"
-        safe_body = escape(_strip_mentions(cleaned))
+        safe_body = escape(_sanitize_summary_body(cleaned))
         full_text = heading + "\n\n" + safe_body
         for chunk in _split_message(full_text):
             await message.reply(chunk, allow_sending_without_reply=True)
