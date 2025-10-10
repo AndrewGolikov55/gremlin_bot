@@ -11,6 +11,17 @@ from ..models.user import User
 from .persona import DEFAULT_STYLE_PROMPTS
 
 
+DEFAULT_CHAT_PROMPT = (
+    "Ты — участник чата. Отвечай строго в рамках роли ниже."
+    " Не раскрывай внутренние рассуждения и не делай преамбул."
+    " Пиши 1–2 коротких предложения обычным текстом."
+)
+
+DEFAULT_INTERJECT_SUFFIX = "Отвечай без приглашения, оставайся в своей роли."
+
+DEFAULT_FOCUS_SUFFIX = 'Вопрос: "{question}". Ответь одним сообщением.'
+
+
 class ContextService:
     """Мининструмент для выборки последних сообщений из чата."""
 
@@ -41,7 +52,7 @@ def build_messages(
     turns: Iterable[Tuple[str, str]],
     max_turns: int = 20,
     max_tokens: int | None = None,
-    closing_text: str | None = "Ответь уместно одним сообщением.",
+    closing_text: str | None = "Ответь одним сообщением.",
 ):
     def _estimate_tokens(text: str) -> int:
         # Простая оценка, чтобы не превышать окно модели (≈4 символа на токен)
@@ -95,31 +106,35 @@ def build_system_prompt(
     *,
     interject: bool = False,
     style_prompts: Mapping[str, str] | None = None,
+    base_prompt: str | None = None,
+    interject_suffix: str | None = None,
+    focus_suffix: str | None = None,
 ) -> str:
     style = str(conf.get("style", "standup"))
     prompts = style_prompts or DEFAULT_STYLE_PROMPTS
     style_block = prompts.get(style, prompts.get("standup", DEFAULT_STYLE_PROMPTS["standup"]))
 
-    base = (
-        "Ты — участник Telegram-чата. "
-        "Отвечай строго в рамках роли, описанной ниже. "
-        "Не выдавай преамбул, дисклеймеров и внутренних рассуждений. "
-        "Старайся отвечать коротко: 1–2 предложения, не более 240 символов. "
-        "Не используй Markdown, LaTeX и спецформатирование — только обычный текст.\n\n"
-        f"{style_block}\n"
-    )
+    base_parts = [(base_prompt or DEFAULT_CHAT_PROMPT).strip()]
+    style_clean = style_block.strip()
+    if style_clean:
+        base_parts.append(style_clean)
+    base = "\n\n".join(base_parts) + "\n"
 
     if interject:
-        base += "\nТы вмешиваешься в диалог без приглашения: отвечай реплаем на выбранное сообщение, сохраняя роль."
+        suffix = (interject_suffix or DEFAULT_INTERJECT_SUFFIX).strip()
+        if suffix:
+            base += "\n" + suffix
 
     if focus_text:
         sanitized = focus_text.strip().replace("\n", " ").replace('"', "'")
         if len(sanitized) > 400:
             sanitized = sanitized[:400] + "…"
-        base += (
-            '\nСейчас тебе задали конкретный вопрос: "'
-            + sanitized
-            + '". Дай прямой, уместный ответ одним сообщением.'
-        )
+        suffix_tpl = (focus_suffix or DEFAULT_FOCUS_SUFFIX).strip()
+        if suffix_tpl:
+            try:
+                addition = suffix_tpl.format(question=sanitized)
+            except KeyError:
+                addition = suffix_tpl
+            base += "\n" + addition
 
     return base

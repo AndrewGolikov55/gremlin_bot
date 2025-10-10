@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from html import escape
 from typing import Dict, List
 
@@ -26,22 +27,13 @@ router = Router(name="fun")
 
 PROMPT_TEXT = "Введите новое прозвище для рулетки (или напишите 'reset' чтобы сбросить)."
 
-SUMMARY_SYSTEM_PROMPT_BASE = """
-Ты — {style_label}. Твоя задача — пересказать историю последней части чата (входящий контекст)
-в стиле, который соответствует твоему характеру.
+DEFAULT_SUMMARY_PROMPT = (
+    "Ты — {style_label}. Сделай краткую, но живую сводку последних сообщений в своей манере."
+    " Включи атмосферу, ключевые участки разговора и финальный вывод."
+    " Никаких выдуманных фактов и @-упоминаний."
+)
 
-Не давай сухой отчёт — оформи это как живой и, главное - краткий рассказ, где чувствуются отношения между участниками чата.
-Главная цель: чтобы человек, который давно не читал чат, понял, кто с кем общался, о чём спорили, и чем всё закончилось. При этом чтобы он не утомился долго читать твою сводку.
-
-Формат:
-1. Краткое введение: что за атмосфера царила в чате (спокойная, токсичная, весёлая и т.п.)
-2. Основная часть — кто что говорил, ключевые темы.
-3. Финальный аккорд — мораль, шутка, вывод или резкое заключение в духе твоего стиля.
-
-Не выдумывай фактов, используй только то, что есть в контексте, но допускается гипербола или стилистическое обрамление.
-Избегай повторов и "воду". Тегай юзернеймы пользователей, которые участвовали в переписке, причём обязательн со знаком @ чтобы они получали уведомление.
-Не используй Markdown, LaTeX и спецформатирование — только обычный текст.
-""".strip()
+DEFAULT_SUMMARY_CLOSING = "Собери одно сообщение по последним {count} сообщениям чата."
 
 SUMMARY_LOCKS: Dict[int, asyncio.Lock] = {}
 
@@ -54,8 +46,12 @@ def _get_summary_lock(chat_id: int) -> asyncio.Lock:
     return lock
 
 
-def _compose_summary_prompt(style_label: str, style_prompt: str) -> str:
-    base = SUMMARY_SYSTEM_PROMPT_BASE.format(style_label=style_label)
+def _compose_summary_prompt(style_label: str, style_prompt: str, *, base_prompt: str | None = None) -> str:
+    template = base_prompt or DEFAULT_SUMMARY_PROMPT
+    try:
+        base = template.format(style_label=style_label)
+    except KeyError:
+        base = template
     if style_prompt:
         return base + "\n\n" + style_prompt
     return base
@@ -98,6 +94,10 @@ def _split_message(text: str, limit: int = 4096) -> List[str]:
         chunks.append(chunk)
         remaining = remaining[split_at:].lstrip("\n ")
     return chunks
+
+
+def _strip_mentions(text: str) -> str:
+    return re.sub(r"@([\w]{1,32})", r"\1", text)
 
 
 @router.message(Command("roll"))
@@ -168,6 +168,8 @@ async def cmd_summary(
 
         summary_limit_raw = app_conf.get("summary_daily_limit", 2) or 0
         llm_limit_raw = app_conf.get("llm_daily_limit", 0) or 0
+        summary_prompt_template = str(app_conf.get("prompt_summary_base") or DEFAULT_SUMMARY_PROMPT)
+        summary_closing_template = str(app_conf.get("prompt_summary_closing") or DEFAULT_SUMMARY_CLOSING)
         try:
             summary_limit = int(summary_limit_raw)
         except (TypeError, ValueError):
@@ -209,11 +211,16 @@ async def cmd_summary(
         style_label = display_map.get(style, display_map.get("standup", style))
         style_prompt = style_prompts.get(style, style_prompts.get("standup", ""))
 
-        system_prompt = _compose_summary_prompt(style_label, style_prompt)
-        closing_text = (
-            "Сделай одну цельную сводку по последним "
-            f"{len(turns)} сообщениям чата. Напоминаю: формат — вводная, основная часть, финальный аккорд."
+        system_prompt = _compose_summary_prompt(
+            style_label,
+            style_prompt,
+            base_prompt=summary_prompt_template,
         )
+        try:
+            closing_text = summary_closing_template.format(count=len(turns))
+        except KeyError:
+            closing_text = summary_closing_template
+        closing_text = closing_text.strip()
         messages_for_llm = build_messages(
             system_prompt,
             turns,
@@ -258,7 +265,7 @@ async def cmd_summary(
             return
 
         heading = f"<b>Сводка по чату за последние {len(turns)} сообщений</b>"
-        safe_body = escape(cleaned)
+        safe_body = escape(_strip_mentions(cleaned))
         full_text = heading + "\n\n" + safe_body
         for chunk in _split_message(full_text):
             await message.reply(chunk, allow_sending_without_reply=True)

@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.chat import Chat
 from ..models.message import Message
 from ..models.user import User
-from ..services.context import ContextService, build_messages, build_system_prompt
+from ..services.context import (
+    ContextService,
+    build_messages,
+    build_system_prompt,
+    DEFAULT_CHAT_PROMPT,
+    DEFAULT_FOCUS_SUFFIX,
+)
 from ..services.interjector import InterjectorService
 from ..services.llm.ollama import (
     OpenRouterError,
@@ -90,6 +96,8 @@ async def collect_messages(
     )
 
     app_conf = await app_config.get_all()
+    base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+    focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
 
     max_turns = int(app_conf.get("context_max_turns", 100) or 100)
     prompt_token_limit = _resolve_prompt_token_limit(app_conf)
@@ -122,6 +130,8 @@ async def collect_messages(
             conf,
             focus_text,
             style_prompts=style_prompts,
+            base_prompt=base_prompt,
+            focus_suffix=focus_suffix,
         )
         messages_for_llm = build_messages(
             system_prompt,

@@ -13,7 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models.chat import Chat
 from ..models.message import Message as DBMessage
-from ..services.context import ContextService, build_messages, build_system_prompt
+from ..services.context import (
+    ContextService,
+    build_messages,
+    build_system_prompt,
+    DEFAULT_CHAT_PROMPT,
+    DEFAULT_INTERJECT_SUFFIX,
+    DEFAULT_FOCUS_SUFFIX,
+)
 from ..services.persona import StylePromptService
 from ..services.llm.ollama import (
     OpenRouterError,
@@ -26,6 +33,9 @@ from ..services.app_config import AppConfigService
 from ..services.usage_limits import UsageLimiter
 
 logger = logging.getLogger("interjector")
+
+
+DEFAULT_REVIVE_CLOSING = "В чате тихо. Напиши короткое сообщение, чтобы оживить разговор."
 
 
 class InterjectorService:
@@ -145,19 +155,22 @@ class InterjectorService:
 
         turns = await self.context.get_recent_turns(session, chat.id, 50)
         style_prompts = await self.personas.get_all()
-        system_prompt = build_system_prompt(conf, style_prompts=style_prompts)
+        base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+        system_prompt = build_system_prompt(
+            conf,
+            style_prompts=style_prompts,
+            base_prompt=base_prompt,
+        )
         prompt_tokens = self._prompt_token_limit(app_conf)
         context_turns = min(int(app_conf.get("context_max_turns", 100) or 100), 20)
+        revive_closing = str(app_conf.get("prompt_revive_closing") or DEFAULT_REVIVE_CLOSING)
 
         messages = build_messages(
             system_prompt,
             turns,
             context_turns,
             prompt_tokens,
-            closing_text=(
-                "В чате давно тишина. Напиши одно лаконичное сообщение, чтобы оживить разговор,"
-                " задай интересный вопрос или предложи тему."
-            ),
+            closing_text=revive_closing,
         )
 
         try:
@@ -259,12 +272,18 @@ class InterjectorService:
                 logger.debug("LLM limit reached for chat %s during interject", chat_id)
             return None
 
+        base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+        interject_suffix = str(app_conf.get("prompt_chat_interject_suffix") or DEFAULT_INTERJECT_SUFFIX)
+        focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
         style_prompts = await self.personas.get_all()
         system_prompt = build_system_prompt(
             conf,
             focus_text,
             interject=True,
             style_prompts=style_prompts,
+            base_prompt=base_prompt,
+            interject_suffix=interject_suffix,
+            focus_suffix=focus_suffix,
         )
         max_turns = int(app_conf.get("context_max_turns", 100) or 100)
         prompt_tokens = self._prompt_token_limit(app_conf)

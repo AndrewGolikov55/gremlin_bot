@@ -174,6 +174,12 @@ def create_admin_router(
         interject_cooldown: int = Form(...),
         summary_daily_limit: int = Form(...),
         llm_daily_limit: int = Form(...),
+        prompt_chat_base: str = Form(...),
+        prompt_chat_interject_suffix: str = Form(...),
+        prompt_focus_suffix: str = Form(...),
+        prompt_summary_base: str = Form(...),
+        prompt_summary_closing: str = Form(...),
+        prompt_revive_closing: str = Form(...),
         token: str = Depends(require_token),
     ) -> str:
         errors: list[str] = []
@@ -184,6 +190,13 @@ def create_admin_router(
         interject_cooldown = max(10, min(3600, interject_cooldown))
         summary_daily_limit = max(0, min(20, summary_daily_limit))
         llm_daily_limit = max(0, min(5000, llm_daily_limit))
+
+        prompt_chat_base = prompt_chat_base.strip()
+        prompt_chat_interject_suffix = prompt_chat_interject_suffix.strip()
+        prompt_focus_suffix = prompt_focus_suffix.strip()
+        prompt_summary_base = prompt_summary_base.strip()
+        prompt_summary_closing = prompt_summary_closing.strip()
+        prompt_revive_closing = prompt_revive_closing.strip()
 
         if max_length < 0:
             max_length = 0
@@ -201,6 +214,12 @@ def create_admin_router(
             await app_config.set("interject_cooldown", interject_cooldown)
             await app_config.set("summary_daily_limit", summary_daily_limit)
             await app_config.set("llm_daily_limit", llm_daily_limit)
+            await app_config.set("prompt_chat_base", prompt_chat_base)
+            await app_config.set("prompt_chat_interject_suffix", prompt_chat_interject_suffix)
+            await app_config.set("prompt_focus_suffix", prompt_focus_suffix)
+            await app_config.set("prompt_summary_base", prompt_summary_base)
+            await app_config.set("prompt_summary_closing", prompt_summary_closing)
+            await app_config.set("prompt_revive_closing", prompt_revive_closing)
         except Exception as exc:
             errors.append(str(exc))
 
@@ -586,6 +605,12 @@ def _render_app_config_body(
     interject_cooldown = int(conf.get("interject_cooldown", 60) or 60)
     summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
+    prompt_chat_base = str(conf.get("prompt_chat_base", ""))
+    prompt_chat_interject_suffix = str(conf.get("prompt_chat_interject_suffix", ""))
+    prompt_focus_suffix = str(conf.get("prompt_focus_suffix", ""))
+    prompt_summary_base = str(conf.get("prompt_summary_base", ""))
+    prompt_summary_closing = str(conf.get("prompt_summary_closing", ""))
+    prompt_revive_closing = str(conf.get("prompt_revive_closing", ""))
 
     chats_url = _build_url("/admin/chats", token)
 
@@ -624,6 +649,30 @@ def _render_app_config_body(
         "<div class='col-md-6'>"
         "<label class='form-label'>Запросы к модели в сутки (0 = без ограничения)</label>"
         f"<input class='form-control' type='number' name='llm_daily_limit' min='0' max='5000' value='{llm_daily_limit}'>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Базовый системный промт</label>"
+        f"<textarea class='form-control' name='prompt_chat_base' rows='3'>{escape(prompt_chat_base)}</textarea>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Дополнение для внезапных ответов</label>"
+        f"<textarea class='form-control' name='prompt_chat_interject_suffix' rows='2'>{escape(prompt_chat_interject_suffix)}</textarea>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Фокус-подсказка</label>"
+        f"<textarea class='form-control' name='prompt_focus_suffix' rows='2'>{escape(prompt_focus_suffix)}</textarea>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Промт для сводки</label>"
+        f"<textarea class='form-control' name='prompt_summary_base' rows='3'>{escape(prompt_summary_base)}</textarea>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Завершающая фраза сводки</label>"
+        f"<textarea class='form-control' name='prompt_summary_closing' rows='2'>{escape(prompt_summary_closing)}</textarea>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Промт оживления тихого чата</label>"
+        f"<textarea class='form-control' name='prompt_revive_closing' rows='2'>{escape(prompt_revive_closing)}</textarea>"
         "</div>"
         "<div class='col-12'>"
         "<button class='btn btn-primary' type='submit'>Сохранить</button>"

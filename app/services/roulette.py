@@ -16,7 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..models.chat import Chat
 from ..models.roulette import RouletteWinner, RouletteParticipant
 from ..models.chat import Chat
-from ..services.context import ContextService, build_messages, build_system_prompt
+from ..services.context import (
+    ContextService,
+    build_messages,
+    build_system_prompt,
+    DEFAULT_CHAT_PROMPT,
+    DEFAULT_FOCUS_SUFFIX,
+)
 from ..services.llm.ollama import (
     OpenRouterError,
     OpenRouterRateLimitError,
@@ -204,7 +210,15 @@ class RouletteService:
             + title_display
             + "'. Подогрей интригу, но не раскрывай имя."
         )
-        system_prompt = build_system_prompt(conf, focus_text=focus_text, style_prompts=style_prompts)
+        base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+        focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
+        system_prompt = build_system_prompt(
+            conf,
+            focus_text=focus_text,
+            style_prompts=style_prompts,
+            base_prompt=base_prompt,
+            focus_suffix=focus_suffix,
+        )
         messages = build_messages(
             system_prompt,
             turns,
@@ -337,7 +351,7 @@ class RouletteService:
             lines.append("— пока пусто")
             return lines
         for entry in stats:
-            mention = f"@{entry.username}" if entry.username else f"ID {entry.user_id}"
+            mention = entry.username if entry.username else f"ID {entry.user_id}"
             lines.append(f"• {mention} — {entry.wins}")
         return lines
 
