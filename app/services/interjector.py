@@ -26,11 +26,13 @@ from ..services.llm.ollama import (
     OpenRouterError,
     OpenRouterRateLimitError,
     generate as llm_generate,
+    resolve_llm_options,
 )
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.usage_limits import UsageLimiter
+from ..utils.llm import resolve_temperature
 
 logger = logging.getLogger("interjector")
 
@@ -165,6 +167,7 @@ class InterjectorService:
         context_turns = min(int(app_conf.get("context_max_turns", 100) or 100), 20)
         revive_closing = str(app_conf.get("prompt_revive_closing") or DEFAULT_REVIVE_CLOSING)
 
+        provider, fallback_enabled = resolve_llm_options(app_conf)
         messages = build_messages(
             system_prompt,
             turns,
@@ -176,9 +179,11 @@ class InterjectorService:
         try:
             raw_reply = await llm_generate(
                 messages,
-                temperature=float(conf.get("temperature", 0.8) or 0.8),
+                temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 max_tokens=self._max_tokens_from_config(app_conf),
+                provider=provider,
+                fallback_enabled=fallback_enabled,
             )
         except OpenRouterRateLimitError as exc:
             logger.warning(
@@ -294,12 +299,16 @@ class InterjectorService:
             prompt_tokens,
         )
 
+        provider, fallback_enabled = resolve_llm_options(app_conf)
+
         try:
             raw_reply = await llm_generate(
                 messages,
-                temperature=float(conf.get("temperature", 0.8) or 0.8),
+                temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 max_tokens=self._max_tokens_from_config(app_conf),
+                provider=provider,
+                fallback_enabled=fallback_enabled,
             )
         except OpenRouterRateLimitError as exc:
             logger.warning(

@@ -1,4 +1,5 @@
 aiogram>=3.3.0,<4.0.0
+aiohttp-socks>=0.8
 fastapi>=0.111
 uvicorn[standard]>=0.27
 SQLAlchemy>=2.0
@@ -6,7 +7,7 @@ asyncpg>=0.29
 alembic>=1.13
 redis>=5.0
 apscheduler>=3.10
-httpx>=0.26
+httpx[socks]>=0.26
 prometheus-client>=0.20
 pydantic>=2.7
 python-multipart

@@ -20,6 +20,7 @@ from ..services.persona import StylePromptService, BASE_STYLE_DATA
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
+from ..utils.llm import resolve_temperature
 
 STYLE_ORDER = ["standup", "gopnik", "boss", "zoomer", "jarvis"]
 BOOTSTRAP_CSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
@@ -79,6 +80,7 @@ def create_admin_router(
     async def chat_settings_update(
         chat_id: int,
         style: str = Form(...),
+        temperature: float = Form(...),
         revive_enabled: bool = Form(False),
         revive_days: int = Form(2),
         token: str = Depends(require_token),
@@ -96,13 +98,36 @@ def create_admin_router(
         if style not in allowed_styles:
             raise HTTPException(status_code=400, detail="Unknown style persona")
 
+        notices: list[str] = []
+        temp_value = float(temperature)
+        if temp_value != temp_value:  # NaN
+            temp_value = 1.0
+            notices.append("Температура сброшена к 1.0 — значение должно быть числом.")
+        if temp_value < 0.0:
+            temp_value = 0.0
+            notices.append("Температура ограничена диапазоном 0.0–2.0.")
+        elif temp_value > 2.0:
+            temp_value = 2.0
+            notices.append("Температура ограничена диапазоном 0.0–2.0.")
+        temp_value = round(temp_value, 2)
+
         await settings.set(chat_id, "style", style)
         await settings.set(chat_id, "revive_enabled", bool(revive_enabled))
         await settings.set(chat_id, "revive_after_hours", revive_hours)
+        await settings.set(chat_id, "temperature", temp_value)
 
         conf = await settings.get_all(chat_id)
         app_conf = await app_config.get_all()
-        body = _render_chat_settings_body(chat, conf, app_conf, style_options, token, saved=True)
+        note_text = " ".join(notices) if notices else None
+        body = _render_chat_settings_body(
+            chat,
+            conf,
+            app_conf,
+            style_options,
+            token,
+            saved=True,
+            note=note_text,
+        )
         return HTMLResponse(_render_page(f"Чат {chat.id}", token, "chats", body))
 
     @router.post("/chats/{chat_id}/roulette/reset", response_class=HTMLResponse)
@@ -174,6 +199,8 @@ def create_admin_router(
         interject_cooldown: int = Form(...),
         summary_daily_limit: int = Form(...),
         llm_daily_limit: int = Form(...),
+        llm_provider: str = Form(...),
+        llm_openai_censorship_fallback: bool = Form(False),
         prompt_chat_base: str = Form(...),
         prompt_chat_interject_suffix: str = Form(...),
         prompt_focus_suffix: str = Form(...),
@@ -198,6 +225,11 @@ def create_admin_router(
         prompt_summary_closing = prompt_summary_closing.strip()
         prompt_revive_closing = prompt_revive_closing.strip()
 
+        provider_value = (llm_provider or "").strip().lower()
+        if provider_value not in {"openrouter", "openai"}:
+            errors.append("Выберите корректного провайдера LLM.")
+        fallback_value = bool(llm_openai_censorship_fallback)
+
         if max_length < 0:
             max_length = 0
         elif max_length > 0:
@@ -214,6 +246,9 @@ def create_admin_router(
             await app_config.set("interject_cooldown", interject_cooldown)
             await app_config.set("summary_daily_limit", summary_daily_limit)
             await app_config.set("llm_daily_limit", llm_daily_limit)
+            if provider_value in {"openrouter", "openai"}:
+                await app_config.set("llm_provider", provider_value)
+                await app_config.set("llm_openai_censorship_fallback", fallback_value)
             await app_config.set("prompt_chat_base", prompt_chat_base)
             await app_config.set("prompt_chat_interject_suffix", prompt_chat_interject_suffix)
             await app_config.set("prompt_focus_suffix", prompt_focus_suffix)
@@ -460,6 +495,10 @@ def _render_chat_settings_body(
     style_current = str(conf.get("style", styles[0][0] if styles else "standup"))
     custom_title = conf.get("roulette_custom_title")
     title_label = custom_title if custom_title else "по умолчанию"
+    temperature_value = resolve_temperature(conf)
+    temperature_str = f"{temperature_value:.2f}".rstrip("0").rstrip(".")
+    if not temperature_str:
+        temperature_str = "0"
 
     alerts = []
     if saved:
@@ -493,6 +532,10 @@ def _render_chat_settings_body(
         "<div class='col-md-6'>"
         "<label class='form-label'>Персона</label>"
         f"<select class='form-select' name='style'>{options_html}</select>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Температура модели (0.0–2.0)</label>"
+        f"<input class='form-control' type='number' name='temperature' min='0' max='2' step='0.01' value='{temperature_str}' required>"
         "</div>"
         "<div class='col-md-6'>"
         "<label class='form-label'>Оживление через (дней)</label>"
@@ -605,6 +648,8 @@ def _render_app_config_body(
     interject_cooldown = int(conf.get("interject_cooldown", 60) or 60)
     summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
+    llm_provider = str(conf.get("llm_provider", "openrouter") or "openrouter")
+    fallback_enabled = bool(conf.get("llm_openai_censorship_fallback", False))
     prompt_chat_base = str(conf.get("prompt_chat_base", ""))
     prompt_chat_interject_suffix = str(conf.get("prompt_chat_interject_suffix", ""))
     prompt_focus_suffix = str(conf.get("prompt_focus_suffix", ""))
@@ -613,6 +658,14 @@ def _render_app_config_body(
     prompt_revive_closing = str(conf.get("prompt_revive_closing", ""))
 
     chats_url = _build_url("/admin/chats", token)
+    provider_options = [
+        ("openrouter", "OpenRouter (универсальная прокси)"),
+        ("openai", "OpenAI (ChatGPT)"),
+    ]
+    provider_options_html = "".join(
+        f"<option value='{escape(value)}'{' selected' if value == llm_provider else ''}>{escape(label)}</option>"
+        for value, label in provider_options
+    )
 
     return (
         "<div class='container py-4'>"
@@ -649,6 +702,16 @@ def _render_app_config_body(
         "<div class='col-md-6'>"
         "<label class='form-label'>Запросы к модели в сутки (0 = без ограничения)</label>"
         f"<input class='form-control' type='number' name='llm_daily_limit' min='0' max='5000' value='{llm_daily_limit}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Провайдер LLM</label>"
+        f"<select class='form-select' name='llm_provider'>{provider_options_html}</select>"
+        "</div>"
+        "<div class='col-md-6 d-flex align-items-end'>"
+        "<div class='form-check form-switch'>"
+        f"<input class='form-check-input' type='checkbox' name='llm_openai_censorship_fallback' value='1'{' checked' if fallback_enabled else ''}>"
+        "<label class='form-check-label'>Автоматический fallback между OpenAI и OpenRouter</label>"
+        "</div>"
         "</div>"
         "<div class='col-12'>"
         "<label class='form-label'>Базовый системный промт</label>"

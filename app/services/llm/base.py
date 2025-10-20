@@ -8,9 +8,8 @@ class LLMService:
         self,
         messages: List[Mapping[str, str]],
         *,
-        temperature: float = 0.8,
+        temperature: float = 1.0,
         top_p: float = 0.9,
         max_tokens: int = 400,
     ) -> str:
         raise NotImplementedError
-

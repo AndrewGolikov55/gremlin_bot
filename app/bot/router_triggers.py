@@ -23,12 +23,14 @@ from ..services.llm.ollama import (
     OpenRouterError,
     OpenRouterRateLimitError,
     generate as llm_generate,
+    resolve_llm_options,
 )
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.persona import StylePromptService
 from ..services.usage_limits import UsageLimiter
+from ..utils.llm import resolve_temperature
 
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,7 @@ async def collect_messages(
     )
 
     app_conf = await app_config.get_all()
+    provider, fallback_enabled = resolve_llm_options(app_conf)
     base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
     focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
 
@@ -154,8 +157,10 @@ async def collect_messages(
             raw_reply = await llm_generate(
                 messages_for_llm,
                 max_tokens=max_tokens,
-                temperature=float(conf.get("temperature", 0.8) or 0.8),
+                temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
+                provider=provider,
+                fallback_enabled=fallback_enabled,
             )
         except OpenRouterRateLimitError as exc:
             wait_hint = ""
@@ -167,6 +172,11 @@ async def collect_messages(
             await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
             return
         except Exception:
+            logger.exception(
+                "Unexpected error while generating LLM reply (provider=%s fallback=%s)",
+                provider,
+                fallback_enabled,
+            )
             await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
             return
 

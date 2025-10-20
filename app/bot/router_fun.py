@@ -14,6 +14,7 @@ from ..services.llm.ollama import (
     OpenRouterError,
     OpenRouterRateLimitError,
     generate as llm_generate,
+    resolve_llm_options,
 )
 from ..services.moderation import apply_moderation
 from ..services.persona import StylePromptService
@@ -21,6 +22,7 @@ from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
 from ..services.settings import SettingsService
 from ..services.usage_limits import UsageLimiter
+from ..utils.llm import resolve_temperature
 
 
 router = Router(name="fun")
@@ -161,6 +163,7 @@ async def cmd_summary(
 
     async with lock:
         app_conf = await app_config.get_all()
+        provider, fallback_enabled = resolve_llm_options(app_conf)
         max_turns_raw = app_conf.get("context_max_turns", 100) or 100
         try:
             max_turns = int(max_turns_raw)
@@ -246,8 +249,10 @@ async def cmd_summary(
             summary_text = await llm_generate(
                 messages_for_llm,
                 max_tokens=max_answer_tokens,
-                temperature=float(conf.get("temperature", 0.8) or 0.8),
+                temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
+                provider=provider,
+                fallback_enabled=fallback_enabled,
             )
         except OpenRouterRateLimitError as exc:
             wait_hint = ""
@@ -259,6 +264,11 @@ async def cmd_summary(
             await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
             return
         except Exception:
+            logger.exception(
+                "Unexpected error while generating summary (provider=%s fallback=%s)",
+                provider,
+                fallback_enabled,
+            )
             await message.reply("🤖 Не удалось подготовить сводку.")
             return
 

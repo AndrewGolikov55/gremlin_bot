@@ -11,6 +11,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, g
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import (
     BotCommand,
@@ -38,6 +39,7 @@ from .services.roulette import RouletteService
 from .services.usage_limits import UsageLimiter
 from zoneinfo import ZoneInfo
 from .utils.logging import ensure_trace_level
+from .utils.proxy import get_proxy_url
 
 
 # Metrics
@@ -82,7 +84,12 @@ engine, async_sessionmaker = init_engine_and_sessionmaker()
 redis = init_redis()
 
 # Aiogram
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+_proxy_url = get_proxy_url(prefer_plain=True)
+if _proxy_url:
+    bot_session = AiohttpSession(proxy=_proxy_url)
+    bot = Bot(token=BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+else:
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # Services

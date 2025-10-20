@@ -27,11 +27,13 @@ from ..services.llm.ollama import (
     OpenRouterError,
     OpenRouterRateLimitError,
     generate as llm_generate,
+    resolve_llm_options,
 )
 from ..services.moderation import apply_moderation
 from ..services.persona import StylePromptService
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
+from ..utils.llm import resolve_temperature
 
 
 logger = logging.getLogger("roulette")
@@ -43,6 +45,34 @@ TITLE_CHOICES = [
     ("beauty", "Красавчик"),
     ("clown", "Клоун"),
 ]
+
+ANNOUNCE_HEADLINES: dict[str, list[str]] = {
+    "standup": [
+        "🎰 {style_display_cap} прогревает зал — вот-вот узнаем, кто заберёт «{title}».",
+        "🎰 {style_display_cap} уже готовит панчлайн — титул «{title}» висит в воздухе.",
+    ],
+    "gopnik": [
+        "🎰 {style_display_cap} с подъезда держит интригу — ща решим, кто хапнет «{title}».",
+        "🎰 {style_display} щёлкает семки и подмигивает: «{title}» вот-вот упадёт кому-то на плечи.",
+    ],
+    "boss": [
+        "🎰 {style_display_cap} составил протокол — через минуту объявим владельца «{title}».",
+        "🎰 KPI выставлены: {style_display_cap} проверяет, кто заслужил «{title}».",
+    ],
+    "zoomer": [
+        "🎰 {style_display_cap} поднимает хайп — скоро узнаем, кто будет flex'ить «{title}».",
+        "🎰 {style_display_cap} ловит вайб: «{title}» вот-вот станет чьим-то бустом.",
+    ],
+    "jarvis": [
+        "🎰 {style_display_cap} сверяет протоколы — титул «{title}» почти распределён.",
+        "🎰 {style_display_cap} запускает церемонию: последняя проверка перед присвоением «{title}».",
+    ],
+    "default": [
+        "🎰 {style_display_cap} держит интригу — совсем скоро объявим владельца «{title}».",
+        "🎰 Титул «{title}» на кону, {style_display} уже шепчет закулисные слухи.",
+        "🎰 Вся команда смотрит на {style_display} — кто поднимет «{title}»?",
+    ],
+}
 
 
 @dataclass
@@ -190,6 +220,21 @@ class RouletteService:
             return "custom", str(custom)
         return random.choice(TITLE_CHOICES)
 
+    def _build_headline(self, style: str, style_display: str | None, title_display: str) -> str:
+        templates = ANNOUNCE_HEADLINES.get(style)
+        if not templates:
+            templates = ANNOUNCE_HEADLINES["default"]
+        style_clean = (style_display or "").strip()
+        if not style_clean:
+            style_clean = "персона"
+        style_cap = style_clean[0].upper() + style_clean[1:] if style_clean else "Персона"
+        template = random.choice(templates if templates else ANNOUNCE_HEADLINES["default"])
+        return template.format(
+            title=title_display,
+            style_display=style_clean,
+            style_display_cap=style_cap,
+        )
+
     async def _announce(
         self,
         chat_id: int,
@@ -201,6 +246,9 @@ class RouletteService:
         conf = await self.settings.get_all(chat_id)
         app_conf = await self.app_config.get_all()
         style_prompts = await self.personas.get_all()
+        display_map = await self.personas.get_display_map()
+        style_key = str(conf.get("style", "standup"))
+        provider, fallback_enabled = resolve_llm_options(app_conf)
 
         max_turns = int(app_conf.get("context_max_turns", 100) or 100)
         async with self.sessionmaker() as session:
@@ -228,12 +276,15 @@ class RouletteService:
 
         intrigue = await llm_generate(
             messages,
-            temperature=float(conf.get("temperature", 0.8) or 0.8),
+            temperature=resolve_temperature(conf),
             top_p=float(conf.get("top_p", 0.9) or 0.9),
             max_tokens=int(app_conf.get("max_length", 200) or 200),
+            provider=provider,
+            fallback_enabled=fallback_enabled,
         )
         intrigue_clean = apply_moderation(intrigue).strip()
-        headline = f"🎰 Сегодня на кону звание «{title_display}»!"
+        style_display = display_map.get(style_key, display_map.get("standup", style_key))
+        headline = self._build_headline(style_key, style_display, title_display)
         final_intrigue = f"{headline} {intrigue_clean}" if intrigue_clean else headline
         await self.bot.send_message(chat_id, final_intrigue)
 
@@ -242,6 +293,7 @@ class RouletteService:
         mention = f"<a href='tg://user?id={user_id}'>{escape_html(username) if username else 'победитель'}</a>"
         final_message = f"🏆 Звание «{title_display}» достаётся {mention}!"
         await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
+
 
     async def get_stats(self, chat_id: int) -> str:
         heading_title, monthly, overall = await self._prepare_stats(

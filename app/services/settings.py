@@ -16,6 +16,7 @@ DEFAULTS: Dict[str, Any] = {
     "style": "standup",  # standup|gopnik|boss|zoomer|jarvis
     "revive_enabled": True,
     "revive_after_hours": 48,
+    "temperature": 1.0,
 }
 
 
