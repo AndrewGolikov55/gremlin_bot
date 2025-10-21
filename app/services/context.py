@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.message import Message
 from ..models.user import User
-from .persona import DEFAULT_STYLE_PROMPTS
+from .persona import DEFAULT_STYLE_PROMPTS, DEFAULT_STYLE_KEY
 
 
 DEFAULT_CHAT_PROMPT = (
@@ -110,9 +110,13 @@ def build_system_prompt(
     interject_suffix: str | None = None,
     focus_suffix: str | None = None,
 ) -> str:
-    style = str(conf.get("style", "standup"))
+    style = str(conf.get("style", DEFAULT_STYLE_KEY))
     prompts = style_prompts or DEFAULT_STYLE_PROMPTS
-    style_block = prompts.get(style, prompts.get("standup", DEFAULT_STYLE_PROMPTS["standup"]))
+    default_prompt = prompts.get(
+        DEFAULT_STYLE_KEY,
+        DEFAULT_STYLE_PROMPTS.get(DEFAULT_STYLE_KEY, DEFAULT_STYLE_PROMPTS.get("standup", "")),
+    )
+    style_block = prompts.get(style, default_prompt)
 
     base_parts = [(base_prompt or DEFAULT_CHAT_PROMPT).strip()]
     style_clean = style_block.strip()

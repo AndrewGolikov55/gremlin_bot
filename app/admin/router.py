@@ -16,13 +16,13 @@ from ..models.chat import Chat
 from ..models.message import Message
 from ..models.persona import StylePrompt
 from ..models.user import User
-from ..services.persona import StylePromptService, BASE_STYLE_DATA
+from ..services.persona import StylePromptService, BASE_STYLE_DATA, DEFAULT_STYLE_KEY
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
 from ..utils.llm import resolve_temperature
 
-STYLE_ORDER = ["standup", "gopnik", "boss", "zoomer", "jarvis"]
+STYLE_ORDER = [DEFAULT_STYLE_KEY, "standup", "boss", "zoomer", "jarvis"]
 BOOTSTRAP_CSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
 BOOTSTRAP_JS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
 
@@ -492,9 +492,9 @@ def _render_chat_settings_body(
     revive_enabled = bool(conf.get("revive_enabled", False))
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
-    style_current = str(conf.get("style", styles[0][0] if styles else "standup"))
+    style_current = str(conf.get("style", styles[0][0] if styles else DEFAULT_STYLE_KEY))
     custom_title = conf.get("roulette_custom_title")
-    title_label = custom_title if custom_title else "по умолчанию"
+    title_label = custom_title if custom_title else "скуф"
     temperature_value = resolve_temperature(conf)
     temperature_str = f"{temperature_value:.2f}".rstrip("0").rstrip(".")
     if not temperature_str:

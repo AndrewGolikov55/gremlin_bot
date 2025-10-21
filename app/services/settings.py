@@ -13,7 +13,7 @@ from ..models.chat import Chat, ChatSetting
 DEFAULTS: Dict[str, Any] = {
     "is_active": True,
     "quiet_hours": None,  # e.g. "23:00-08:00"
-    "style": "standup",  # standup|gopnik|boss|zoomer|jarvis
+    "style": "gopnik",  # gopnik|standup|boss|zoomer|jarvis
     "revive_enabled": True,
     "revive_after_hours": 48,
     "temperature": 1.0,

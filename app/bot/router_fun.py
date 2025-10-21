@@ -17,7 +17,7 @@ from ..services.llm.ollama import (
     resolve_llm_options,
 )
 from ..services.moderation import apply_moderation
-from ..services.persona import StylePromptService
+from ..services.persona import StylePromptService, DEFAULT_STYLE_KEY
 from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
 from ..services.settings import SettingsService
@@ -27,7 +27,10 @@ from ..utils.llm import resolve_temperature
 
 router = Router(name="fun")
 
-PROMPT_TEXT = "Введите новое прозвище для рулетки (или напишите 'reset' чтобы сбросить)."
+PROMPT_TEXT = "Отправьте ответ на это сообщение для установки нового прозвища для рулетки (или напишите 'reset' чтобы сбросить)."
+START_PRIVATE_RESPONSE = (
+    "👋 Я Gremlin, оживляю групповые чаты. Добавь меня в группу с друзьями чтобы начать."
+)
 
 DEFAULT_SUMMARY_PROMPT = (
     "Ты — {style_label}. Сделай краткую, но живую сводку последних сообщений в своей манере."
@@ -137,6 +140,13 @@ async def cmd_rollstats_total(message: types.Message, roulette: RouletteService)
     await message.reply(stats)
 
 
+@router.message(Command("start"))
+async def cmd_start(message: types.Message):
+    if message.chat.type != "private":
+        return
+    await message.reply(START_PRIVATE_RESPONSE)
+
+
 @router.message(Command("summary"))
 async def cmd_summary(
     message: types.Message,
@@ -211,11 +221,13 @@ async def cmd_summary(
             await message.reply("Нечего пересказывать: история пуста.")
             return
 
-        style = str(conf.get("style", "standup"))
+        style = str(conf.get("style", DEFAULT_STYLE_KEY))
         display_map = await personas.get_display_map()
         style_prompts = await personas.get_all()
-        style_label = display_map.get(style, display_map.get("standup", style))
-        style_prompt = style_prompts.get(style, style_prompts.get("standup", ""))
+        fallback_label = display_map.get(DEFAULT_STYLE_KEY, DEFAULT_STYLE_KEY)
+        style_label = display_map.get(style, fallback_label)
+        fallback_prompt = style_prompts.get(DEFAULT_STYLE_KEY, "")
+        style_prompt = style_prompts.get(style, fallback_prompt)
 
         system_prompt = _compose_summary_prompt(
             style_label,

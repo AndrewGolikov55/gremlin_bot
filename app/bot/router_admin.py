@@ -10,13 +10,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
 from ..services.settings import SettingsService
-from ..services.persona import StylePromptService
+from ..services.persona import StylePromptService, BASE_STYLE_DATA, DEFAULT_STYLE_KEY
 from ..services.app_config import AppConfigService
 
 
 router = Router(name="admin")
 
-PROMPT_TEXT = "Введите новое прозвище для рулетки (или напишите 'reset' чтобы сбросить)."
+PROMPT_TEXT = "Отправьте ответ на это сообщение для установки нового прозвища для рулетки (или напишите 'reset' чтобы сбросить)."
 
 
 @router.message(Command("bot"))
@@ -63,6 +63,9 @@ async def cmd_settings(
     personas: StylePromptService,
     app_config: AppConfigService,
 ):
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.reply("Эта команда доступна только в групповых чатах.")
+        return
     conf = await settings.get_all(message.chat.id)
     app_conf = await app_config.get_all()
     await _send_settings(message, conf, app_conf, personas)
@@ -223,7 +226,7 @@ def _render_settings(
     style_options: list[tuple[str, str]],
 ) -> tuple[str, InlineKeyboardMarkup]:
     active = bool(conf.get("is_active", True))
-    style_raw = str(conf.get("style", style_options[0][0] if style_options else "standup"))
+    style_raw = str(conf.get("style", DEFAULT_STYLE_KEY))
     labels_map = {slug: title for slug, title in style_options}
     style_label = labels_map.get(style_raw, style_raw)
     quiet_value = conf.get("quiet_hours") or "off"
@@ -237,7 +240,7 @@ def _render_settings(
     revive_days = max(1, revive_hours // 24)
     roulette_auto = bool(conf.get("roulette_auto_enabled", False))
     custom_title = conf.get("roulette_custom_title")
-    title_label = custom_title if custom_title else "по умолчанию"
+    title_label = custom_title if custom_title else "скуф"
 
     text = (
         "<b>⚙️ Настройки бота ⚙️</b>\n"
@@ -301,7 +304,8 @@ async def _send_settings(
 ) -> None:
     style_options = await personas.list_styles()
     if not style_options:
-        style_options = [("standup", "standup")]
+        fallback_label = BASE_STYLE_DATA.get(DEFAULT_STYLE_KEY, {}).get("display_name", DEFAULT_STYLE_KEY)
+        style_options = [(DEFAULT_STYLE_KEY, fallback_label)]
     text, keyboard = _render_settings(conf, app_conf, style_options)
     await message.reply(text, reply_markup=keyboard)
 
@@ -316,7 +320,8 @@ async def _edit_settings(
         return
     style_options = await personas.list_styles()
     if not style_options:
-        style_options = [("standup", "standup")]
+        fallback_label = BASE_STYLE_DATA.get(DEFAULT_STYLE_KEY, {}).get("display_name", DEFAULT_STYLE_KEY)
+        style_options = [(DEFAULT_STYLE_KEY, fallback_label)]
     text, keyboard = _render_settings(conf, app_conf, style_options)
     await message.edit_text(text, reply_markup=keyboard)
 
@@ -355,7 +360,8 @@ async def cb_settings(
     app_conf = await app_config.get_all()
     style_options = await personas.list_styles()
     if not style_options:
-        style_options = [("standup", "standup")]
+        fallback_label = BASE_STYLE_DATA.get(DEFAULT_STYLE_KEY, {}).get("display_name", DEFAULT_STYLE_KEY)
+        style_options = [(DEFAULT_STYLE_KEY, fallback_label)]
 
     should_refresh = True
 
@@ -378,7 +384,7 @@ async def cb_settings(
         }.get(key)
         if key == "style":
             slugs = [slug for slug, _ in style_options]
-            current = str(conf.get("style", slugs[0] if slugs else "standup"))
+            current = str(conf.get("style", slugs[0] if slugs else DEFAULT_STYLE_KEY))
             if not slugs:
                 await _safe_answer(query, "Нет доступных стилей", show_alert=True)
             else:

@@ -30,7 +30,7 @@ from ..services.llm.ollama import (
     resolve_llm_options,
 )
 from ..services.moderation import apply_moderation
-from ..services.persona import StylePromptService
+from ..services.persona import StylePromptService, DEFAULT_STYLE_KEY
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..utils.llm import resolve_temperature
@@ -247,7 +247,7 @@ class RouletteService:
         app_conf = await self.app_config.get_all()
         style_prompts = await self.personas.get_all()
         display_map = await self.personas.get_display_map()
-        style_key = str(conf.get("style", "standup"))
+        style_key = str(conf.get("style", DEFAULT_STYLE_KEY))
         provider, fallback_enabled = resolve_llm_options(app_conf)
 
         max_turns = int(app_conf.get("context_max_turns", 100) or 100)
@@ -283,7 +283,7 @@ class RouletteService:
             fallback_enabled=fallback_enabled,
         )
         intrigue_clean = apply_moderation(intrigue).strip()
-        style_display = display_map.get(style_key, display_map.get("standup", style_key))
+        style_display = display_map.get(style_key, display_map.get(DEFAULT_STYLE_KEY, style_key))
         headline = self._build_headline(style_key, style_display, title_display)
         final_intrigue = f"{headline} {intrigue_clean}" if intrigue_clean else headline
         await self.bot.send_message(chat_id, final_intrigue)

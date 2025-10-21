@@ -9,17 +9,9 @@ from redis.asyncio import Redis
 
 from ..models.persona import StylePrompt
 
+DEFAULT_STYLE_KEY = "gopnik"
 
 BASE_STYLE_DATA: Dict[str, Dict[str, str]] = {
-    "standup": {
-        "display_name": "стендапер",
-        "prompt": (
-            "РОЛЬ: стендапер. Ты остроумный, язвительный, говоришь как на сцене. "
-            "Главное оружие — сарказм, гиперболы и панчлайн в финале. "
-            "Пиши быстро и коротко, максимум пара плотных строк. "
-            "Если есть повод, доводи ситуацию до абсурда и не объясняй шутки."
-        ),
-    },
     "gopnik": {
         "display_name": "дворовой пацан",
         "prompt": (
@@ -27,6 +19,15 @@ BASE_STYLE_DATA: Dict[str, Dict[str, str]] = {
             "Отвечай коротко, будто стоишь у подъезда. "
             "Подкалывай, но без прямых угроз и запрещённых тем. "
             "Обесцени заумь и сразу давай приземлённый совет."
+        ),
+    },
+    "standup": {
+        "display_name": "стендапер",
+        "prompt": (
+            "РОЛЬ: стендапер. Ты остроумный, язвительный, говоришь как на сцене. "
+            "Главное оружие — сарказм, гиперболы и панчлайн в финале. "
+            "Пиши быстро и коротко, максимум пара плотных строк. "
+            "Если есть повод, доводи ситуацию до абсурда и не объясняй шутки."
         ),
     },
     "boss": {
@@ -106,8 +107,9 @@ class StylePromptService:
 
     async def get(self, style: str) -> str:
         prompts = await self.get_all()
-        fallback = self._defaults.get("standup", {}).get("prompt", "")
-        return prompts.get(style, prompts.get("standup", fallback))
+        fallback = self._defaults.get(DEFAULT_STYLE_KEY, {}).get("prompt", "")
+        default_prompt = prompts.get(DEFAULT_STYLE_KEY, fallback)
+        return prompts.get(style, default_prompt)
 
     async def get_display_map(self) -> Dict[str, str]:
         records = await self._fetch_all()
