@@ -31,6 +31,7 @@ from ..services.app_config import AppConfigService
 from ..services.persona import StylePromptService
 from ..services.usage_limits import UsageLimiter
 from ..utils.llm import resolve_temperature
+from .constants import START_PRIVATE_RESPONSE
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,13 @@ async def collect_messages(
     bot_user = await bot.get_me()
 
     if _is_own_message(message, bot_user.id):
+        return
+
+    if message.chat.type == ChatType.PRIVATE or message.chat.type == "private":
+        text = (message.text or "").strip()
+        if text.startswith("/start"):
+            return
+        await message.answer(START_PRIVATE_RESPONSE)
         return
 
     await _ensure_chat(session, message)

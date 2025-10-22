@@ -23,14 +23,12 @@ from ..services.roulette import RouletteService
 from ..services.settings import SettingsService
 from ..services.usage_limits import UsageLimiter
 from ..utils.llm import resolve_temperature
+from .constants import START_PRIVATE_RESPONSE
 
 
 router = Router(name="fun")
 
 PROMPT_TEXT = "Отправьте ответ на это сообщение для установки нового прозвища для рулетки (или напишите 'reset' чтобы сбросить)."
-START_PRIVATE_RESPONSE = (
-    "👋 Я Gremlin, оживляю групповые чаты. Добавь меня в группу с друзьями чтобы начать."
-)
 
 DEFAULT_SUMMARY_PROMPT = (
     "Ты — {style_label}. Сделай краткую, но живую сводку последних сообщений в своей манере."
