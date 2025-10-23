@@ -251,7 +251,9 @@ async def cmd_summary(
             closing_text=closing_text,
         )
 
-        max_answer_tokens = max(200, min(1024, prompt_token_limit // 2))
+        default_cap = 4096
+        base_cap = max(prompt_token_limit // 2, 200)
+        max_answer_tokens = max(200, min(default_cap, base_cap))
         max_length_conf = app_conf.get("max_length")
         if isinstance(max_length_conf, (int, float, str)):
             try:
@@ -303,15 +305,16 @@ async def cmd_summary(
                 fallback_enabled,
             )
             retry_turns = turns[-max(10, min(len(turns), 20)) :]
+            retry_limit = min(default_cap, max(prompt_token_limit // 2, 200))
             retry_messages = build_messages(
                 system_prompt,
                 retry_turns,
                 max_turns=len(retry_turns),
-                max_tokens=max(prompt_token_limit // 2, 2000),
+                max_tokens=retry_limit,
                 closing_text=closing_text,
             )
             try:
-                retry_tokens = min(max_answer_tokens, 512)
+                retry_tokens = min(max_answer_tokens, max(512, max_answer_tokens // 2))
                 summary_text = await llm_generate(
                     retry_messages,
                     max_tokens=retry_tokens,
