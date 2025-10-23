@@ -227,7 +227,18 @@ async def _generate_openai(
         raise LLMError("OpenAI returned invalid JSON") from exc
 
     try:
-        return data["choices"][0]["message"]["content"].strip()
+        choice = data["choices"][0]
+        message = choice.get("message", {})
+        content = (message.get("content") or "").strip()
+        finish_reason = choice.get("finish_reason")
+        if not content:
+            logger.warning(
+                "OpenAI returned empty content (finish_reason=%s, usage=%s, filters=%s)",
+                finish_reason,
+                data.get("usage"),
+                choice.get("content_filter_results"),
+            )
+        return content
     except (KeyError, IndexError, AttributeError) as exc:
         raise LLMError(f"Unexpected OpenAI response: {data}") from exc
 
