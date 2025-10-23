@@ -283,6 +283,14 @@ async def generate(
             return await _call(fallback_provider)
         raise
 
+    if fallback_active and not (primary_response or "").strip():
+        logger.info(
+            "Primary provider %s returned empty response; attempting fallback to %s",
+            provider_name,
+            fallback_provider,
+        )
+        return await _call(fallback_provider)
+
     if fallback_active and provider_name == "openai" and _looks_censored(primary_response):
         logger.info(
             "Detected possible OpenAI censorship, falling back to OpenRouter model %s",

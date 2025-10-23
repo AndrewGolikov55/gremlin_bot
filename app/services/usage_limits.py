@@ -96,11 +96,15 @@ class UsageLimiter:
         for key in keys:
             pipe.decr(key, 1)
         results = await pipe.execute()
-        pipe = self._redis.pipeline()
-        for (key, result) in zip(keys, results):
-            if result is not None and result < 0:
+        corrections = [
+            key
+            for key, result in zip(keys, results)
+            if result is not None and result < 0
+        ]
+        if corrections:
+            pipe = self._redis.pipeline()
+            for key in corrections:
                 pipe.set(key, 0)
-        if pipe.command_stack:
             await pipe.execute()
 
     def _key(self, prefix: str, chat_id: int) -> str:

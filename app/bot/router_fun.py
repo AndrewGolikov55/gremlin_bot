@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from html import escape
 from typing import Dict, List
@@ -27,6 +28,7 @@ from .constants import START_PRIVATE_RESPONSE
 
 
 router = Router(name="fun")
+logger = logging.getLogger("bot.summary")
 
 PROMPT_TEXT = "Отправьте ответ на это сообщение для установки нового прозвища для рулетки (или напишите 'reset' чтобы сбросить)."
 
@@ -294,10 +296,65 @@ async def cmd_summary(
 
         cleaned = apply_moderation(summary_text).strip()
         if not cleaned:
-            if consumed_prefixes:
-                await usage_limits.refund(message.chat.id, consumed_prefixes)
-            await message.reply("🤖 Не удалось подготовить сводку.", allow_sending_without_reply=True)
-            return
+            logger.warning(
+                "Summary model returned empty text; retrying chat=%s provider=%s fallback=%s",
+                message.chat.id,
+                provider,
+                fallback_enabled,
+            )
+            retry_turns = turns[-max(10, min(len(turns), 20)) :]
+            retry_messages = build_messages(
+                system_prompt,
+                retry_turns,
+                max_turns=len(retry_turns),
+                max_tokens=max(prompt_token_limit // 2, 2000),
+                closing_text=closing_text,
+            )
+            try:
+                retry_tokens = min(max_answer_tokens, 512)
+                summary_text = await llm_generate(
+                    retry_messages,
+                    max_tokens=retry_tokens,
+                    temperature=resolve_temperature(conf),
+                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    provider=provider,
+                    fallback_enabled=fallback_enabled,
+                )
+            except OpenRouterRateLimitError as exc:
+                if consumed_prefixes:
+                    await usage_limits.refund(message.chat.id, consumed_prefixes)
+                wait_hint = ""
+                if exc.retry_after and exc.retry_after > 0:
+                    wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
+                await message.reply("🤖 Модель перегружена." + wait_hint, allow_sending_without_reply=True)
+                return
+            except OpenRouterError:
+                if consumed_prefixes:
+                    await usage_limits.refund(message.chat.id, consumed_prefixes)
+                await message.reply("🤖 LLM вернула ошибку. Попробуй позже.", allow_sending_without_reply=True)
+                return
+            except Exception:
+                if consumed_prefixes:
+                    await usage_limits.refund(message.chat.id, consumed_prefixes)
+                logger.exception(
+                    "Unexpected error during summary retry (provider=%s fallback=%s)",
+                    provider,
+                    fallback_enabled,
+                )
+                await message.reply("🤖 Не удалось подготовить сводку.", allow_sending_without_reply=True)
+                return
+
+            cleaned = apply_moderation(summary_text).strip()
+            if not cleaned:
+                if consumed_prefixes:
+                    await usage_limits.refund(message.chat.id, consumed_prefixes)
+                logger.warning(
+                    "Summary retry returned empty text chat=%s provider=%s",
+                    message.chat.id,
+                    provider,
+                )
+                await message.reply("🤖 Не удалось подготовить сводку.", allow_sending_without_reply=True)
+                return
 
         heading = f"<b>Сводка по чату за последние {len(turns)} сообщений</b>"
         safe_body = escape(_sanitize_summary_body(cleaned))
