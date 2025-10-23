@@ -205,18 +205,20 @@ async def cmd_summary(
                 if "summary" in exceeded:
                     used = counts.get("summary", summary_limit)
                     await message.reply(
-                        f"🤖 Лимит сводок на сегодня исчерпан ({used}/{summary_limit})."
+                        f"🤖 Лимит сводок на сегодня исчерпан ({used}/{summary_limit}).",
+                        allow_sending_without_reply=True,
                     )
                 else:
                     used = counts.get("llm", llm_limit)
                     await message.reply(
-                        f"🤖 Лимит запросов к модели исчерпан ({used}/{llm_limit}). Попробуй завтра."
+                        f"🤖 Лимит запросов к модели исчерпан ({used}/{llm_limit}). Попробуй завтра.",
+                        allow_sending_without_reply=True,
                     )
                 return
 
         turns = await context.get_recent_turns(session, message.chat.id, max_turns)
         if not turns:
-            await message.reply("Нечего пересказывать: история пуста.")
+            await message.reply("Нечего пересказывать: история пуста.", allow_sending_without_reply=True)
             return
 
         style = str(conf.get("style", DEFAULT_STYLE_KEY))
