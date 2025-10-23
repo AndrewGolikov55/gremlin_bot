@@ -88,6 +88,21 @@ class UsageLimiter:
         value = await self._redis.get(key)
         return int(value or 0)
 
+    async def refund(self, chat_id: int, prefixes: Sequence[str]) -> None:
+        if not prefixes:
+            return
+        keys = [self._key(prefix, chat_id) for prefix in prefixes]
+        pipe = self._redis.pipeline()
+        for key in keys:
+            pipe.decr(key, 1)
+        results = await pipe.execute()
+        pipe = self._redis.pipeline()
+        for (key, result) in zip(keys, results):
+            if result is not None and result < 0:
+                pipe.set(key, 0)
+        if pipe.command_stack:
+            await pipe.execute()
+
     def _key(self, prefix: str, chat_id: int) -> str:
         day = datetime.now(self._tz).strftime("%Y%m%d")
         return f"usage:{prefix}:{chat_id}:{day}"
@@ -96,4 +111,3 @@ class UsageLimiter:
         now = datetime.now(self._tz)
         tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         return max(1, int((tomorrow - now).total_seconds()))
-

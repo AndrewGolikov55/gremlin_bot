@@ -199,6 +199,12 @@ async def cmd_summary(
         if llm_limit > 0:
             requests.append(("llm", llm_limit))
 
+        turns = await context.get_recent_turns(session, message.chat.id, max_turns)
+        if not turns:
+            await message.reply("Нечего пересказывать: история пуста.", allow_sending_without_reply=True)
+            return
+
+        consumed_prefixes: list[str] = []
         if requests:
             allowed, counts, exceeded = await usage_limits.consume(message.chat.id, requests)
             if not allowed:
@@ -215,11 +221,7 @@ async def cmd_summary(
                         allow_sending_without_reply=True,
                     )
                 return
-
-        turns = await context.get_recent_turns(session, message.chat.id, max_turns)
-        if not turns:
-            await message.reply("Нечего пересказывать: история пуста.", allow_sending_without_reply=True)
-            return
+            consumed_prefixes = [prefix for prefix, _ in requests]
 
         style = str(conf.get("style", DEFAULT_STYLE_KEY))
         display_map = await personas.get_display_map()
@@ -267,26 +269,34 @@ async def cmd_summary(
                 fallback_enabled=fallback_enabled,
             )
         except OpenRouterRateLimitError as exc:
+            if consumed_prefixes:
+                await usage_limits.refund(message.chat.id, consumed_prefixes)
             wait_hint = ""
             if exc.retry_after and exc.retry_after > 0:
                 wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
-            await message.reply("🤖 Модель перегружена." + wait_hint)
+            await message.reply("🤖 Модель перегружена." + wait_hint, allow_sending_without_reply=True)
             return
         except OpenRouterError:
-            await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
+            if consumed_prefixes:
+                await usage_limits.refund(message.chat.id, consumed_prefixes)
+            await message.reply("🤖 LLM вернула ошибку. Попробуй позже.", allow_sending_without_reply=True)
             return
         except Exception:
+            if consumed_prefixes:
+                await usage_limits.refund(message.chat.id, consumed_prefixes)
             logger.exception(
                 "Unexpected error while generating summary (provider=%s fallback=%s)",
                 provider,
                 fallback_enabled,
             )
-            await message.reply("🤖 Не удалось подготовить сводку.")
+            await message.reply("🤖 Не удалось подготовить сводку.", allow_sending_without_reply=True)
             return
 
         cleaned = apply_moderation(summary_text).strip()
         if not cleaned:
-            await message.reply("🤖 Не удалось подготовить сводку.")
+            if consumed_prefixes:
+                await usage_limits.refund(message.chat.id, consumed_prefixes)
+            await message.reply("🤖 Не удалось подготовить сводку.", allow_sending_without_reply=True)
             return
 
         heading = f"<b>Сводка по чату за последние {len(turns)} сообщений</b>"
