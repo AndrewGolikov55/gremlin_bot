@@ -114,7 +114,8 @@ async def _generate_openrouter(
         "top_p": top_p,
     }
     if max_tokens and max_tokens > 0:
-        payload["max_tokens"] = max_tokens
+        # Newer OpenAI chat API expects max_completion_tokens; older models still accept it.
+        payload["max_completion_tokens"] = max_tokens
 
     _log_payload("OpenRouter", payload)
 
