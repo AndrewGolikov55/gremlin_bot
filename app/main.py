@@ -239,7 +239,10 @@ async def telegram_webhook(
     payload = await request.json()
     METRIC_UPDATES.inc()
     update_obj = Update.model_validate(payload)
-    await dp.feed_update(bot, update_obj)
+    try:
+        await dp.feed_update(bot, update_obj)
+    except LookupError as exc:
+        logger.debug("Ignoring unhandled update: %s", exc)
     return JSONResponse({"ok": True})
 
 
