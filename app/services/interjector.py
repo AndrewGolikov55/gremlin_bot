@@ -15,6 +15,7 @@ from ..models.chat import Chat
 from ..models.message import Message as DBMessage
 from ..services.context import (
     ContextService,
+    ChatTurn,
     build_messages,
     build_system_prompt,
     DEFAULT_CHAT_PROMPT,
@@ -68,7 +69,7 @@ class InterjectorService:
         self,
         message: TgMessage,
         conf: dict[str, object],
-        turns: list[tuple[str, str]],
+        turns: list[ChatTurn],
     ) -> None:
         app_conf = await self.app_config.get_all()
 
@@ -122,6 +123,9 @@ class InterjectorService:
             result = await session.execute(select(Chat).where(Chat.is_active.is_(True)))
             chats = list(result.scalars())
             for chat in chats:
+                if not self._is_group_chat(chat.id):
+                    logger.debug("Skip idle revival for non-group chat %s", chat.id)
+                    continue
                 try:
                     await self._maybe_revive_chat(session, chat, now, app_conf)
                 except Exception:
@@ -134,6 +138,10 @@ class InterjectorService:
         now: datetime,
         app_conf: dict[str, object],
     ) -> None:
+        if not self._is_group_chat(chat.id):
+            logger.debug("Skip revive attempt for non-group chat %s", chat.id)
+            return
+
         conf = await self.settings.get_all(chat.id)
         if not conf.get("revive_enabled", False):
             return
@@ -267,7 +275,7 @@ class InterjectorService:
         self,
         conf: dict[str, object],
         app_conf: dict[str, object],
-        turns: Iterable[tuple[str, str]],
+        turns: Iterable[ChatTurn],
         focus_text: str | None,
         *,
         chat_id: int | None = None,
@@ -356,3 +364,9 @@ class InterjectorService:
         if value <= 0:
             return None
         return max(2000, min(60000, value))
+
+    @staticmethod
+    def _is_group_chat(chat_id: int) -> bool:
+        # Telegram assigns negative ids to group, supergroup, and channel chats.
+        # Private chats (users/bots) have positive ids and should be ignored here.
+        return chat_id < 0

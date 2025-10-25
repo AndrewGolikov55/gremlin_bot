@@ -98,7 +98,7 @@ def _looks_censored(text: str) -> bool:
 
 
 async def _generate_openrouter(
-    message_list: list[Mapping[str, str]],
+    message_list: list[Mapping[str, object]],
     *,
     temperature: float,
     top_p: float,
@@ -165,7 +165,7 @@ async def _generate_openrouter(
 
 
 async def _generate_openai(
-    message_list: list[Mapping[str, str]],
+    message_list: list[Mapping[str, object]],
     *,
     temperature: float,
     max_tokens: Optional[int],
@@ -244,7 +244,7 @@ async def _generate_openai(
 
 
 async def generate(
-    messages: Iterable[Mapping[str, str]],
+    messages: Iterable[Mapping[str, object]],
     *,
     temperature: float = 1.0,
     top_p: float = 0.9,
