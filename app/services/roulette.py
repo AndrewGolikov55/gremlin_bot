@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from dataclasses import dataclass
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
-from typing import Iterable
 
 from aiogram import Bot
 from sqlalchemy import desc, func, select
@@ -30,7 +30,7 @@ from ..services.llm.ollama import (
     resolve_llm_options,
 )
 from ..services.moderation import apply_moderation
-from ..services.persona import StylePromptService, DEFAULT_STYLE_KEY
+from ..services.persona import StylePromptService
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..utils.llm import resolve_temperature
@@ -46,33 +46,10 @@ TITLE_CHOICES = [
     ("clown", "Клоун"),
 ]
 
-ANNOUNCE_HEADLINES: dict[str, list[str]] = {
-    "standup": [
-        "🎰 {style_display_cap} прогревает зал — вот-вот узнаем, кто заберёт «{title}».",
-        "🎰 {style_display_cap} уже готовит панчлайн — титул «{title}» висит в воздухе.",
-    ],
-    "gopnik": [
-        "🎰 {style_display_cap} с подъезда держит интригу — ща решим, кто хапнет «{title}».",
-        "🎰 {style_display} щёлкает семки и подмигивает: «{title}» вот-вот упадёт кому-то на плечи.",
-    ],
-    "boss": [
-        "🎰 {style_display_cap} составил протокол — через минуту объявим владельца «{title}».",
-        "🎰 KPI выставлены: {style_display_cap} проверяет, кто заслужил «{title}».",
-    ],
-    "zoomer": [
-        "🎰 {style_display_cap} поднимает хайп — скоро узнаем, кто будет flex'ить «{title}».",
-        "🎰 {style_display_cap} ловит вайб: «{title}» вот-вот станет чьим-то бустом.",
-    ],
-    "jarvis": [
-        "🎰 {style_display_cap} сверяет протоколы — титул «{title}» почти распределён.",
-        "🎰 {style_display_cap} запускает церемонию: последняя проверка перед присвоением «{title}».",
-    ],
-    "default": [
-        "🎰 {style_display_cap} держит интригу — совсем скоро объявим владельца «{title}».",
-        "🎰 Титул «{title}» на кону, {style_display} уже шепчет закулисные слухи.",
-        "🎰 Вся команда смотрит на {style_display} — кто поднимет «{title}»?",
-    ],
-}
+DEFAULT_ROULETTE_PROMPT = (
+    "Ты — ведущий шуточной рулетки. Говори от первого лица и не описывай себя со стороны."
+    " Пиши 1–2 короткие фразы без Markdown, поддержи стиль выбранной персоны и не раскрывай победителя."
+)
 
 
 @dataclass
@@ -134,14 +111,18 @@ class RouletteService:
             try:
                 await self._announce(chat_id, winner_user_id, winner_username, title_code, title_display)
             except OpenRouterRateLimitError as exc:
-                logger.warning("Rate limit during roulette announcement chat=%s", chat_id)
-                return RollResult(False, "Модель перегружена, попробуй чуть позже.")
+                logger.warning(
+                    "Rate limit during roulette announcement chat=%s retry_after=%s",
+                    chat_id,
+                    exc.retry_after,
+                )
+                await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
             except OpenRouterError:
                 logger.exception("LLM failed while preparing roulette announcement chat=%s", chat_id)
-                return RollResult(False, "Не удалось подготовить анонс, попробуй позже.")
+                await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
             except Exception:
                 logger.exception("Unexpected error during roulette announcement chat=%s", chat_id)
-                return RollResult(False, "Что-то пошло не так при объявлении победителя.")
+                await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
 
             winner = RouletteWinner(
                 chat_id=chat_id,
@@ -220,21 +201,6 @@ class RouletteService:
             return "custom", str(custom)
         return random.choice(TITLE_CHOICES)
 
-    def _build_headline(self, style: str, style_display: str | None, title_display: str) -> str:
-        templates = ANNOUNCE_HEADLINES.get(style)
-        if not templates:
-            templates = ANNOUNCE_HEADLINES["default"]
-        style_clean = (style_display or "").strip()
-        if not style_clean:
-            style_clean = "персона"
-        style_cap = style_clean[0].upper() + style_clean[1:] if style_clean else "Персона"
-        template = random.choice(templates if templates else ANNOUNCE_HEADLINES["default"])
-        return template.format(
-            title=title_display,
-            style_display=style_clean,
-            style_display_cap=style_cap,
-        )
-
     async def _announce(
         self,
         chat_id: int,
@@ -246,11 +212,10 @@ class RouletteService:
         conf = await self.settings.get_all(chat_id)
         app_conf = await self.app_config.get_all()
         style_prompts = await self.personas.get_all()
-        display_map = await self.personas.get_display_map()
-        style_key = str(conf.get("style", DEFAULT_STYLE_KEY))
         provider, fallback_enabled = resolve_llm_options(app_conf)
 
         max_turns = int(app_conf.get("context_max_turns", 100) or 100)
+        prompt_limit = self._prompt_token_limit(app_conf)
         async with self.sessionmaker() as session:
             turns = await self.context.get_recent_turns(session, chat_id, max_turns)
         focus_text = (
@@ -258,7 +223,9 @@ class RouletteService:
             + title_display
             + "'. Подогрей интригу, но не раскрывай имя."
         )
-        base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+        base_prompt = str(app_conf.get("prompt_roulette_base") or DEFAULT_ROULETTE_PROMPT).strip()
+        if not base_prompt:
+            base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
         focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
         system_prompt = build_system_prompt(
             conf,
@@ -270,29 +237,94 @@ class RouletteService:
         messages = build_messages(
             system_prompt,
             turns,
-            max_turns=int(app_conf.get("context_max_turns", 100) or 100),
-            max_tokens=int(app_conf.get("context_max_prompt_tokens", 32000) or 32000),
+            max_turns=max_turns,
+            max_tokens=prompt_limit,
         )
 
         intrigue = await llm_generate(
             messages,
             temperature=resolve_temperature(conf),
             top_p=float(conf.get("top_p", 0.9) or 0.9),
-            max_tokens=int(app_conf.get("max_length", 200) or 200),
+            max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
             provider=provider,
             fallback_enabled=fallback_enabled,
         )
         intrigue_clean = apply_moderation(intrigue).strip()
-        style_display = display_map.get(style_key, display_map.get(DEFAULT_STYLE_KEY, style_key))
-        headline = self._build_headline(style_key, style_display, title_display)
-        final_intrigue = f"{headline} {intrigue_clean}" if intrigue_clean else headline
+        final_intrigue = self._prepare_intrigue_text(intrigue_clean, title_display)
         await self.bot.send_message(chat_id, final_intrigue)
 
         await asyncio.sleep(3)
 
-        mention = f"<a href='tg://user?id={user_id}'>{escape_html(username) if username else 'победитель'}</a>"
-        final_message = f"🏆 Звание «{title_display}» достаётся {mention}!"
+        final_message = self._format_final_message(title_display, user_id, username)
         await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
+
+    def _prepare_intrigue_text(self, text: str, title_display: str) -> str:
+        cleaned = " ".join((text or "").split())
+        if not cleaned:
+            return self._default_intrigue(title_display)
+        sentences = re.split(r"(?<=[.!?…])\s+", cleaned)
+        trimmed = " ".join(sentences[:2]).strip()
+        if not trimmed:
+            trimmed = cleaned
+        if len(trimmed) > 240:
+            trimmed = trimmed[:240].rsplit(" ", 1)[0].rstrip(",;:.!? ") + "…"
+        if not trimmed:
+            return self._default_intrigue(title_display)
+        return trimmed
+
+    def _default_intrigue(self, title_display: str) -> str:
+        return f"🎰 Я кручу барабан за «{title_display}». Скоро назову победителя."
+
+    async def _announce_without_llm(
+        self,
+        chat_id: int,
+        user_id: int,
+        username: str | None,
+        title_display: str,
+    ) -> None:
+        headline = f"🎰 Я запускаю рулетку за «{title_display}». Держи кулачки."
+        try:
+            await self.bot.send_message(chat_id, headline)
+        except Exception:
+            logger.exception("Failed to send fallback roulette headline chat=%s", chat_id)
+        await asyncio.sleep(3)
+        final_message = self._format_final_message(title_display, user_id, username)
+        try:
+            await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
+        except Exception:
+            logger.exception("Failed to send fallback roulette result chat=%s", chat_id)
+
+    def _format_final_message(self, title_display: str, user_id: int, username: str | None) -> str:
+        mention = f"<a href='tg://user?id={user_id}'>{escape_html(username) if username else 'победитель'}</a>"
+        return f"🏆 Звание «{title_display}» достаётся {mention}!"
+
+    def _prompt_token_limit(self, app_conf: dict[str, object]) -> int:
+        raw_limit = app_conf.get("context_max_prompt_tokens", 32000)
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            limit = 32000
+        if limit <= 0:
+            limit = 32000
+        return max(2000, min(60000, limit))
+
+    def _max_completion_tokens(
+        self,
+        app_conf: dict[str, object],
+        prompt_limit: int | None = None,
+    ) -> int:
+        limit = prompt_limit or self._prompt_token_limit(app_conf)
+        default_cap = 2048
+        base_cap = max(limit // 4, 200)
+        allowed = max(200, min(default_cap, base_cap))
+        override_raw = app_conf.get("max_length")
+        try:
+            override = int(override_raw)
+        except (TypeError, ValueError):
+            override = None
+        if override and override > 0:
+            allowed = min(allowed, override)
+        return allowed
 
 
     async def get_stats(self, chat_id: int) -> str:

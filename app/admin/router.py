@@ -207,6 +207,7 @@ def create_admin_router(
         prompt_summary_base: str = Form(...),
         prompt_summary_closing: str = Form(...),
         prompt_revive_closing: str = Form(...),
+        prompt_roulette_base: str = Form(...),
         token: str = Depends(require_token),
     ) -> str:
         errors: list[str] = []
@@ -224,6 +225,7 @@ def create_admin_router(
         prompt_summary_base = prompt_summary_base.strip()
         prompt_summary_closing = prompt_summary_closing.strip()
         prompt_revive_closing = prompt_revive_closing.strip()
+        prompt_roulette_base = prompt_roulette_base.strip()
 
         provider_value = (llm_provider or "").strip().lower()
         if provider_value not in {"openrouter", "openai"}:
@@ -255,6 +257,7 @@ def create_admin_router(
             await app_config.set("prompt_summary_base", prompt_summary_base)
             await app_config.set("prompt_summary_closing", prompt_summary_closing)
             await app_config.set("prompt_revive_closing", prompt_revive_closing)
+            await app_config.set("prompt_roulette_base", prompt_roulette_base)
         except Exception as exc:
             errors.append(str(exc))
 
@@ -656,6 +659,7 @@ def _render_app_config_body(
     prompt_summary_base = str(conf.get("prompt_summary_base", ""))
     prompt_summary_closing = str(conf.get("prompt_summary_closing", ""))
     prompt_revive_closing = str(conf.get("prompt_revive_closing", ""))
+    prompt_roulette_base = str(conf.get("prompt_roulette_base", ""))
 
     chats_url = _build_url("/admin/chats", token)
     provider_options = [
@@ -736,6 +740,10 @@ def _render_app_config_body(
         "<div class='col-12'>"
         "<label class='form-label'>Промт оживления тихого чата</label>"
         f"<textarea class='form-control' name='prompt_revive_closing' rows='2'>{escape(prompt_revive_closing)}</textarea>"
+        "</div>"
+        "<div class='col-12'>"
+        "<label class='form-label'>Промт рулетки /roll</label>"
+        f"<textarea class='form-control' name='prompt_roulette_base' rows='3'>{escape(prompt_roulette_base)}</textarea>"
         "</div>"
         "<div class='col-12'>"
         "<button class='btn btn-primary' type='submit'>Сохранить</button>"
