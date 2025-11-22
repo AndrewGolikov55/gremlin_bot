@@ -6,6 +6,7 @@ from datetime import datetime, time, timedelta
 from typing import Iterable
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import Message as TgMessage
 from redis.asyncio import Redis
 from sqlalchemy import desc, select
@@ -208,12 +209,41 @@ class InterjectorService:
 
         try:
             await self.bot.send_message(chat.id, reply_text.strip())
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            if self._is_missing_chat_error(exc):
+                await self._deactivate_chat(chat.id)
+                logger.warning("Disabling chat %s after Telegram rejection: %s", chat.id, exc)
+                return
+            logger.exception("Failed to send idle revival to chat %s", chat.id)
+            return
         except Exception:
             logger.exception("Failed to send idle revival to chat %s", chat.id)
             return
 
         await self._mark_revive(chat.id, now)
         logger.info("Idle revival sent to chat %s", chat.id)
+
+    async def _deactivate_chat(self, chat_id: int) -> None:
+        async with self.sessionmaker() as session:
+            chat = await session.get(Chat, chat_id)
+            if chat is None or not chat.is_active:
+                return
+            chat.is_active = False
+            await session.commit()
+            logger.info("Marked chat %s as inactive after Telegram error", chat_id)
+
+    @staticmethod
+    def _is_missing_chat_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return any(
+            hint in text
+            for hint in (
+                "chat not found",
+                "bot was blocked by the user",
+                "bot was kicked",
+                "user is deactivated",
+            )
+        )
 
     async def _get_last_human_message_time(self, session: AsyncSession, chat_id: int) -> datetime | None:
         result = await session.execute(

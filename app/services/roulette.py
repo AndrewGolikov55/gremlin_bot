@@ -9,11 +9,11 @@ from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from sqlalchemy import desc, func, select
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models.chat import Chat
 from ..models.roulette import RouletteWinner, RouletteParticipant
 from ..models.chat import Chat
 from ..services.context import (
@@ -108,21 +108,25 @@ class RouletteService:
             winner_user_id, winner_username = random.choice(participants)
             title_code, title_display = await self._pick_title(chat_id)
 
+            delivered = False
             try:
-                await self._announce(chat_id, winner_user_id, winner_username, title_code, title_display)
+                delivered = await self._announce(chat_id, winner_user_id, winner_username, title_code, title_display)
             except OpenRouterRateLimitError as exc:
                 logger.warning(
                     "Rate limit during roulette announcement chat=%s retry_after=%s",
                     chat_id,
                     exc.retry_after,
                 )
-                await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
+                delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
             except OpenRouterError:
                 logger.exception("LLM failed while preparing roulette announcement chat=%s", chat_id)
-                await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
+                delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
             except Exception:
                 logger.exception("Unexpected error during roulette announcement chat=%s", chat_id)
-                await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
+                delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
+
+            if not delivered:
+                return RollResult(False, "Не удалось отправить сообщение в чат.")
 
             winner = RouletteWinner(
                 chat_id=chat_id,
@@ -208,7 +212,7 @@ class RouletteService:
         username: str | None,
         title_code: str,
         title_display: str,
-    ) -> None:
+    ) -> bool:
         conf = await self.settings.get_all(chat_id)
         app_conf = await self.app_config.get_all()
         style_prompts = await self.personas.get_all()
@@ -251,12 +255,36 @@ class RouletteService:
         )
         intrigue_clean = apply_moderation(intrigue).strip()
         final_intrigue = self._prepare_intrigue_text(intrigue_clean, title_display)
-        await self.bot.send_message(chat_id, final_intrigue)
+        try:
+            await self.bot.send_message(chat_id, final_intrigue)
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            if self._is_missing_chat_error(exc):
+                await self._deactivate_chat(chat_id)
+                logger.warning("Disabling chat %s for roulette headline: %s", chat_id, exc)
+                return False
+            logger.exception("Failed to send roulette headline chat=%s", chat_id)
+            return False
+        except Exception:
+            logger.exception("Failed to send roulette headline chat=%s", chat_id)
+            return False
 
         await asyncio.sleep(3)
 
         final_message = self._format_final_message(title_display, user_id, username)
-        await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
+        try:
+            await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            if self._is_missing_chat_error(exc):
+                await self._deactivate_chat(chat_id)
+                logger.warning("Disabling chat %s for roulette result: %s", chat_id, exc)
+                return False
+            logger.exception("Failed to send roulette result chat=%s", chat_id)
+            return False
+        except Exception:
+            logger.exception("Failed to send roulette result chat=%s", chat_id)
+            return False
+
+        return True
 
     def _prepare_intrigue_text(self, text: str, title_display: str) -> str:
         cleaned = " ".join((text or "").split())
@@ -281,18 +309,36 @@ class RouletteService:
         user_id: int,
         username: str | None,
         title_display: str,
-    ) -> None:
+    ) -> bool:
         headline = f"🎰 Я запускаю рулетку за «{title_display}». Держи кулачки."
         try:
             await self.bot.send_message(chat_id, headline)
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            if self._is_missing_chat_error(exc):
+                await self._deactivate_chat(chat_id)
+                logger.warning("Disabling chat %s for roulette fallback headline: %s", chat_id, exc)
+                return False
+            logger.exception("Failed to send fallback roulette headline chat=%s", chat_id)
+            return False
         except Exception:
             logger.exception("Failed to send fallback roulette headline chat=%s", chat_id)
+            return False
         await asyncio.sleep(3)
         final_message = self._format_final_message(title_display, user_id, username)
         try:
             await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            if self._is_missing_chat_error(exc):
+                await self._deactivate_chat(chat_id)
+                logger.warning("Disabling chat %s for roulette fallback result: %s", chat_id, exc)
+                return False
+            logger.exception("Failed to send fallback roulette result chat=%s", chat_id)
+            return False
         except Exception:
             logger.exception("Failed to send fallback roulette result chat=%s", chat_id)
+            return False
+
+        return True
 
     def _format_final_message(self, title_display: str, user_id: int, username: str | None) -> str:
         mention = f"<a href='tg://user?id={user_id}'>{escape_html(username) if username else 'победитель'}</a>"
@@ -326,6 +372,27 @@ class RouletteService:
             allowed = min(allowed, override)
         return allowed
 
+    async def _deactivate_chat(self, chat_id: int) -> None:
+        async with self.sessionmaker() as session:
+            chat = await session.get(Chat, chat_id)
+            if chat is None or not chat.is_active:
+                return
+            chat.is_active = False
+            await session.commit()
+            logger.info("Marked chat %s as inactive after Telegram error", chat_id)
+
+    @staticmethod
+    def _is_missing_chat_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return any(
+            hint in text
+            for hint in (
+                "chat not found",
+                "bot was blocked by the user",
+                "bot was kicked",
+                "user is deactivated",
+            )
+        )
 
     async def get_stats(self, chat_id: int) -> str:
         heading_title, monthly, overall = await self._prepare_stats(
