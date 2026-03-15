@@ -237,6 +237,33 @@ async def collect_messages(
     await interjector.maybe_reply_to_message(message, conf, turns)
 
 
+@router.message(F.sticker | F.animation | F.photo | F.video | F.document)
+async def handle_media_messages(
+    message: types.Message,
+    settings: SettingsService,
+    bot: Bot,
+):
+    bot_user = await bot.get_me()
+
+    if _is_own_message(message, bot_user.id):
+        return
+
+    conf = await settings.get_all(message.chat.id)
+    if not conf.get("is_active", True):
+        return
+
+    if message.chat.type == ChatType.PRIVATE or message.chat.type == "private":
+        await message.answer(_unsupported_media_text(message), parse_mode=None)
+        return
+
+    is_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
+    is_reply_to_bot = _is_reply(message, bot_user.id, bot_user.username)
+    if not _should_reply(is_mention, is_reply_to_bot, message.chat.type):
+        return
+
+    await message.reply(_unsupported_media_text(message), parse_mode=None)
+
+
 async def _ensure_chat(session: AsyncSession, message: types.Message) -> None:
     chat = await session.get(Chat, message.chat.id)
     if chat is None:
@@ -361,3 +388,18 @@ def _resolve_prompt_token_limit(conf: dict[str, object]) -> int:
     except (TypeError, ValueError):
         return 32000
     return max(2000, min(60000, value))
+
+
+def _unsupported_media_text(message: types.Message) -> str:
+    kind = "это"
+    if message.sticker:
+        kind = "стикеры"
+    elif message.animation:
+        kind = "гифки"
+    elif message.photo:
+        kind = "изображения"
+    elif message.video:
+        kind = "видео"
+    elif message.document:
+        kind = "файлы"
+    return f"Я пока умею только читать текст. {kind.capitalize()} ещё не понимаю."
