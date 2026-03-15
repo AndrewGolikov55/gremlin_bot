@@ -35,6 +35,7 @@ from .services.interjector import InterjectorService
 from .services.settings import SettingsService
 from .services.persona import StylePromptService, BASE_STYLE_DATA
 from .services.app_config import AppConfigService
+from .services.reactions import ReactionService
 from .services.roulette import RouletteService
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
@@ -99,6 +100,13 @@ context_service = ContextService()
 app_config_service = AppConfigService(async_sessionmaker, redis)
 persona_service = StylePromptService(async_sessionmaker, redis, BASE_STYLE_DATA)
 user_memory_service = UserMemoryService(async_sessionmaker)
+usage_limits_service = UsageLimiter(redis, timezone=ZoneInfo("Europe/Moscow"))
+reaction_service = ReactionService(
+    bot=bot,
+    sessionmaker=async_sessionmaker,
+    usage_limits=usage_limits_service,
+    memory=user_memory_service,
+)
 roulette_service = RouletteService(
     bot=bot,
     sessionmaker=async_sessionmaker,
@@ -108,7 +116,6 @@ roulette_service = RouletteService(
     personas=persona_service,
     memory=user_memory_service,
 )
-usage_limits_service = UsageLimiter(redis, timezone=ZoneInfo("Europe/Moscow"))
 
 # Routers
 dp.include_router(admin_router)
@@ -139,6 +146,7 @@ dp.update.middleware(
         interjector_service,
         persona_service,
         app_config_service,
+        reaction_service,
         roulette_service,
         usage_limits_service,
         user_memory_service,

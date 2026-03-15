@@ -29,6 +29,7 @@ from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.persona import StylePromptService
+from ..services.reactions import ReactionService
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
@@ -50,6 +51,7 @@ async def collect_messages(
     interjector: InterjectorService,
     personas: StylePromptService,
     app_config: AppConfigService,
+    reactions: ReactionService,
     usage_limits: UsageLimiter,
     memory: UserMemoryService,
     bot: Bot,
@@ -117,6 +119,7 @@ async def collect_messages(
     prompt_token_limit = _resolve_prompt_token_limit(app_conf)
     style_prompts = await personas.get_all()
     turns = await context.get_recent_turns(session, message.chat.id, max_turns)
+    await reactions.maybe_react_to_message(message, conf, app_conf, turns)
 
     if _should_reply(is_mention, is_reply_to_bot, message.chat.type):
         llm_limit_raw = app_conf.get("llm_daily_limit", 0) or 0

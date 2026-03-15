@@ -41,6 +41,7 @@ async def cmd_bot(
         app_conf = await app_config.get_all()
         active = conf.get("is_active", True)
         prob = app_conf.get("interject_p", 0)
+        reaction_prob = app_conf.get("reaction_p", 5)
         cooldown = app_conf.get("interject_cooldown", 60)
         revive_enabled = conf.get("revive_enabled", False)
         revive_hours = int(conf.get("revive_after_hours", 48) or 48)
@@ -54,6 +55,7 @@ async def cmd_bot(
             "Реакция: упоминания и ответы\n"
             f"Тихие часы: {quiet_label}\n"
             f"Вероятность вмешательства: {prob}%\n"
+            f"Вероятность реакций: {reaction_prob}%\n"
             f"Кулдаун: {cooldown}с\n"
             f"Оживление: {'включено' if revive_enabled else 'выключено'} (порог {revive_days} д.)\n"
             f"Персонализация: {'включена' if personalization_enabled and user_memory_enabled else 'выключена'}"

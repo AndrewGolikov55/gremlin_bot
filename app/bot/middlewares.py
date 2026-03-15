@@ -9,6 +9,7 @@ from ..services.context import ContextService
 from ..services.interjector import InterjectorService
 from ..services.persona import StylePromptService
 from ..services.app_config import AppConfigService
+from ..services.reactions import ReactionService
 from ..services.roulette import RouletteService
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
@@ -37,6 +38,7 @@ class ServicesMiddleware(BaseMiddleware):
         interjector: InterjectorService,
         personas: StylePromptService,
         app_config: AppConfigService,
+        reactions: ReactionService,
         roulette: RouletteService,
         usage_limits: UsageLimiter,
         memory: UserMemoryService,
@@ -46,6 +48,7 @@ class ServicesMiddleware(BaseMiddleware):
         self.interjector = interjector
         self.personas = personas
         self.app_config = app_config
+        self.reactions = reactions
         self.roulette = roulette
         self.usage_limits = usage_limits
         self.memory = memory
@@ -61,6 +64,7 @@ class ServicesMiddleware(BaseMiddleware):
         data["interjector"] = self.interjector
         data["personas"] = self.personas
         data["app_config"] = self.app_config
+        data["reactions"] = self.reactions
         data["roulette"] = self.roulette
         data["usage_limits"] = self.usage_limits
         data["memory"] = self.memory

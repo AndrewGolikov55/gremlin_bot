@@ -289,6 +289,7 @@ def create_admin_router(
         context_tokens: int = Form(...),
         roulette_title_context_messages: int = Form(...),
         interject_p: int = Form(...),
+        reaction_p: int = Form(...),
         interject_cooldown: int = Form(...),
         summary_daily_limit: int = Form(...),
         llm_daily_limit: int = Form(...),
@@ -315,6 +316,7 @@ def create_admin_router(
         context_tokens = max(2000, min(60000, context_tokens))
         roulette_title_context_messages = max(20, min(500, roulette_title_context_messages))
         interject_p = max(0, min(100, interject_p))
+        reaction_p = max(0, min(100, reaction_p))
         interject_cooldown = max(10, min(3600, interject_cooldown))
         summary_daily_limit = max(0, min(20, summary_daily_limit))
         llm_daily_limit = max(0, min(5000, llm_daily_limit))
@@ -350,6 +352,7 @@ def create_admin_router(
             await app_config.set("context_max_prompt_tokens", context_tokens)
             await app_config.set("roulette_title_context_messages", roulette_title_context_messages)
             await app_config.set("interject_p", interject_p)
+            await app_config.set("reaction_p", reaction_p)
             await app_config.set("interject_cooldown", interject_cooldown)
             await app_config.set("summary_daily_limit", summary_daily_limit)
             await app_config.set("llm_daily_limit", llm_daily_limit)
@@ -638,6 +641,7 @@ def _render_chat_settings_body(
         f"<tr><td>Макс. длина ответа</td><td>{escape(str(app_conf.get('max_length', 0)))} символов</td></tr>"
         f"<tr><td>Лимит окна</td><td>{escape(str(app_conf.get('context_max_prompt_tokens', 32000)))} токенов</td></tr>"
         f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, кулдаун {escape(str(app_conf.get('interject_cooldown', 60)))}с</td></tr>"
+        f"<tr><td>Реакции</td><td>{escape(str(app_conf.get('reaction_p', 5)))}% шанс</td></tr>"
         f"<tr><td>Память участников</td><td>{'включена' if app_conf.get('user_memory_enabled', True) else 'выключена'}; top-k {escape(str(app_conf.get('memory_top_k', 6)))}</td></tr>"
         f"<tr><td>Звание рулетки</td><td>{escape(title_label)}</td></tr>"
         f"<tr><td>Режим звания</td><td>{escape(title_mode)}</td></tr>"
@@ -987,6 +991,7 @@ def _render_app_config_body(
     max_length = int(conf.get("max_length", 0) or 0)
     context_tokens = int(conf.get("context_max_prompt_tokens", 32000) or 32000)
     interject_p = int(conf.get("interject_p", 0) or 0)
+    reaction_p = int(conf.get("reaction_p", 5) or 5)
     interject_cooldown = int(conf.get("interject_cooldown", 60) or 60)
     summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
@@ -1044,6 +1049,10 @@ def _render_app_config_body(
         "<div class='col-md-6'>"
         "<label class='form-label'>Вероятность вмешательства (0-100%)</label>"
         f"<input class='form-control' type='number' name='interject_p' min='0' max='100' value='{interject_p}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Вероятность реакций (0-100%)</label>"
+        f"<input class='form-control' type='number' name='reaction_p' min='0' max='100' value='{reaction_p}'>"
         "</div>"
         "<div class='col-md-6'>"
         "<label class='form-label'>Кулдаун вмешательств (10-3600 сек)</label>"

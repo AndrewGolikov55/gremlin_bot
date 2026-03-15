@@ -184,6 +184,66 @@ class UserMemoryService:
             return None
         return "\n".join(lines)
 
+    async def build_reaction_memory_block(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        user_id: int,
+        query_text: str | None,
+        app_conf: dict[str, object],
+        speaker_name: str | None = None,
+        exclude_message_id: int | None = None,
+    ) -> str | None:
+        if not self.is_enabled(app_conf):
+            return None
+
+        profile = await session.get(UserMemoryProfile, (chat_id, user_id))
+        relation = await session.get(RelationshipState, (chat_id, user_id))
+        visible_memory = _profile_memory_values(profile)
+        relation_summary = _relationship_summary(relation) if relation else None
+
+        messages: list[RetrievedUserMessage] = []
+        if not relation_summary or not any(visible_memory.values()):
+            messages = await self._search_user_messages(
+                session,
+                chat_id=chat_id,
+                user_id=user_id,
+                query_text=query_text,
+                top_k=2,
+                candidate_limit=min(40, max(10, int(app_conf.get("memory_rag_candidate_limit", 120) or 120))),
+                exclude_message_id=exclude_message_id,
+            )
+
+        if profile is None and relation_summary is None and not messages:
+            return None
+
+        lines = ["Короткий контекст для выбора реакции на сообщение."]
+        if speaker_name:
+            lines.append(f"Пользователь: {speaker_name}.")
+        if relation_summary:
+            lines.append(f"Отношения: {relation_summary}.")
+        if visible_memory["boundary"]:
+            lines.append(f"Граница: {_truncate_text(visible_memory['boundary'][0], 70)}")
+        elif visible_memory["preference"]:
+            lines.append(f"Предпочтение: {_truncate_text(visible_memory['preference'][0], 70)}")
+        elif visible_memory["identity"]:
+            lines.append(f"Факт: {_truncate_text(visible_memory['identity'][0], 70)}")
+        elif messages:
+            lines.append("Недавно писал:")
+            for item in messages[:2]:
+                lines.append(f"- {_truncate_text(item.text, 90)}")
+
+        selected: list[str] = []
+        used = 0
+        for line in lines:
+            tokens = _estimate_tokens(line)
+            if selected and used + tokens > 90:
+                break
+            selected.append(line)
+            used += tokens
+        return "\n".join(selected).strip() or None
+
     def sidecar_enabled(self, conf: dict[str, object] | None) -> bool:
         if not conf:
             return False
