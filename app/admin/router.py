@@ -8,21 +8,23 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from aiogram import Bot
 from ..models.chat import Chat
 from ..models.message import Message
+from ..models.memory import RelationshipState, UserMemoryProfile
 from ..models.persona import StylePrompt
 from ..models.user import User
 from ..services.persona import StylePromptService, BASE_STYLE_DATA, DEFAULT_STYLE_KEY
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
+from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 
-STYLE_ORDER = [DEFAULT_STYLE_KEY, "standup", "boss", "zoomer", "jarvis"]
+STYLE_ORDER = [DEFAULT_STYLE_KEY, "chatmate", "standup", "boss", "zoomer", "jarvis"]
 BOOTSTRAP_CSS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
 BOOTSTRAP_JS = "https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
 
@@ -36,6 +38,7 @@ def create_admin_router(
     app_config: AppConfigService,
     bot: Bot,
     roulette: RouletteService,
+    user_memory: UserMemoryService,
 ) -> APIRouter:
     router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -82,6 +85,7 @@ def create_admin_router(
         style: str = Form(...),
         temperature: float = Form(...),
         revive_enabled: bool = Form(False),
+        personalization_enabled: bool = Form(False),
         revive_days: int = Form(2),
         token: str = Depends(require_token),
         session: AsyncSession = Depends(get_session),
@@ -113,6 +117,7 @@ def create_admin_router(
 
         await settings.set(chat_id, "style", style)
         await settings.set(chat_id, "revive_enabled", bool(revive_enabled))
+        await settings.set(chat_id, "personalization_enabled", bool(personalization_enabled))
         await settings.set(chat_id, "revive_after_hours", revive_hours)
         await settings.set(chat_id, "temperature", temp_value)
 
@@ -177,6 +182,93 @@ def create_admin_router(
         body = _render_history_body(chat, rows, page, page_size, total, token)
         return HTMLResponse(_render_page(f"История чата {chat.id}", token, "chats", body))
 
+    @router.get("/chats/{chat_id}/memory", response_class=HTMLResponse)
+    async def chat_memory_view(
+        chat_id: int,
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
+        rows = (
+            await session.execute(
+                select(UserMemoryProfile, User, RelationshipState)
+                .outerjoin(User, User.tg_id == UserMemoryProfile.user_id)
+                .outerjoin(
+                    RelationshipState,
+                    and_(
+                        RelationshipState.chat_id == UserMemoryProfile.chat_id,
+                        RelationshipState.user_id == UserMemoryProfile.user_id,
+                    ),
+                )
+                .where(UserMemoryProfile.chat_id == chat_id)
+                .order_by(UserMemoryProfile.updated_at.desc())
+            )
+        ).all()
+        body = _render_memory_users_body(chat, rows, token)
+        return HTMLResponse(_render_page(f"Память чата {chat.id}", token, "chats", body))
+
+    @router.get("/chats/{chat_id}/memory/{user_id}", response_class=HTMLResponse)
+    async def chat_memory_user_view(
+        chat_id: int,
+        user_id: int,
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
+        profile = await session.get(UserMemoryProfile, (chat_id, user_id))
+        relation = await session.get(RelationshipState, (chat_id, user_id))
+        user = (
+            await session.execute(select(User).where(User.tg_id == user_id))
+        ).scalar_one_or_none()
+        recent_messages = await user_memory.get_recent_user_messages(
+            session,
+            chat_id=chat_id,
+            user_id=user_id,
+            limit=50,
+        )
+
+        body = _render_memory_user_detail_body(
+            chat,
+            user,
+            profile,
+            relation,
+            recent_messages,
+            token,
+        )
+        return HTMLResponse(_render_page(f"Память пользователя {user_id}", token, "chats", body))
+
+    @router.post("/chats/{chat_id}/memory/{user_id}/reset", response_class=HTMLResponse)
+    async def chat_memory_user_reset(
+        chat_id: int,
+        user_id: int,
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+
+        await user_memory.reset_user_memory(chat_id, user_id)
+        user = (
+            await session.execute(select(User).where(User.tg_id == user_id))
+        ).scalar_one_or_none()
+        body = _render_memory_user_detail_body(
+            chat,
+            user,
+            None,
+            None,
+            [],
+            token,
+            note="Персональная память пользователя сброшена.",
+        )
+        return HTMLResponse(_render_page(f"Память пользователя {user_id}", token, "chats", body))
+
     @router.get("/styles", response_class=HTMLResponse)
     async def style_prompts_view(token: str = Depends(require_token)) -> str:
         entries = await personas.get_entries()
@@ -201,6 +293,12 @@ def create_admin_router(
         llm_daily_limit: int = Form(...),
         llm_provider: str = Form(...),
         llm_openai_censorship_fallback: bool = Form(False),
+        user_memory_enabled: bool = Form(False),
+        memory_sidecar_enabled: bool = Form(False),
+        memory_top_k: int = Form(...),
+        memory_max_prompt_tokens: int = Form(...),
+        memory_rag_candidate_limit: int = Form(...),
+        memory_group_users: int = Form(...),
         prompt_chat_base: str = Form(...),
         prompt_chat_interject_suffix: str = Form(...),
         prompt_focus_suffix: str = Form(...),
@@ -218,6 +316,10 @@ def create_admin_router(
         interject_cooldown = max(10, min(3600, interject_cooldown))
         summary_daily_limit = max(0, min(20, summary_daily_limit))
         llm_daily_limit = max(0, min(5000, llm_daily_limit))
+        memory_top_k = max(1, min(16, memory_top_k))
+        memory_max_prompt_tokens = max(120, min(2000, memory_max_prompt_tokens))
+        memory_rag_candidate_limit = max(20, min(500, memory_rag_candidate_limit))
+        memory_group_users = max(1, min(5, memory_group_users))
 
         prompt_chat_base = prompt_chat_base.strip()
         prompt_chat_interject_suffix = prompt_chat_interject_suffix.strip()
@@ -251,6 +353,12 @@ def create_admin_router(
             if provider_value in {"openrouter", "openai"}:
                 await app_config.set("llm_provider", provider_value)
                 await app_config.set("llm_openai_censorship_fallback", fallback_value)
+            await app_config.set("user_memory_enabled", bool(user_memory_enabled))
+            await app_config.set("memory_sidecar_enabled", bool(memory_sidecar_enabled))
+            await app_config.set("memory_top_k", memory_top_k)
+            await app_config.set("memory_max_prompt_tokens", memory_max_prompt_tokens)
+            await app_config.set("memory_rag_candidate_limit", memory_rag_candidate_limit)
+            await app_config.set("memory_group_users", memory_group_users)
             await app_config.set("prompt_chat_base", prompt_chat_base)
             await app_config.set("prompt_chat_interject_suffix", prompt_chat_interject_suffix)
             await app_config.set("prompt_focus_suffix", prompt_focus_suffix)
@@ -452,6 +560,7 @@ def _render_chats_body(chats: list[Chat], token: str | None) -> str:
         status_label = "ON" if chat.is_active else "OFF"
         settings_url = _build_url(f"/admin/chats/{chat.id}", token)
         history_url = _build_url(f"/admin/chats/{chat.id}/history", token)
+        memory_url = _build_url(f"/admin/chats/{chat.id}/memory", token)
         rows.append(
             "<tr>"
             f"<td class='text-nowrap'>{escape(str(chat.id))}</td>"
@@ -459,7 +568,8 @@ def _render_chats_body(chats: list[Chat], token: str | None) -> str:
             f"<td><span class='badge {status}'>{status_label}</span></td>"
             "<td class='text-end'>"
             f"<a class='btn btn-sm btn-primary me-1' href='{escape(settings_url)}'>Настройки</a>"
-            f"<a class='btn btn-sm btn-outline-secondary' href='{escape(history_url)}'>История</a>"
+            f"<a class='btn btn-sm btn-outline-secondary me-1' href='{escape(history_url)}'>История</a>"
+            f"<a class='btn btn-sm btn-outline-dark' href='{escape(memory_url)}'>Память</a>"
             "</td>"
             "</tr>"
         )
@@ -493,6 +603,7 @@ def _render_chat_settings_body(
     note: str | None = None,
 ) -> str:
     revive_enabled = bool(conf.get("revive_enabled", False))
+    personalization_enabled = bool(conf.get("personalization_enabled", True))
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
     style_current = str(conf.get("style", styles[0][0] if styles else DEFAULT_STYLE_KEY))
@@ -510,6 +621,7 @@ def _render_chat_settings_body(
         alerts.append(f"<div class='alert alert-info'>{escape(note)}</div>")
     message = "".join(alerts)
     history_url = _build_url(f"/admin/chats/{chat.id}/history", token)
+    memory_url = _build_url(f"/admin/chats/{chat.id}/memory", token)
 
     options_html = "".join(
         f"<option value='{escape(slug)}'{' selected' if slug == style_current else ''}>{escape(title)}</option>"
@@ -521,6 +633,7 @@ def _render_chat_settings_body(
         f"<tr><td>Макс. длина ответа</td><td>{escape(str(app_conf.get('max_length', 0)))} символов</td></tr>"
         f"<tr><td>Лимит окна</td><td>{escape(str(app_conf.get('context_max_prompt_tokens', 32000)))} токенов</td></tr>"
         f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, кулдаун {escape(str(app_conf.get('interject_cooldown', 60)))}с</td></tr>"
+        f"<tr><td>Память участников</td><td>{'включена' if app_conf.get('user_memory_enabled', True) else 'выключена'}; top-k {escape(str(app_conf.get('memory_top_k', 6)))}</td></tr>"
         f"<tr><td>Прозвище рулетки</td><td>{escape(title_label)}</td></tr>"
     )
 
@@ -528,7 +641,10 @@ def _render_chat_settings_body(
         "<div class='container py-4'>"
         "<div class='d-flex justify-content-between align-items-center mb-3'>"
         f"<div><h1 class='h3 mb-0'>Настройки чата</h1><div class='text-muted'>{escape(chat.title)}</div></div>"
+        "<div class='d-flex gap-2'>"
         f"<a class='btn btn-outline-secondary' href='{escape(history_url)}'>История чата</a>"
+        f"<a class='btn btn-outline-dark' href='{escape(memory_url)}'>Память участников</a>"
+        "</div>"
         "</div>"
         f"{message}"
         "<form method='post' class='row g-3'>"
@@ -547,6 +663,10 @@ def _render_chat_settings_body(
         "<div class='col-md-6 d-flex align-items-end'>"
         f"<div class='form-check'><input class='form-check-input' type='checkbox' name='revive_enabled' value='1'{' checked' if revive_enabled else ''}>"
         "<label class='form-check-label'>Оживление при тишине</label></div>"
+        "</div>"
+        "<div class='col-md-6 d-flex align-items-end'>"
+        f"<div class='form-check'><input class='form-check-input' type='checkbox' name='personalization_enabled' value='1'{' checked' if personalization_enabled else ''}>"
+        "<label class='form-check-label'>Персонализация по участникам</label></div>"
         "</div>"
         "<div class='col-12'>"
         "<button class='btn btn-primary' type='submit'>Сохранить</button>"
@@ -630,6 +750,124 @@ def _render_history_body(
     )
 
 
+def _render_memory_users_body(
+    chat: Chat,
+    rows: list[tuple[UserMemoryProfile, User | None, RelationshipState | None]],
+    token: str | None,
+) -> str:
+    settings_url = _build_url(f"/admin/chats/{chat.id}", token)
+    items = []
+    for profile, user, relation in rows:
+        username = user.username if user and user.username else str(profile.user_id)
+        detail_url = _build_url(f"/admin/chats/{chat.id}/memory/{profile.user_id}", token)
+        tension = f"{float(relation.tension or 0):.2f}" if relation else "0.00"
+        familiarity = f"{float(relation.familiarity or 0):.2f}" if relation else "0.00"
+        items.append(
+            "<tr>"
+            f"<td>{escape(username)}</td>"
+            f"<td>{escape(str(profile.memory_count))}</td>"
+            f"<td>{escape(familiarity)}</td>"
+            f"<td>{escape(tension)}</td>"
+            f"<td>{escape(profile.updated_at.strftime('%Y-%m-%d %H:%M:%S') if profile.updated_at else '—')}</td>"
+            f"<td class='text-end'><a class='btn btn-sm btn-outline-primary' href='{escape(detail_url)}'>Открыть</a></td>"
+            "</tr>"
+        )
+
+    table = (
+        "<div class='table-responsive'><table class='table table-hover align-middle'>"
+        "<thead><tr><th>Пользователь</th><th>Записей</th><th>Знакомство</th><th>Напряжение</th><th>Обновлено</th><th></th></tr></thead>"
+        f"<tbody>{''.join(items)}</tbody></table></div>"
+        if items
+        else "<div class='alert alert-info'>Память по участникам ещё не накопилась.</div>"
+    )
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        f"<div><h1 class='h3 mb-0'>Память участников</h1><div class='text-muted'>{escape(chat.title)}</div></div>"
+        f"<a class='btn btn-outline-secondary' href='{escape(settings_url)}'>← Настройки чата</a>"
+        "</div>"
+        f"{table}"
+        "</div>"
+    )
+
+
+def _render_memory_user_detail_body(
+    chat: Chat,
+    user: User | None,
+    profile: UserMemoryProfile | None,
+    relation: RelationshipState | None,
+    recent_messages: list[Message],
+    token: str | None,
+    *,
+    note: str | None = None,
+) -> str:
+    back_url = _build_url(f"/admin/chats/{chat.id}/memory", token)
+    username = user.username if user and user.username else (str(profile.user_id) if profile else "unknown")
+    alerts = f"<div class='alert alert-info'>{escape(note)}</div>" if note else ""
+
+    summary_rows = []
+    if profile is not None:
+        if profile.summary:
+            summary_rows.append(f"<tr><td>Summary</td><td>{escape(profile.summary)}</td></tr>")
+        summary_rows.append(f"<tr><td>Identity</td><td>{escape(', '.join(profile.identity) or '—')}</td></tr>")
+        summary_rows.append(f"<tr><td>Preferences</td><td>{escape(', '.join(profile.preferences) or '—')}</td></tr>")
+        summary_rows.append(f"<tr><td>Boundaries</td><td>{escape(', '.join(profile.boundaries) or '—')}</td></tr>")
+        summary_rows.append(f"<tr><td>Projects</td><td>{escape(', '.join(profile.projects) or '—')}</td></tr>")
+        summary_rows.append(f"<tr><td>Memory count</td><td>{escape(str(profile.memory_count))}</td></tr>")
+
+    if relation is not None:
+        summary_rows.append(f"<tr><td>Affinity</td><td>{float(relation.affinity or 0):.2f}</td></tr>")
+        summary_rows.append(f"<tr><td>Familiarity</td><td>{float(relation.familiarity or 0):.2f}</td></tr>")
+        summary_rows.append(f"<tr><td>Tension</td><td>{float(relation.tension or 0):.2f}</td></tr>")
+        summary_rows.append(f"<tr><td>Tone hint</td><td>{escape(relation.tone_hint or 'neutral')}</td></tr>")
+
+    summary_table = (
+        "<div class='card mb-4'><div class='card-header'>Срез памяти</div><div class='card-body p-0'>"
+        f"<table class='table table-sm mb-0'><tbody>{''.join(summary_rows)}</tbody></table>"
+        "</div></div>"
+        if summary_rows
+        else "<div class='alert alert-warning'>Профиль памяти пуст.</div>"
+    )
+
+    message_rows = []
+    for item in recent_messages:
+        date_str = item.date.strftime("%Y-%m-%d %H:%M:%S") if item.date else "—"
+        message_rows.append(
+            "<tr>"
+            f"<td>{escape(str(item.message_id))}</td>"
+            f"<td>{escape(date_str)}</td>"
+            f"<td>{escape((item.text or '').replace(chr(10), ' '))}</td>"
+            "</tr>"
+        )
+
+    item_table = (
+        "<div class='card'><div class='card-header'>Последние сообщения пользователя</div><div class='table-responsive'>"
+        "<table class='table table-striped mb-0'>"
+        "<thead><tr><th>ID</th><th>Дата</th><th>Текст</th></tr></thead>"
+        f"<tbody>{''.join(message_rows)}</tbody></table></div></div>"
+        if message_rows
+        else "<div class='alert alert-info'>У пользователя пока нет сохранённых сообщений.</div>"
+    )
+
+    reset_url = _build_url(f"/admin/chats/{chat.id}/memory/{profile.user_id if profile else user.tg_id if user else 0}/reset", token)
+
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        f"<div><h1 class='h3 mb-0'>Память пользователя</h1><div class='text-muted'>{escape(username)} / чат {escape(chat.title)}</div></div>"
+        f"<a class='btn btn-outline-secondary' href='{escape(back_url)}'>← К списку памяти</a>"
+        "</div>"
+        f"{alerts}"
+        f"{summary_table}"
+        f"<form method='post' action='{escape(reset_url)}' class='mb-4'>"
+        "<button class='btn btn-outline-danger btn-sm' type='submit'>Сбросить память пользователя</button>"
+        "</form>"
+        f"{item_table}"
+        "</div>"
+    )
+
+
 def _render_app_config_body(
     conf: dict[str, object],
     token: str | None,
@@ -653,6 +891,12 @@ def _render_app_config_body(
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
     llm_provider = str(conf.get("llm_provider", "openrouter") or "openrouter")
     fallback_enabled = bool(conf.get("llm_openai_censorship_fallback", False))
+    user_memory_enabled = bool(conf.get("user_memory_enabled", True))
+    memory_sidecar_enabled = bool(conf.get("memory_sidecar_enabled", True))
+    memory_top_k = int(conf.get("memory_top_k", 6) or 6)
+    memory_max_prompt_tokens = int(conf.get("memory_max_prompt_tokens", 500) or 500)
+    memory_rag_candidate_limit = int(conf.get("memory_rag_candidate_limit", 120) or 120)
+    memory_group_users = int(conf.get("memory_group_users", 3) or 3)
     prompt_chat_base = str(conf.get("prompt_chat_base", ""))
     prompt_chat_interject_suffix = str(conf.get("prompt_chat_interject_suffix", ""))
     prompt_focus_suffix = str(conf.get("prompt_focus_suffix", ""))
@@ -716,6 +960,34 @@ def _render_app_config_body(
         f"<input class='form-check-input' type='checkbox' name='llm_openai_censorship_fallback' value='1'{' checked' if fallback_enabled else ''}>"
         "<label class='form-check-label'>Автоматический fallback между OpenAI и OpenRouter</label>"
         "</div>"
+        "</div>"
+        "<div class='col-md-6 d-flex align-items-end'>"
+        "<div class='form-check form-switch'>"
+        f"<input class='form-check-input' type='checkbox' name='user_memory_enabled' value='1'{' checked' if user_memory_enabled else ''}>"
+        "<label class='form-check-label'>Включить память по участникам</label>"
+        "</div>"
+        "</div>"
+        "<div class='col-md-6 d-flex align-items-end'>"
+        "<div class='form-check form-switch'>"
+        f"<input class='form-check-input' type='checkbox' name='memory_sidecar_enabled' value='1'{' checked' if memory_sidecar_enabled else ''}>"
+        "<label class='form-check-label'>Включить sidecar memory update в том же LLM-запросе</label>"
+        "</div>"
+        "</div>"
+        "<div class='col-md-4'>"
+        "<label class='form-label'>Память: top-k</label>"
+        f"<input class='form-control' type='number' name='memory_top_k' min='1' max='16' value='{memory_top_k}'>"
+        "</div>"
+        "<div class='col-md-4'>"
+        "<label class='form-label'>Память: бюджет в prompt</label>"
+        f"<input class='form-control' type='number' name='memory_max_prompt_tokens' min='120' max='2000' value='{memory_max_prompt_tokens}'>"
+        "</div>"
+        "<div class='col-md-4'>"
+        "<label class='form-label'>Кандидатов сообщений для RAG</label>"
+        f"<input class='form-control' type='number' name='memory_rag_candidate_limit' min='20' max='500' value='{memory_rag_candidate_limit}'>"
+        "</div>"
+        "<div class='col-md-4'>"
+        "<label class='form-label'>Участников для revive-памяти</label>"
+        f"<input class='form-control' type='number' name='memory_group_users' min='1' max='5' value='{memory_group_users}'>"
         "</div>"
         "<div class='col-12'>"
         "<label class='form-label'>Базовый системный промт</label>"

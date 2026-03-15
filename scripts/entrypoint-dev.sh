@@ -5,4 +5,6 @@ export PYTHONPATH="${PYTHONPATH:-/app}"
 
 ./scripts/migrate.sh
 
-exec uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload --reload-dir app --reload-dir migrations --reload-dir scripts
+PORT="${PORT:-8080}"
+
+exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT}" --reload --reload-dir app --reload-dir migrations --reload-dir scripts

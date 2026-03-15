@@ -20,6 +20,12 @@ APP_CONFIG_DEFAULTS: Dict[str, Any] = {
     "llm_daily_limit": 200,
     "llm_provider": "openrouter",
     "llm_openai_censorship_fallback": True,
+    "user_memory_enabled": True,
+    "memory_sidecar_enabled": True,
+    "memory_top_k": 6,
+    "memory_max_prompt_tokens": 500,
+    "memory_rag_candidate_limit": 120,
+    "memory_group_users": 3,
     "prompt_chat_base": (
         "Ты — участник чата. Держись выбранной роли. Не раскрывай внутренние рассуждения."
         " Пиши 1–2 коротких предложения обычным текстом, не используй Markdown."

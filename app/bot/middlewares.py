@@ -11,6 +11,7 @@ from ..services.persona import StylePromptService
 from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
 from ..services.usage_limits import UsageLimiter
+from ..services.user_memory import UserMemoryService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -38,6 +39,7 @@ class ServicesMiddleware(BaseMiddleware):
         app_config: AppConfigService,
         roulette: RouletteService,
         usage_limits: UsageLimiter,
+        memory: UserMemoryService,
     ):
         self.settings = settings
         self.context = context
@@ -46,6 +48,7 @@ class ServicesMiddleware(BaseMiddleware):
         self.app_config = app_config
         self.roulette = roulette
         self.usage_limits = usage_limits
+        self.memory = memory
 
     async def __call__(
         self,
@@ -60,4 +63,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["app_config"] = self.app_config
         data["roulette"] = self.roulette
         data["usage_limits"] = self.usage_limits
+        data["memory"] = self.memory
         return await handler(event, data)

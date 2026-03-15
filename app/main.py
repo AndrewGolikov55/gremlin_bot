@@ -37,6 +37,7 @@ from .services.persona import StylePromptService, BASE_STYLE_DATA
 from .services.app_config import AppConfigService
 from .services.roulette import RouletteService
 from .services.usage_limits import UsageLimiter
+from .services.user_memory import UserMemoryService
 from zoneinfo import ZoneInfo
 from .utils.logging import ensure_trace_level
 from .utils.proxy import get_proxy_url
@@ -106,6 +107,7 @@ roulette_service = RouletteService(
     personas=persona_service,
 )
 usage_limits_service = UsageLimiter(redis, timezone=ZoneInfo("Europe/Moscow"))
+user_memory_service = UserMemoryService(async_sessionmaker)
 
 # Routers
 dp.include_router(admin_router)
@@ -127,6 +129,7 @@ interjector_service = InterjectorService(
     redis=redis,
     personas=persona_service,
     usage_limits=usage_limits_service,
+    memory=user_memory_service,
 )
 dp.update.middleware(
     ServicesMiddleware(
@@ -137,13 +140,24 @@ dp.update.middleware(
         app_config_service,
         roulette_service,
         usage_limits_service,
+        user_memory_service,
     )
 )
 scheduler = get_scheduler()
 
 
 app = FastAPI(title="Gremlin Bot", version="0.1.0")
-app.include_router(create_admin_router(async_sessionmaker, settings_service, persona_service, app_config_service, bot, roulette_service))
+app.include_router(
+    create_admin_router(
+        async_sessionmaker,
+        settings_service,
+        persona_service,
+        app_config_service,
+        bot,
+        roulette_service,
+        user_memory_service,
+    )
+)
 app.state.polling_task = None
 app.state.scheduler = None
 

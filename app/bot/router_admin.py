@@ -42,6 +42,8 @@ async def cmd_bot(
         revive_enabled = conf.get("revive_enabled", False)
         revive_hours = int(conf.get("revive_after_hours", 48) or 48)
         revive_days = max(1, revive_hours // 24)
+        personalization_enabled = bool(conf.get("personalization_enabled", True))
+        user_memory_enabled = bool(app_conf.get("user_memory_enabled", True))
         quiet_value = conf.get("quiet_hours") or "off"
         quiet_label = QUIET_LABELS.get(quiet_value, quiet_value)
         return await message.reply(
@@ -50,7 +52,8 @@ async def cmd_bot(
             f"Тихие часы: {quiet_label}\n"
             f"Вероятность вмешательства: {prob}%\n"
             f"Кулдаун: {cooldown}с\n"
-            f"Оживление: {'включено' if revive_enabled else 'выключено'} (порог {revive_days} д.)"
+            f"Оживление: {'включено' if revive_enabled else 'выключено'} (порог {revive_days} д.)\n"
+            f"Персонализация: {'включена' if personalization_enabled and user_memory_enabled else 'выключена'}"
         )
     else:
         return await message.reply("Использование: /bot on|off|status")

@@ -26,6 +26,7 @@ DEFAULT_FOCUS_SUFFIX = 'Вопрос: "{question}". Ответь одним со
 @dataclass(frozen=True, slots=True)
 class ChatTurn:
     speaker: str | None
+    user_id: int | None
     text: str
     is_bot: bool
 
@@ -51,7 +52,7 @@ class ContextService:
         turns: List[ChatTurn] = []
         for msg, user in reversed(rows):
             speaker = _resolve_name(user, msg.user_id)
-            turns.append(ChatTurn(speaker, msg.text or "", bool(msg.is_bot)))
+            turns.append(ChatTurn(speaker, msg.user_id, msg.text or "", bool(msg.is_bot)))
         return turns
 
 
@@ -61,6 +62,7 @@ def build_messages(
     max_turns: int = 20,
     max_tokens: int | None = None,
     closing_text: str | None = None,
+    context_blocks: Iterable[str] | None = None,
 ) -> list[dict[str, str]]:
     def _estimate_tokens(text: str) -> int:
         # Простая оценка, чтобы не превышать окно модели (≈4 символа на токен)
@@ -108,6 +110,13 @@ def build_messages(
     system_content = system_prompt.strip()
     msgs: list[dict[str, str]] = [{"role": "system", "content": system_content}]
     tokens_budget = _estimate_tokens(system_content)
+
+    for block in context_blocks or ():
+        clean_block = (block or "").strip()
+        if not clean_block:
+            continue
+        msgs.append({"role": "user", "content": clean_block})
+        tokens_budget += _estimate_tokens(clean_block)
 
     tail = list(turns)[-max_turns:]
     entries: list[dict[str, object]] = []

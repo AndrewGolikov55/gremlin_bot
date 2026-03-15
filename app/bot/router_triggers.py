@@ -30,6 +30,7 @@ from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.persona import StylePromptService
 from ..services.usage_limits import UsageLimiter
+from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 from .constants import START_PRIVATE_RESPONSE
 
@@ -50,6 +51,7 @@ async def collect_messages(
     personas: StylePromptService,
     app_config: AppConfigService,
     usage_limits: UsageLimiter,
+    memory: UserMemoryService,
     bot: Bot,
 ):
     bot_user = await bot.get_me()
@@ -109,6 +111,7 @@ async def collect_messages(
     provider, fallback_enabled = resolve_llm_options(app_conf)
     base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
     focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
+    personalization_enabled = bool(conf.get("personalization_enabled", True))
 
     max_turns = int(app_conf.get("context_max_turns", 100) or 100)
     prompt_token_limit = _resolve_prompt_token_limit(app_conf)
@@ -144,11 +147,26 @@ async def collect_messages(
             base_prompt=base_prompt,
             focus_suffix=focus_suffix,
         )
+        memory_block = None
+        if personalization_enabled and message.from_user:
+            speaker_name = message.from_user.username or message.from_user.full_name
+            memory_block = await memory.build_user_memory_block(
+                session,
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                query_text=focus_text or raw_focus,
+                app_conf=app_conf,
+                speaker_name=speaker_name,
+                exclude_message_id=message.message_id,
+            )
+        if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
+            system_prompt += "\n\n" + memory.get_sidecar_system_suffix()
         messages_for_llm = build_messages(
             system_prompt,
             turns,
             max_turns,
             prompt_token_limit,
+            context_blocks=[memory_block] if memory_block else None,
         )
 
         try:
@@ -188,11 +206,29 @@ async def collect_messages(
             await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
             return
 
-        reply_text = apply_moderation(raw_reply)
+        sidecar = None
+        if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
+            sidecar = memory.parse_sidecar_response(raw_reply)
+            reply_text = apply_moderation(memory.clamp_reply_text(sidecar.reply))
+        else:
+            reply_text = apply_moderation(raw_reply)
         if not reply_text.strip():
             return
 
         await message.reply(reply_text.strip())
+        if sidecar is not None and message.from_user:
+            try:
+                await memory.apply_sidecar_update(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    result=sidecar,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to apply user memory sidecar chat=%s user=%s",
+                    message.chat.id,
+                    message.from_user.id,
+                )
         return
 
     await interjector.maybe_reply_to_message(message, conf, turns)

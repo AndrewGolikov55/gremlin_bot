@@ -34,6 +34,7 @@ from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.usage_limits import UsageLimiter
+from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 
 logger = logging.getLogger("interjector")
@@ -54,6 +55,7 @@ class InterjectorService:
         redis: Redis,
         personas: StylePromptService,
         usage_limits: UsageLimiter,
+        memory: UserMemoryService,
     ) -> None:
         self.bot = bot
         self.settings = settings
@@ -63,6 +65,7 @@ class InterjectorService:
         self.redis = redis
         self.personas = personas
         self.usage_limits = usage_limits
+        self.memory = memory
         self._cooldown_prefix = "interject:last:"
         self._revive_prefix = "interject:revive:last:"
 
@@ -100,9 +103,30 @@ class InterjectorService:
         if not focus_text:
             focus_text = None
 
-        reply_text = await self._generate_reply(conf, app_conf, turns, focus_text, chat_id=message.chat.id)
-        if not reply_text:
+        memory_block = None
+        if bool(conf.get("personalization_enabled", True)) and message.from_user:
+            async with self.sessionmaker() as session:
+                memory_block = await self.memory.build_user_memory_block(
+                    session,
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    query_text=focus_text,
+                    app_conf=app_conf,
+                    speaker_name=message.from_user.username or message.from_user.full_name,
+                    exclude_message_id=message.message_id,
+                )
+
+        generated = await self._generate_reply(
+            conf,
+            app_conf,
+            turns,
+            focus_text,
+            chat_id=message.chat.id,
+            context_blocks=[memory_block] if memory_block else None,
+        )
+        if not generated:
             return
+        reply_text, sidecar = generated
 
         try:
             await self.bot.send_message(
@@ -113,6 +137,20 @@ class InterjectorService:
         except Exception:
             logger.exception("Failed to send spontaneous reply to chat %s", message.chat.id)
             return
+
+        if sidecar is not None and message.from_user:
+            try:
+                await self.memory.apply_sidecar_update(
+                    chat_id=message.chat.id,
+                    user_id=message.from_user.id,
+                    result=sidecar,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to apply interject sidecar chat=%s user=%s",
+                    message.chat.id,
+                    message.from_user.id,
+                )
 
         await self._mark_interject(message.chat.id, now)
         logger.info("Spontaneous reply sent to chat %s", message.chat.id)
@@ -175,6 +213,18 @@ class InterjectorService:
         prompt_tokens = self._prompt_token_limit(app_conf)
         context_turns = min(int(app_conf.get("context_max_turns", 100) or 100), 20)
         revive_closing = str(app_conf.get("prompt_revive_closing") or DEFAULT_REVIVE_CLOSING)
+        context_blocks = None
+        if bool(conf.get("personalization_enabled", True)):
+            participants = list(reversed([turn.user_id for turn in turns if turn.user_id and not turn.is_bot]))
+            group_memory = await self.memory.build_group_memory_block(
+                session,
+                chat_id=chat.id,
+                user_ids=participants,
+                query_text=revive_closing,
+                app_conf=app_conf,
+            )
+            if group_memory:
+                context_blocks = [group_memory]
 
         provider, fallback_enabled = resolve_llm_options(app_conf)
         messages = build_messages(
@@ -183,6 +233,7 @@ class InterjectorService:
             context_turns,
             prompt_tokens,
             closing_text=revive_closing,
+            context_blocks=context_blocks,
         )
 
         try:
@@ -309,7 +360,8 @@ class InterjectorService:
         focus_text: str | None,
         *,
         chat_id: int | None = None,
-    ) -> str | None:
+        context_blocks: list[str] | None = None,
+    ) -> tuple[str, object | None] | None:
         if chat_id is not None and not await self._consume_llm_budget(chat_id, app_conf):
             if chat_id is not None:
                 logger.debug("LLM limit reached for chat %s during interject", chat_id)
@@ -328,6 +380,8 @@ class InterjectorService:
             interject_suffix=interject_suffix,
             focus_suffix=focus_suffix,
         )
+        if self.memory.sidecar_enabled(app_conf):
+            system_prompt += "\n\n" + self.memory.get_sidecar_system_suffix()
         max_turns = int(app_conf.get("context_max_turns", 100) or 100)
         prompt_tokens = self._prompt_token_limit(app_conf)
         messages = build_messages(
@@ -335,6 +389,7 @@ class InterjectorService:
             list(turns),
             max_turns,
             prompt_tokens,
+            context_blocks=context_blocks,
         )
 
         provider, fallback_enabled = resolve_llm_options(app_conf)
@@ -359,8 +414,13 @@ class InterjectorService:
             logger.exception("OpenRouter request failed during spontaneous reply")
             return None
 
+        if self.memory.sidecar_enabled(app_conf):
+            sidecar = self.memory.parse_sidecar_response(raw_reply)
+            reply_text = apply_moderation(self.memory.clamp_reply_text(sidecar.reply))
+            return (reply_text.strip(), sidecar) if reply_text else None
+
         reply_text = apply_moderation(raw_reply)
-        return reply_text.strip() if reply_text else None
+        return (reply_text.strip(), None) if reply_text else None
 
     def _max_tokens_from_config(self, app_conf: dict[str, object]) -> int | None:
         max_length = app_conf.get("max_length")

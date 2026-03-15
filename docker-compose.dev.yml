@@ -5,15 +5,21 @@ services:
       dockerfile: Dockerfile
     env_file: .env
     command: ./scripts/entrypoint-dev.sh
-    ports:
-      - "8080:8080"
+    network_mode: host
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
     volumes:
       - ./:/app
     environment:
-      - USE_POLLING=1
+      PYTHONPATH: /app
+      USE_POLLING: 1
+      PORT: ${PORT:-8080}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@127.0.0.1:5432/${POSTGRES_DB:-botdb}
+      REDIS_URL: redis://127.0.0.1:6379/0
+    restart: unless-stopped
 
   db:
     image: postgres:16
@@ -25,9 +31,18 @@ services:
       POSTGRES_DB: botdb
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bot -d botdb -q"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
 
 volumes:
   db_data:

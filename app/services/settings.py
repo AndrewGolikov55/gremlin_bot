@@ -17,6 +17,7 @@ DEFAULTS: Dict[str, Any] = {
     "revive_enabled": True,
     "revive_after_hours": 48,
     "temperature": 1.0,
+    "personalization_enabled": True,
 }
 
 
