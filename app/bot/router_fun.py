@@ -10,7 +10,7 @@ from aiogram import F, Router, types
 from aiogram.filters import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..services.context import ContextService, build_messages
+from ..services.context import ChatTurn, ContextService, build_messages
 from ..services.llm.client import (
     LLMError,
     LLMRateLimitError,
@@ -23,6 +23,7 @@ from ..services.app_config import AppConfigService
 from ..services.roulette import RouletteService
 from ..services.settings import SettingsService
 from ..services.usage_limits import UsageLimiter
+from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 from .constants import START_PRIVATE_RESPONSE
 
@@ -108,6 +109,20 @@ def _sanitize_summary_body(text: str) -> str:
     return text
 
 
+def _summary_participants(turns: list[ChatTurn]) -> list[tuple[int, str | None]]:
+    participants: list[tuple[int, str | None]] = []
+    seen: set[int] = set()
+    for turn in reversed(turns):
+        user_id = getattr(turn, "user_id", None)
+        if getattr(turn, "is_bot", False) or not user_id or user_id in seen:
+            continue
+        seen.add(int(user_id))
+        participants.append((int(user_id), getattr(turn, "speaker", None)))
+        if len(participants) >= 4:
+            break
+    return participants
+
+
 @router.message(Command("roll"))
 async def cmd_roll(
     message: types.Message,
@@ -156,6 +171,7 @@ async def cmd_summary(
     personas: StylePromptService,
     app_config: AppConfigService,
     usage_limits: UsageLimiter,
+    memory: UserMemoryService,
 ):
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
@@ -238,6 +254,17 @@ async def cmd_summary(
             style_prompt,
             base_prompt=summary_prompt_template,
         )
+        context_blocks = None
+        if bool(conf.get("personalization_enabled", True)) and memory.is_enabled(app_conf):
+            participant_entries = _summary_participants(turns)
+            social_block = await memory.build_summary_social_block(
+                session,
+                chat_id=message.chat.id,
+                participants=participant_entries,
+                app_conf=app_conf,
+            )
+            if social_block:
+                context_blocks = [social_block]
         try:
             closing_text = summary_closing_template.format(count=len(turns))
         except KeyError:
@@ -249,6 +276,7 @@ async def cmd_summary(
             max_turns=max_turns,
             max_tokens=prompt_token_limit,
             closing_text=closing_text,
+            context_blocks=context_blocks,
         )
 
         default_cap = 4096
@@ -312,6 +340,7 @@ async def cmd_summary(
                 max_turns=len(retry_turns),
                 max_tokens=retry_limit,
                 closing_text=closing_text,
+                context_blocks=context_blocks,
             )
             try:
                 retry_tokens = min(max_answer_tokens, max(512, max_answer_tokens // 2))

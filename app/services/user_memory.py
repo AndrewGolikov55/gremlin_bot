@@ -133,6 +133,55 @@ class UserMemoryService:
             return None
         return "\n\n".join(chunks)
 
+    async def build_summary_social_block(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        participants: Sequence[tuple[int, str | None]],
+        app_conf: dict[str, object],
+    ) -> str | None:
+        if not self.is_enabled(app_conf):
+            return None
+
+        unique: list[tuple[int, str | None]] = []
+        seen: set[int] = set()
+        for user_id, speaker_name in participants:
+            if not user_id or user_id in seen:
+                continue
+            seen.add(user_id)
+            unique.append((user_id, speaker_name))
+
+        if not unique:
+            return None
+
+        max_members = min(4, max(1, int(app_conf.get("memory_group_users", 3) or 3)))
+        max_tokens = min(260, max(80, int(app_conf.get("memory_max_prompt_tokens", 500) or 500) // 2))
+        lines = [
+            "Социальный контекст активных участников. Используй его только как фон для тона и атмосферы, не перечисляй как досье."
+        ]
+        used = _estimate_tokens(lines[0])
+
+        for user_id, speaker_name in unique[:max_members]:
+            profile = await session.get(UserMemoryProfile, (chat_id, user_id))
+            relation = await session.get(RelationshipState, (chat_id, user_id))
+            line = self._render_summary_social_line(
+                profile=profile,
+                relation=relation,
+                speaker_name=speaker_name,
+            )
+            if not line:
+                continue
+            tokens = _estimate_tokens(line)
+            if len(lines) > 1 and used + tokens > max_tokens:
+                break
+            lines.append(line)
+            used += tokens
+
+        if len(lines) == 1:
+            return None
+        return "\n".join(lines)
+
     def sidecar_enabled(self, conf: dict[str, object] | None) -> bool:
         if not conf:
             return False
@@ -334,6 +383,31 @@ class UserMemoryService:
             selected.append(line)
             used += tokens
         return "\n".join(selected).strip()
+
+    def _render_summary_social_line(
+        self,
+        *,
+        profile: UserMemoryProfile | None,
+        relation: RelationshipState | None,
+        speaker_name: str | None,
+    ) -> str | None:
+        if profile is None and relation is None:
+            return None
+
+        label = speaker_name or "участник"
+        parts = [f"- {label}: {_relationship_summary(relation) if relation else 'отношение нейтральное'}"]
+
+        if profile is not None:
+            visible_memory = _profile_memory_values(profile)
+            salient = (
+                visible_memory["boundary"][:1]
+                or visible_memory["preference"][:1]
+                or visible_memory["identity"][:1]
+            )
+            if salient:
+                parts.append(f"факт: {_truncate_text(str(salient[0]), 70)}")
+
+        return "; ".join(parts)
 
     def _apply_relation_update(self, relation: RelationshipState, payload: dict[str, Any]) -> None:
         current_rapport = _relationship_rapport(relation)
