@@ -33,6 +33,7 @@ from ..services.llm.client import (
     generate as llm_generate,
     resolve_llm_options,
 )
+from ..services.message_history import persist_telegram_message
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
@@ -142,7 +143,7 @@ class InterjectorService:
         reply_text, sidecar = generated
 
         try:
-            await self.bot.send_message(
+            sent_reply = await self.bot.send_message(
                 message.chat.id,
                 reply_text,
                 reply_to_message_id=message.message_id,
@@ -150,6 +151,19 @@ class InterjectorService:
         except Exception:
             logger.exception("Failed to send spontaneous reply to chat %s", message.chat.id)
             return
+        try:
+            await persist_telegram_message(
+                self.sessionmaker,
+                sent_reply,
+                reply_to_message_id=message.message_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to persist spontaneous reply chat=%s source_message=%s reply_message=%s",
+                message.chat.id,
+                message.message_id,
+                sent_reply.message_id,
+            )
 
         if sidecar is not None and message.from_user:
             try:
@@ -272,7 +286,7 @@ class InterjectorService:
             return
 
         try:
-            await self.bot.send_message(chat.id, reply_text.strip())
+            sent_reply = await self.bot.send_message(chat.id, reply_text.strip())
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
             if self._is_missing_chat_error(exc):
                 await self._deactivate_chat(chat.id)
@@ -283,6 +297,14 @@ class InterjectorService:
         except Exception:
             logger.exception("Failed to send idle revival to chat %s", chat.id)
             return
+        try:
+            await persist_telegram_message(self.sessionmaker, sent_reply)
+        except Exception:
+            logger.exception(
+                "Failed to persist idle revival chat=%s reply_message=%s",
+                chat.id,
+                sent_reply.message_id,
+            )
 
         await self._mark_revive(chat.id, now)
         logger.info("Idle revival sent to chat %s", chat.id)

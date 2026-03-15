@@ -1,5 +1,4 @@
 import base64
-from datetime import datetime, timezone
 import io
 import logging
 import mimetypes
@@ -7,13 +6,9 @@ import re
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ChatType, MessageEntityType
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.chat import Chat
-from ..models.message import Message
-from ..models.user import User
 from ..services.context import (
     ContextService,
     build_messages,
@@ -28,6 +23,7 @@ from ..services.llm.client import (
     generate as llm_generate,
     resolve_llm_options,
 )
+from ..services.message_history import store_telegram_message
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
@@ -71,9 +67,7 @@ async def collect_messages(
         await message.answer(START_PRIVATE_RESPONSE)
         return
 
-    await _ensure_chat(session, message)
-    await _upsert_user(session, message)
-    await _store_message(session, message)
+    await store_telegram_message(session, message)
 
     try:
         await session.commit()
@@ -221,7 +215,22 @@ async def collect_messages(
         if not reply_text.strip():
             return
 
-        await message.reply(reply_text.strip())
+        sent_reply = await message.reply(reply_text.strip())
+        try:
+            await store_telegram_message(
+                session,
+                sent_reply,
+                reply_to_message_id=message.message_id,
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "Failed to persist bot reply chat=%s source_message=%s reply_message=%s",
+                message.chat.id,
+                message.message_id,
+                sent_reply.message_id,
+            )
         if sidecar is not None and message.from_user:
             try:
                 await memory.apply_sidecar_update(
@@ -259,9 +268,7 @@ async def handle_media_messages(
         return
 
     if message.chat.type != ChatType.PRIVATE and message.chat.type != "private":
-        await _ensure_chat(session, message)
-        await _upsert_user(session, message)
-        await _store_message(session, message)
+        await store_telegram_message(session, message)
 
         try:
             await session.commit()
@@ -311,57 +318,6 @@ async def handle_media_messages(
         return
 
     await message.reply(_unsupported_media_text(message), parse_mode=None)
-
-
-async def _ensure_chat(session: AsyncSession, message: types.Message) -> None:
-    chat = await session.get(Chat, message.chat.id)
-    if chat is None:
-        chat = Chat(id=message.chat.id, title=message.chat.title or str(message.chat.id), is_active=True)
-        session.add(chat)
-    elif message.chat.title and chat.title != message.chat.title:
-        chat.title = message.chat.title
-
-
-async def _upsert_user(session: AsyncSession, message: types.Message) -> None:
-    if not message.from_user:
-        return
-
-    stmt = select(User).where(User.tg_id == message.from_user.id)
-    res = await session.execute(stmt)
-    user = res.scalar_one_or_none()
-
-    username = message.from_user.username or message.from_user.full_name
-    if user is None:
-        user = User(tg_id=message.from_user.id, username=username, is_admin_cached=False)
-        session.add(user)
-    else:
-        if username and user.username != username:
-            user.username = username
-
-
-async def _store_message(session: AsyncSession, message: types.Message) -> None:
-    stmt = select(Message.id).where(
-        Message.chat_id == message.chat.id,
-        Message.message_id == message.message_id,
-    )
-    res = await session.execute(stmt)
-    if res.scalar_one_or_none() is not None:
-        return
-
-    msg_date = message.date or datetime.utcnow()
-    if msg_date.tzinfo is not None:
-        msg_date = msg_date.astimezone(timezone.utc).replace(tzinfo=None)
-
-    msg = Message(
-        chat_id=message.chat.id,
-        message_id=message.message_id,
-        user_id=message.from_user.id if message.from_user else 0,
-        text=_message_storage_text(message),
-        reply_to_id=message.reply_to_message.message_id if message.reply_to_message else None,
-        date=msg_date,
-        is_bot=bool(message.from_user and message.from_user.is_bot),
-    )
-    session.add(msg)
 
 
 async def _handle_photo_reply(
@@ -508,7 +464,22 @@ async def _handle_photo_reply(
     if not reply_text.strip():
         return
 
-    await message.reply(reply_text.strip())
+    sent_reply = await message.reply(reply_text.strip())
+    try:
+        await store_telegram_message(
+            session,
+            sent_reply,
+            reply_to_message_id=message.message_id,
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception(
+            "Failed to persist bot photo reply chat=%s source_message=%s reply_message=%s",
+            message.chat.id,
+            message.message_id,
+            sent_reply.message_id,
+        )
     if sidecar is not None and message.from_user:
         try:
             await memory.apply_sidecar_update(
