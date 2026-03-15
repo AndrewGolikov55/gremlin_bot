@@ -18,18 +18,16 @@ from ..models.message import Message
 logger = logging.getLogger(__name__)
 
 
-STABLE_KINDS = ("identity", "preference", "boundary", "project")
+STABLE_KINDS = ("identity", "preference", "boundary")
 KIND_TO_ATTR = {
     "identity": "identity",
     "preference": "preferences",
     "boundary": "boundaries",
-    "project": "projects",
 }
 KIND_LABELS = {
-    "identity": "Факт",
-    "preference": "Предпочтение",
-    "boundary": "Граница",
-    "project": "Контекст",
+    "identity": "Факт о пользователе",
+    "preference": "Предпочтение пользователя",
+    "boundary": "Граница пользователя",
 }
 
 
@@ -111,7 +109,7 @@ class UserMemoryService:
         max_tokens = max(120, int(app_conf.get("memory_max_prompt_tokens", 500) or 500))
         per_user_tokens = max(80, max_tokens // max_members)
         chunks: list[str] = [
-            "Контекст по недавним участникам чата. Используй его мягко и не пересказывай заметки напрямую."
+            "Краткая справка о недавних участниках чата. Это сведения о пользователях, не о тебе."
         ]
         used = _estimate_tokens(chunks[0])
 
@@ -146,14 +144,19 @@ class UserMemoryService:
 
     def get_sidecar_system_suffix(self) -> str:
         return (
-            "Ответ верни строго JSON-объектом без Markdown и без пояснений. "
-            'Схема: {"reply":"текст ответа","relationship_update":{"affinity_delta":-1..1,'
-            '"familiarity_delta":-1..1,"tension_delta":-1..1,"tone_hint":"neutral|warm|careful|null"},'
-            '"memory_update":{"summary":"краткая сводка или null","identity":[...],'
-            '"preferences":[...],"boundaries":[...],"projects":[...]}}. '
-            "Если нечего обновлять, возвращай пустые массивы, null и нулевые дельты. "
-            "Сохраняй только устойчивые, явно сказанные или хорошо подтверждённые факты. "
-            "Ничего не выдумывай и не делай психологических диагнозов."
+            "Верни только JSON без Markdown: "
+            '{"reply":"...","relationship_update":{"rapport_delta":-1..1,'
+            '"tone_hint":"neutral|warm|careful|null"},'
+            '"memory_update":{"summary":null|"...",'
+            '"identity":[],"preferences":[],"boundaries":[]}}. '
+            "Если обновлять нечего, используй 0, null и пустые массивы. "
+            "rapport_delta описывает общее отношение к пользователю: минус означает больше дистанции "
+            "и раздражения, плюс означает больше расположения и доверия. "
+            "Явные оскорбления и агрессия обычно уменьшают rapport и могут ставить tone_hint=careful. "
+            "Извинение и попытка помириться могут немного повышать rapport, но не обязаны сразу "
+            "снимать всю настороженность. Не копируй служебные поля relationship_update в "
+            "memory_update: tone_hint и rapport не являются фактами о пользователе. "
+            "Память обновляй только устойчивыми явными фактами без догадок."
         )
 
     def parse_sidecar_response(self, raw_text: str) -> SidecarResult:
@@ -301,24 +304,26 @@ class UserMemoryService:
         max_tokens: int,
     ) -> str:
         lines = [
-            "Персональный контекст по участнику. Используй как внутреннюю память и не цитируй его дословно как заметки."
+            "Справка о пользователе. Эти сведения относятся к собеседнику, не к тебе."
         ]
+        visible_memory = _profile_memory_values(profile)
         if speaker_name:
-            lines.append(f"Участник: {speaker_name}.")
+            lines.append(f"Пользователь: {speaker_name}.")
         if profile and profile.summary:
-            lines.append(f"Краткий профиль: {profile.summary}")
+            summary = _sanitize_profile_summary(profile.summary)
+            if summary and not _is_redundant_summary(summary, visible_memory):
+                lines.append(f"Кратко о пользователе: {_truncate_text(summary, 180)}")
         if profile:
             for kind in STABLE_KINDS:
-                values = getattr(profile, KIND_TO_ATTR[kind]) or []
-                for value in values[:2]:
-                    lines.append(f"{KIND_LABELS[kind]}: {value}")
+                values = visible_memory[kind]
+                if values:
+                    lines.append(f"{KIND_LABELS[kind]}: {_truncate_text(values[0], 120)}")
         if relation:
-            lines.append(f"Отношение: {_relationship_summary(relation)}.")
+            lines.append(f"Отношение к пользователю: {_relationship_summary(relation)}.")
         if messages:
-            lines.append("Релевантные прошлые сообщения этого участника:")
-            for message in messages:
-                date_str = message.date.strftime("%Y-%m-%d")
-                lines.append(f"- {date_str}: {message.text}")
+            lines.append("Ранее пользователь писал:")
+            for message in messages[:4]:
+                lines.append(f"- {_truncate_text(message.text, 140)}")
 
         selected: list[str] = []
         used = 0
@@ -331,21 +336,15 @@ class UserMemoryService:
         return "\n".join(selected).strip()
 
     def _apply_relation_update(self, relation: RelationshipState, payload: dict[str, Any]) -> None:
-        relation.affinity = _clamp(
-            float(relation.affinity or 0) + _safe_float(payload.get("affinity_delta")),
-            -1.0,
-            1.0,
-        )
-        relation.familiarity = _clamp(
-            float(relation.familiarity or 0) + _safe_float(payload.get("familiarity_delta")),
-            0.0,
-            1.0,
-        )
-        relation.tension = _clamp(
-            float(relation.tension or 0) + _safe_float(payload.get("tension_delta")),
-            0.0,
-            1.0,
-        )
+        current_rapport = _relationship_rapport(relation)
+        rapport_delta = _safe_float(payload.get("rapport_delta"))
+        if rapport_delta == 0.0:
+            rapport_delta = _safe_float(payload.get("affinity_delta")) - _safe_float(
+                payload.get("tension_delta")
+            )
+        relation.affinity = _clamp(current_rapport + rapport_delta, -1.0, 1.0)
+        relation.familiarity = 0.0
+        relation.tension = 0.0
         tone_hint = payload.get("tone_hint")
         if isinstance(tone_hint, str) and tone_hint.strip():
             relation.tone_hint = tone_hint.strip()[:32]
@@ -355,7 +354,7 @@ class UserMemoryService:
     def _apply_memory_update(self, profile: UserMemoryProfile, payload: dict[str, Any]) -> None:
         summary = payload.get("summary")
         if isinstance(summary, str):
-            cleaned = _normalize_whitespace(summary)
+            cleaned = _sanitize_profile_summary(summary)
             if cleaned:
                 profile.summary = cleaned[:500]
 
@@ -363,9 +362,17 @@ class UserMemoryService:
             raw_values = payload.get(attr)
             if not isinstance(raw_values, list):
                 continue
-            existing = list(getattr(profile, attr) or [])
-            merged = _merge_unique_strings(existing, raw_values, limit=6 if kind != "identity" else 4)
+            values = _visible_memory_values(kind, raw_values)
+            existing = _visible_memory_values(kind, list(getattr(profile, attr) or []))
+            merged = _merge_unique_strings(
+                existing,
+                values,
+                limit=6 if kind != "identity" else 4,
+            )
             setattr(profile, attr, merged)
+
+        if profile.summary and _is_redundant_summary(profile.summary, _profile_memory_values(profile)):
+            profile.summary = None
 
         profile.memory_count = sum(len(getattr(profile, attr) or []) for attr in KIND_TO_ATTR.values())
         profile.updated_at = datetime.utcnow()
@@ -403,33 +410,17 @@ def _parse_json_object(raw_text: str) -> dict[str, Any] | None:
 
 
 def _relationship_summary(relation: RelationshipState) -> str:
-    familiarity = float(relation.familiarity or 0)
-    affinity = float(relation.affinity or 0)
-    tension = float(relation.tension or 0)
+    rapport = _relationship_rapport(relation)
     tone = relation.tone_hint or "neutral"
 
-    if familiarity >= 0.75:
-        familiarity_label = "контекст общения уже накоплен"
-    elif familiarity >= 0.35:
-        familiarity_label = "контекст общения умеренный"
+    if rapport >= 0.35:
+        rapport_label = "отношение скорее тёплое"
+    elif rapport <= -0.35:
+        rapport_label = "отношение скорее настороженное"
     else:
-        familiarity_label = "знакомство ещё поверхностное"
+        rapport_label = "отношение сдержанно-нейтральное"
 
-    if affinity >= 0.35:
-        affinity_label = "можно быть чуть теплее"
-    elif affinity <= -0.25:
-        affinity_label = "лучше отвечать осторожно и нейтрально"
-    else:
-        affinity_label = "тон лучше оставлять дружелюбно-нейтральным"
-
-    if tension >= 0.55:
-        tension_label = "напряжение заметное"
-    elif tension >= 0.25:
-        tension_label = "есть лёгкая осторожность"
-    else:
-        tension_label = "напряжение низкое"
-
-    return f"{familiarity_label}; {affinity_label}; {tension_label}; предпочитаемый тон {tone}"
+    return f"{rapport_label}; тон {tone}"
 
 
 def _message_score(text: str, date: datetime, query_tokens: set[str]) -> float:
@@ -466,6 +457,74 @@ def _tokenize(text: str) -> set[str]:
 
 def _normalize_whitespace(value: str) -> str:
     return " ".join((value or "").replace("\n", " ").split()).strip()
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    text = _normalize_whitespace(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
+
+
+def _sanitize_profile_summary(value: str) -> str:
+    text = _normalize_whitespace(value)
+    patterns = [
+        r"(?:,?\s*)предпочитает\s+(?:нейтральный|т[её]плый|осторожный)\s+тон\.?",
+        r"(?:,?\s*)предпочитаемый\s+тон:\s*(?:neutral|warm|careful|нейтральный|т[её]плый|осторожный)\.?",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return _normalize_whitespace(text.strip(" ,.;"))
+
+
+def _visible_memory_values(kind: str, values: Sequence[Any]) -> list[Any]:
+    if kind == "preference":
+        return [item for item in values if not _is_relationship_artifact(item)]
+    return list(values)
+
+
+def _profile_memory_values(profile: UserMemoryProfile | None) -> dict[str, list[str]]:
+    if profile is None:
+        return {kind: [] for kind in STABLE_KINDS}
+    return {
+        kind: [str(item) for item in _visible_memory_values(kind, getattr(profile, KIND_TO_ATTR[kind]) or [])]
+        for kind in STABLE_KINDS
+    }
+
+
+def _is_redundant_summary(summary: str, memory_values: dict[str, list[str]]) -> bool:
+    normalized_summary = _summary_key(summary)
+    if not normalized_summary:
+        return False
+    for values in memory_values.values():
+        for value in values:
+            if normalized_summary == _summary_key(value):
+                return True
+    return False
+
+
+def _summary_key(value: str) -> str:
+    text = _sanitize_profile_summary(value).lower()
+    text = re.sub(r"^пользователь\s+", "", text)
+    return _normalize_whitespace(text.strip(" ,.;"))
+
+
+def _relationship_rapport(relation: RelationshipState) -> float:
+    affinity = float(relation.affinity or 0)
+    tension = float(relation.tension or 0)
+    return _clamp(affinity - tension, -1.0, 1.0)
+
+
+def _is_relationship_artifact(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = _normalize_whitespace(value).lower()
+    return bool(
+        re.fullmatch(
+            r"предпочита(?:е|ё)мый тон:\s*(neutral|warm|careful|нейтральный|т[её]плый|осторожный)",
+            normalized,
+        )
+    )
 
 
 def _safe_float(value: Any) -> float:

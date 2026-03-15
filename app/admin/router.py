@@ -760,14 +760,15 @@ def _render_memory_users_body(
     for profile, user, relation in rows:
         username = user.username if user and user.username else str(profile.user_id)
         detail_url = _build_url(f"/admin/chats/{chat.id}/memory/{profile.user_id}", token)
-        tension = f"{float(relation.tension or 0):.2f}" if relation else "0.00"
-        familiarity = f"{float(relation.familiarity or 0):.2f}" if relation else "0.00"
+        rapport = f"{_relationship_rapport(relation):.2f}" if relation else "0.00"
+        tone = _tone_hint_label(relation.tone_hint if relation else None)
+        visible_count = str(_visible_memory_count(profile))
         items.append(
             "<tr>"
             f"<td>{escape(username)}</td>"
-            f"<td>{escape(str(profile.memory_count))}</td>"
-            f"<td>{escape(familiarity)}</td>"
-            f"<td>{escape(tension)}</td>"
+            f"<td>{escape(visible_count)}</td>"
+            f"<td>{escape(rapport)}</td>"
+            f"<td>{escape(tone)}</td>"
             f"<td>{escape(profile.updated_at.strftime('%Y-%m-%d %H:%M:%S') if profile.updated_at else '—')}</td>"
             f"<td class='text-end'><a class='btn btn-sm btn-outline-primary' href='{escape(detail_url)}'>Открыть</a></td>"
             "</tr>"
@@ -775,7 +776,7 @@ def _render_memory_users_body(
 
     table = (
         "<div class='table-responsive'><table class='table table-hover align-middle'>"
-        "<thead><tr><th>Пользователь</th><th>Записей</th><th>Знакомство</th><th>Напряжение</th><th>Обновлено</th><th></th></tr></thead>"
+        "<thead><tr><th>Пользователь</th><th>Записей</th><th>Отношение</th><th>Тон</th><th>Обновлено</th><th></th></tr></thead>"
         f"<tbody>{''.join(items)}</tbody></table></div>"
         if items
         else "<div class='alert alert-info'>Память по участникам ещё не накопилась.</div>"
@@ -808,19 +809,26 @@ def _render_memory_user_detail_body(
 
     summary_rows = []
     if profile is not None:
-        if profile.summary:
-            summary_rows.append(f"<tr><td>Summary</td><td>{escape(profile.summary)}</td></tr>")
-        summary_rows.append(f"<tr><td>Identity</td><td>{escape(', '.join(profile.identity) or '—')}</td></tr>")
-        summary_rows.append(f"<tr><td>Preferences</td><td>{escape(', '.join(profile.preferences) or '—')}</td></tr>")
-        summary_rows.append(f"<tr><td>Boundaries</td><td>{escape(', '.join(profile.boundaries) or '—')}</td></tr>")
-        summary_rows.append(f"<tr><td>Projects</td><td>{escape(', '.join(profile.projects) or '—')}</td></tr>")
-        summary_rows.append(f"<tr><td>Memory count</td><td>{escape(str(profile.memory_count))}</td></tr>")
+        clean_summary = _sanitize_summary(profile.summary) if profile.summary else ""
+        visible_preferences = _visible_preferences(profile.preferences)
+        if clean_summary and not _is_redundant_summary(clean_summary, profile.identity or [], visible_preferences, profile.boundaries or []):
+            summary_rows.append(f"<tr><td>Сводка</td><td>{escape(clean_summary)}</td></tr>")
+        summary_rows.append(f"<tr><td>Факты</td><td>{escape(', '.join(profile.identity) or '—')}</td></tr>")
+        summary_rows.append(
+            f"<tr><td>Предпочтения</td><td>{escape(', '.join(visible_preferences) or '—')}</td></tr>"
+        )
+        summary_rows.append(
+            f"<tr><td>Границы</td><td>{escape(', '.join(profile.boundaries) or '—')}</td></tr>"
+        )
+        summary_rows.append(
+            f"<tr><td>Записей памяти</td><td>{escape(str(_visible_memory_count(profile)))}</td></tr>"
+        )
 
     if relation is not None:
-        summary_rows.append(f"<tr><td>Affinity</td><td>{float(relation.affinity or 0):.2f}</td></tr>")
-        summary_rows.append(f"<tr><td>Familiarity</td><td>{float(relation.familiarity or 0):.2f}</td></tr>")
-        summary_rows.append(f"<tr><td>Tension</td><td>{float(relation.tension or 0):.2f}</td></tr>")
-        summary_rows.append(f"<tr><td>Tone hint</td><td>{escape(relation.tone_hint or 'neutral')}</td></tr>")
+        summary_rows.append(f"<tr><td>Отношение</td><td>{_relationship_rapport(relation):.2f}</td></tr>")
+        summary_rows.append(
+            f"<tr><td>Подсказка по тону</td><td>{escape(_tone_hint_label(relation.tone_hint))}</td></tr>"
+        )
 
     summary_table = (
         "<div class='card mb-4'><div class='card-header'>Срез памяти</div><div class='card-body p-0'>"
@@ -866,6 +874,77 @@ def _render_memory_user_detail_body(
         f"{item_table}"
         "</div>"
     )
+
+
+def _tone_hint_label(value: str | None) -> str:
+    labels = {
+        "neutral": "нейтральный",
+        "warm": "тёплый",
+        "careful": "осторожный",
+    }
+    normalized = (value or "neutral").strip().lower()
+    return labels.get(normalized, normalized or "нейтральный")
+
+
+def _relationship_rapport(relation: RelationshipState | None) -> float:
+    if relation is None:
+        return 0.0
+    affinity = float(relation.affinity or 0)
+    tension = float(relation.tension or 0)
+    return max(-1.0, min(1.0, affinity - tension))
+
+
+def _visible_preferences(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    return [
+        item
+        for item in values
+        if not re.fullmatch(
+            r"предпочита(?:е|ё)мый тон:\s*(neutral|warm|careful|нейтральный|т[её]плый|осторожный)",
+            item.strip().lower(),
+        )
+    ]
+
+
+def _sanitize_summary(value: str) -> str:
+    text = value.strip()
+    patterns = [
+        r"(?:,?\s*)предпочитает\s+(?:нейтральный|т[её]плый|осторожный)\s+тон\.?",
+        r"(?:,?\s*)предпочита(?:е|ё)мый\s+тон:\s*(?:neutral|warm|careful|нейтральный|т[её]плый|осторожный)\.?",
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return text.strip(" ,.;")
+
+
+def _visible_memory_count(profile: UserMemoryProfile) -> int:
+    return (
+        len(profile.identity or [])
+        + len(_visible_preferences(profile.preferences))
+        + len(profile.boundaries or [])
+    )
+
+
+def _is_redundant_summary(
+    summary: str,
+    identity: list[str],
+    preferences: list[str],
+    boundaries: list[str],
+) -> bool:
+    normalized_summary = _summary_key(summary)
+    if not normalized_summary:
+        return False
+    for value in [*identity, *preferences, *boundaries]:
+        if normalized_summary == _summary_key(value):
+            return True
+    return False
+
+
+def _summary_key(value: str) -> str:
+    text = _sanitize_summary(value).lower()
+    text = re.sub(r"^пользователь\s+", "", text)
+    return text.strip(" ,.;")
 
 
 def _render_app_config_body(
