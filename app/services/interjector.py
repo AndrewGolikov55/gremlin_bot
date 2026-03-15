@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import io
 import logging
+import mimetypes
 import random
 from datetime import datetime, time, timedelta
 from typing import Iterable
@@ -102,6 +105,13 @@ class InterjectorService:
         focus_text = (message.text or message.caption or "").strip()
         if not focus_text:
             focus_text = None
+        vision_content = None
+        if message.photo:
+            image_data_url = await self._download_photo_as_data_url(message)
+            if image_data_url:
+                vision_content = self._build_photo_content(focus_text, image_data_url)
+                if not focus_text:
+                    focus_text = "[photo]"
 
         memory_block = None
         if bool(conf.get("personalization_enabled", True)) and message.from_user:
@@ -123,6 +133,9 @@ class InterjectorService:
             focus_text,
             chat_id=message.chat.id,
             context_blocks=[memory_block] if memory_block else None,
+            message_content_override=vision_content,
+            provider_override="openai" if vision_content else None,
+            fallback_enabled_override=False if vision_content else None,
         )
         if not generated:
             return
@@ -361,6 +374,9 @@ class InterjectorService:
         *,
         chat_id: int | None = None,
         context_blocks: list[str] | None = None,
+        message_content_override: object | None = None,
+        provider_override: str | None = None,
+        fallback_enabled_override: bool | None = None,
     ) -> tuple[str, object | None] | None:
         if chat_id is not None and not await self._consume_llm_budget(chat_id, app_conf):
             if chat_id is not None:
@@ -391,8 +407,14 @@ class InterjectorService:
             prompt_tokens,
             context_blocks=context_blocks,
         )
+        if message_content_override is not None:
+            messages[-1] = {"role": "user", "content": message_content_override}
 
         provider, fallback_enabled = resolve_llm_options(app_conf)
+        if provider_override:
+            provider = provider_override
+        if fallback_enabled_override is not None:
+            fallback_enabled = fallback_enabled_override
 
         try:
             raw_reply = await llm_generate(
@@ -460,3 +482,62 @@ class InterjectorService:
         # Telegram assigns negative ids to group, supergroup, and channel chats.
         # Private chats (users/bots) have positive ids and should be ignored here.
         return chat_id < 0
+
+    async def _download_photo_as_data_url(self, message: TgMessage) -> str | None:
+        photo = self._pick_photo_size(message)
+        if photo is None:
+            return None
+
+        telegram_file = await self.bot.get_file(photo.file_id)
+        if not telegram_file.file_path:
+            return None
+
+        buffer = io.BytesIO()
+        await self.bot.download_file(telegram_file.file_path, destination=buffer)
+        payload = buffer.getvalue()
+        if not payload:
+            return None
+
+        mime_type, _encoding = mimetypes.guess_type(telegram_file.file_path)
+        if not mime_type:
+            mime_type = "image/jpeg"
+        encoded = base64.b64encode(payload).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+
+    @staticmethod
+    def _pick_photo_size(message: TgMessage):
+        if not message.photo:
+            return None
+
+        max_bytes = 8 * 1024 * 1024
+        for photo in reversed(message.photo):
+            size = getattr(photo, "file_size", None)
+            if isinstance(size, int) and size > 0 and size <= max_bytes:
+                return photo
+        return message.photo[-1]
+
+    @staticmethod
+    def _build_photo_content(focus_text: str | None, image_data_url: str) -> list[dict[str, object]]:
+        prompt = (
+            f"Пользователь приложил изображение и написал: {focus_text}\n"
+            "Ответь по сути и учти само изображение."
+            if focus_text
+            else "Пользователь приложил изображение. Кратко отреагируй на него одним сообщением."
+        )
+        detail = "high" if focus_text and any(
+            marker in focus_text.lower()
+            for marker in ("скрин", "screenshot", "текст", "прочитай", "что написано", "ocr")
+        ) else "low"
+        return [
+            {
+                "type": "text",
+                "text": prompt,
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_data_url,
+                    "detail": detail,
+                },
+            },
+        ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, List, Mapping, Sequence
+from typing import Any, Iterable, List, Mapping, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,7 +63,7 @@ def build_messages(
     max_tokens: int | None = None,
     closing_text: str | None = None,
     context_blocks: Iterable[str] | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     def _estimate_tokens(text: str) -> int:
         # Простая оценка, чтобы не превышать окно модели (≈4 символа на токен)
         return max(1, math.ceil(len(text) / 4))
@@ -108,7 +108,7 @@ def build_messages(
         return False
 
     system_content = system_prompt.strip()
-    msgs: list[dict[str, str]] = [{"role": "system", "content": system_content}]
+    msgs: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
     tokens_budget = _estimate_tokens(system_content)
 
     for block in context_blocks or ():

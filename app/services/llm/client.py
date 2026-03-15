@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 import httpx
 
@@ -194,7 +194,7 @@ async def _post_json(
 
 def _extract_openrouter_content(data: Mapping[str, object]) -> str:
     try:
-        content = str(data["choices"][0]["message"]["content"]).strip()
+        content = _flatten_message_content(data["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError(f"Unexpected OpenRouter response: {data}") from exc
 
@@ -209,7 +209,7 @@ def _extract_openai_content_meta(data: Mapping[str, object]) -> tuple[str, str]:
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
         raise LLMError(f"Unexpected OpenAI response: {data}") from exc
 
-    content = str(message.get("content") or "").strip()
+    content = _flatten_message_content(message.get("content"))
     finish_reason = str(choice.get("finish_reason") or "").strip().lower()
     _log_content("OpenAI", content)
 
@@ -226,6 +226,24 @@ def _extract_openai_content_meta(data: Mapping[str, object]) -> tuple[str, str]:
 def _extract_openai_content(data: Mapping[str, object]) -> str:
     content, _finish_reason = _extract_openai_content_meta(data)
     return content
+
+
+def _flatten_message_content(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, Sequence) and not isinstance(content, (bytes, bytearray, str)):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, Mapping):
+                item_type = str(item.get("type") or "").strip().lower()
+                if item_type == "text":
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+        return "\n".join(parts).strip()
+    return str(content).strip()
 
 
 async def _generate_openrouter(
