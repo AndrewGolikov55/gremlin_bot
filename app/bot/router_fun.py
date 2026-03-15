@@ -11,9 +11,9 @@ from aiogram.filters import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..services.context import ContextService, build_messages
-from ..services.llm.ollama import (
-    OpenRouterError,
-    OpenRouterRateLimitError,
+from ..services.llm.client import (
+    LLMError,
+    LLMRateLimitError,
     generate as llm_generate,
     resolve_llm_options,
 )
@@ -272,7 +272,7 @@ async def cmd_summary(
                 provider=provider,
                 fallback_enabled=fallback_enabled,
             )
-        except OpenRouterRateLimitError as exc:
+        except LLMRateLimitError as exc:
             if consumed_prefixes:
                 await usage_limits.refund(message.chat.id, consumed_prefixes)
             wait_hint = ""
@@ -280,7 +280,7 @@ async def cmd_summary(
                 wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
             await message.reply("🤖 Модель перегружена." + wait_hint, allow_sending_without_reply=True)
             return
-        except OpenRouterError:
+        except LLMError:
             if consumed_prefixes:
                 await usage_limits.refund(message.chat.id, consumed_prefixes)
             await message.reply("🤖 LLM вернула ошибку. Попробуй позже.", allow_sending_without_reply=True)
@@ -323,7 +323,7 @@ async def cmd_summary(
                     provider=provider,
                     fallback_enabled=fallback_enabled,
                 )
-            except OpenRouterRateLimitError as exc:
+            except LLMRateLimitError as exc:
                 if consumed_prefixes:
                     await usage_limits.refund(message.chat.id, consumed_prefixes)
                 wait_hint = ""
@@ -331,7 +331,7 @@ async def cmd_summary(
                     wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
                 await message.reply("🤖 Модель перегружена." + wait_hint, allow_sending_without_reply=True)
                 return
-            except OpenRouterError:
+            except LLMError:
                 if consumed_prefixes:
                     await usage_limits.refund(message.chat.id, consumed_prefixes)
                 await message.reply("🤖 LLM вернула ошибку. Попробуй позже.", allow_sending_without_reply=True)

@@ -19,9 +19,9 @@ from ..services.context import (
     DEFAULT_FOCUS_SUFFIX,
 )
 from ..services.interjector import InterjectorService
-from ..services.llm.ollama import (
-    OpenRouterError,
-    OpenRouterRateLimitError,
+from ..services.llm.client import (
+    LLMError,
+    LLMRateLimitError,
     generate as llm_generate,
     resolve_llm_options,
 )
@@ -188,13 +188,13 @@ async def collect_messages(
                 provider=provider,
                 fallback_enabled=fallback_enabled,
             )
-        except OpenRouterRateLimitError as exc:
+        except LLMRateLimitError as exc:
             wait_hint = ""
             if exc.retry_after and exc.retry_after > 0:
                 wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
             await message.reply("🤖 Модель перегружена." + wait_hint)
             return
-        except OpenRouterError:
+        except LLMError:
             await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
             return
         except Exception:

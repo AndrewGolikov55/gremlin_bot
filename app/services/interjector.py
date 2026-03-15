@@ -24,9 +24,9 @@ from ..services.context import (
     DEFAULT_FOCUS_SUFFIX,
 )
 from ..services.persona import StylePromptService
-from ..services.llm.ollama import (
-    OpenRouterError,
-    OpenRouterRateLimitError,
+from ..services.llm.client import (
+    LLMError,
+    LLMRateLimitError,
     generate as llm_generate,
     resolve_llm_options,
 )
@@ -245,13 +245,13 @@ class InterjectorService:
                 provider=provider,
                 fallback_enabled=fallback_enabled,
             )
-        except OpenRouterRateLimitError as exc:
+        except LLMRateLimitError as exc:
             logger.warning(
                 "Rate limit during idle revival chat=%s retry_after=%s", chat.id, exc.retry_after
             )
             return
-        except OpenRouterError:
-            logger.exception("OpenRouter failed during idle revival chat=%s", chat.id)
+        except LLMError:
+            logger.exception("LLM request failed during idle revival chat=%s", chat.id)
             return
 
         reply_text = apply_moderation(raw_reply)
@@ -403,15 +403,15 @@ class InterjectorService:
                 provider=provider,
                 fallback_enabled=fallback_enabled,
             )
-        except OpenRouterRateLimitError as exc:
+        except LLMRateLimitError as exc:
             logger.warning(
                 "Rate limit during interject chat=%s retry_after=%s",
                 chat_id,
                 exc.retry_after,
             )
             return None
-        except OpenRouterError:
-            logger.exception("OpenRouter request failed during spontaneous reply")
+        except LLMError:
+            logger.exception("LLM request failed during spontaneous reply")
             return None
 
         if self.memory.sidecar_enabled(app_conf):

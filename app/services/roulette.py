@@ -23,9 +23,9 @@ from ..services.context import (
     DEFAULT_CHAT_PROMPT,
     DEFAULT_FOCUS_SUFFIX,
 )
-from ..services.llm.ollama import (
-    OpenRouterError,
-    OpenRouterRateLimitError,
+from ..services.llm.client import (
+    LLMError,
+    LLMRateLimitError,
     generate as llm_generate,
     resolve_llm_options,
 )
@@ -111,14 +111,14 @@ class RouletteService:
             delivered = False
             try:
                 delivered = await self._announce(chat_id, winner_user_id, winner_username, title_code, title_display)
-            except OpenRouterRateLimitError as exc:
+            except LLMRateLimitError as exc:
                 logger.warning(
                     "Rate limit during roulette announcement chat=%s retry_after=%s",
                     chat_id,
                     exc.retry_after,
                 )
                 delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
-            except OpenRouterError:
+            except LLMError:
                 logger.exception("LLM failed while preparing roulette announcement chat=%s", chat_id)
                 delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
             except Exception:
