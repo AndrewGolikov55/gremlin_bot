@@ -33,6 +33,7 @@ from ..services.moderation import apply_moderation
 from ..services.persona import StylePromptService
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
+from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 
 
@@ -50,6 +51,7 @@ DEFAULT_ROULETTE_PROMPT = (
     "Ты — ведущий шуточной рулетки. Говори от первого лица и не описывай себя со стороны."
     " Пиши 1–2 короткие фразы без Markdown, поддержи стиль выбранной персоны и не раскрывай победителя."
 )
+WINNER_PLACEHOLDER = "[[winner]]"
 
 
 @dataclass
@@ -75,6 +77,7 @@ class RouletteService:
         app_config: AppConfigService,
         context: ContextService,
         personas: StylePromptService,
+        memory: UserMemoryService,
     ) -> None:
         self.bot = bot
         self.sessionmaker = sessionmaker
@@ -82,6 +85,7 @@ class RouletteService:
         self.app_config = app_config
         self.context = context
         self.personas = personas
+        self.memory = memory
 
     def _today(self) -> date:
         return datetime.now(MoscowTZ).date()
@@ -222,11 +226,16 @@ class RouletteService:
         prompt_limit = self._prompt_token_limit(app_conf)
         async with self.sessionmaker() as session:
             turns = await self.context.get_recent_turns(session, chat_id, max_turns)
-        focus_text = (
-            "Скоро объявим обладателя звания '"
-            + title_display
-            + "'. Подогрей интригу, но не раскрывай имя."
-        )
+            winner_memory_block = await self._build_winner_memory_block(
+                session=session,
+                chat_id=chat_id,
+                user_id=user_id,
+                username=username,
+                conf=conf,
+                app_conf=app_conf,
+            )
+
+        focus_text = f"Скоро объявим обладателя звания '{title_display}'. Подогрей интригу, но не раскрывай имя."
         base_prompt = str(app_conf.get("prompt_roulette_base") or DEFAULT_ROULETTE_PROMPT).strip()
         if not base_prompt:
             base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
@@ -245,14 +254,19 @@ class RouletteService:
             max_tokens=prompt_limit,
         )
 
-        intrigue = await llm_generate(
-            messages,
-            temperature=resolve_temperature(conf),
-            top_p=float(conf.get("top_p", 0.9) or 0.9),
-            max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
-            provider=provider,
-            fallback_enabled=fallback_enabled,
-        )
+        try:
+            intrigue = await llm_generate(
+                messages,
+                temperature=resolve_temperature(conf),
+                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
+                provider=provider,
+                fallback_enabled=fallback_enabled,
+            )
+        except (LLMRateLimitError, LLMError):
+            logger.exception("Failed to generate roulette intrigue chat=%s", chat_id)
+            return await self._announce_without_llm(chat_id, user_id, username, title_display)
+
         intrigue_clean = apply_moderation(intrigue).strip()
         final_intrigue = self._prepare_intrigue_text(intrigue_clean, title_display)
         try:
@@ -270,7 +284,20 @@ class RouletteService:
 
         await asyncio.sleep(3)
 
-        final_message = self._format_final_message(title_display, user_id, username)
+        final_message = await self._generate_winner_result_message(
+            chat_id=chat_id,
+            turns=turns,
+            conf=conf,
+            app_conf=app_conf,
+            style_prompts=style_prompts,
+            provider=provider,
+            fallback_enabled=fallback_enabled,
+            title_display=title_display,
+            user_id=user_id,
+            username=username,
+            winner_memory_block=winner_memory_block,
+            prompt_limit=prompt_limit,
+        )
         try:
             await self.bot.send_message(chat_id, final_message, parse_mode="HTML")
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
@@ -285,6 +312,88 @@ class RouletteService:
             return False
 
         return True
+
+    async def _build_winner_memory_block(
+        self,
+        *,
+        session: AsyncSession,
+        chat_id: int,
+        user_id: int,
+        username: str | None,
+        conf: dict[str, object],
+        app_conf: dict[str, object],
+    ) -> str | None:
+        if not bool(conf.get("personalization_enabled", True)):
+            return None
+        if not self.memory.is_enabled(app_conf):
+            return None
+        speaker_name = username or f"ID {user_id}"
+        return await self.memory.build_user_memory_block(
+            session,
+            chat_id=chat_id,
+            user_id=user_id,
+            query_text=None,
+            app_conf=app_conf,
+            speaker_name=speaker_name,
+        )
+
+    async def _generate_winner_result_message(
+        self,
+        *,
+        chat_id: int,
+        turns: list,
+        conf: dict[str, object],
+        app_conf: dict[str, object],
+        style_prompts: dict[str, str],
+        provider: str,
+        fallback_enabled: bool,
+        title_display: str,
+        user_id: int,
+        username: str | None,
+        winner_memory_block: str | None,
+        prompt_limit: int,
+    ) -> str:
+        focus_text = (
+            f"Объяви, что звание «{title_display}» получает {WINNER_PLACEHOLDER}. "
+            "Сохрани манеру активной роли и стиль шуточной рулетки. "
+            "Обыграй звание через известные факты о победителе, его недавние сообщения и твоё "
+            "текущее отношение к нему. Если данных мало, опирайся только на его последние сообщения "
+            "и не выдумывай. Не пересказывай внутреннюю справку напрямую. "
+            f"Обязательно используй маркер {WINNER_PLACEHOLDER} вместо имени победителя."
+        )
+        base_prompt = str(app_conf.get("prompt_roulette_base") or DEFAULT_ROULETTE_PROMPT).strip()
+        if not base_prompt:
+            base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+        focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
+        system_prompt = build_system_prompt(
+            conf,
+            focus_text=focus_text,
+            style_prompts=style_prompts,
+            base_prompt=base_prompt,
+            focus_suffix=focus_suffix,
+        )
+        messages = build_messages(
+            system_prompt,
+            turns,
+            max_turns=len(turns),
+            max_tokens=prompt_limit,
+            context_blocks=[winner_memory_block] if winner_memory_block else None,
+        )
+
+        try:
+            raw_result = await llm_generate(
+                messages,
+                temperature=resolve_temperature(conf),
+                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
+                provider=provider,
+                fallback_enabled=fallback_enabled,
+            )
+        except (LLMRateLimitError, LLMError):
+            logger.exception("Failed to generate personalized roulette winner message chat=%s", chat_id)
+            return self._format_final_message(title_display, user_id, username)
+
+        return self._prepare_winner_message(raw_result, title_display, user_id, username)
 
     def _prepare_intrigue_text(self, text: str, title_display: str) -> str:
         cleaned = " ".join((text or "").split())
@@ -302,6 +411,25 @@ class RouletteService:
 
     def _default_intrigue(self, title_display: str) -> str:
         return f"🎰 Я кручу барабан за «{title_display}». Скоро назову победителя."
+
+    def _prepare_winner_message(
+        self,
+        text: str,
+        title_display: str,
+        user_id: int,
+        username: str | None,
+    ) -> str:
+        cleaned = " ".join(apply_moderation(text).split())
+        if not cleaned:
+            return self._format_final_message(title_display, user_id, username)
+        if WINNER_PLACEHOLDER not in cleaned:
+            suffix = f" Победитель — {WINNER_PLACEHOLDER}."
+            cleaned = cleaned.rstrip() + suffix
+        if len(cleaned) > 320:
+            cleaned = cleaned[:320].rsplit(" ", 1)[0].rstrip(",;:.!? ") + "…"
+
+        mention = f"<a href='tg://user?id={user_id}'>{escape_html(username) if username else 'победитель'}</a>"
+        return escape_html(cleaned).replace(WINNER_PLACEHOLDER, mention)
 
     async def _announce_without_llm(
         self,

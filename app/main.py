@@ -98,6 +98,7 @@ settings_service = SettingsService(async_sessionmaker, redis)
 context_service = ContextService()
 app_config_service = AppConfigService(async_sessionmaker, redis)
 persona_service = StylePromptService(async_sessionmaker, redis, BASE_STYLE_DATA)
+user_memory_service = UserMemoryService(async_sessionmaker)
 roulette_service = RouletteService(
     bot=bot,
     sessionmaker=async_sessionmaker,
@@ -105,9 +106,9 @@ roulette_service = RouletteService(
     app_config=app_config_service,
     context=context_service,
     personas=persona_service,
+    memory=user_memory_service,
 )
 usage_limits_service = UsageLimiter(redis, timezone=ZoneInfo("Europe/Moscow"))
-user_memory_service = UserMemoryService(async_sessionmaker)
 
 # Routers
 dp.include_router(admin_router)
