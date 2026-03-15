@@ -16,7 +16,10 @@ from ..services.app_config import AppConfigService
 
 router = Router(name="admin")
 
-PROMPT_TEXT = "Отправьте ответ на это сообщение для установки нового прозвища для рулетки (или напишите 'reset' чтобы сбросить)."
+PROMPT_TEXT = (
+    "Отправьте ответ на это сообщение, чтобы установить фиксированное звание для рулетки "
+    "(или напишите 'reset', чтобы снова включить автозвание по истории чата)."
+)
 
 
 @router.message(Command("bot"))
@@ -242,8 +245,8 @@ def _render_settings(
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
     roulette_auto = bool(conf.get("roulette_auto_enabled", False))
-    custom_title = conf.get("roulette_custom_title")
-    title_label = custom_title if custom_title else "скуф"
+    custom_title = str(conf.get("roulette_custom_title") or "").strip()
+    title_label = custom_title if custom_title else "авто по истории"
 
     text = (
         "<b>⚙️ Настройки бота ⚙️</b>\n"
@@ -286,12 +289,12 @@ def _render_settings(
     )
     builder.adjust(1)
     builder.button(
-        text=f"🏷️ Прозвище: {title_label}",
+        text=f"🏷️ Звание: {title_label}",
         callback_data="settings:prompt:roulette_title",
     )
     builder.adjust(1)
     builder.button(
-        text="🧹 Сбросить прозвище",
+        text="🧹 Включить автозвание",
         callback_data="settings:clear:roulette_title",
     )
     builder.adjust(1)
@@ -415,12 +418,12 @@ async def cb_settings(
             await _safe_answer(query, f"{key}: {new_value}")
     elif action == "prompt" and len(parts) >= 3 and parts[2] == "roulette_title":
         should_refresh = False
-        await _safe_answer(query, "Жду новое прозвище", show_alert=False)
+        await _safe_answer(query, "Жду новое звание", show_alert=False)
         if query.message:
             await query.message.answer(PROMPT_TEXT, reply_markup=ForceReply(selective=True))
     elif action == "clear" and len(parts) >= 3 and parts[2] == "roulette_title":
         await settings.set(chat_id, "roulette_custom_title", None)
-        await _safe_answer(query, "Прозвище сброшено")
+        await _safe_answer(query, "Включено автозвание по истории")
     elif action == "adjust":
         if len(parts) >= 3:
             key = parts[2]

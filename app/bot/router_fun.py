@@ -25,13 +25,12 @@ from ..services.settings import SettingsService
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
+from .router_admin import PROMPT_TEXT
 from .constants import START_PRIVATE_RESPONSE
 
 
 router = Router(name="fun")
 logger = logging.getLogger("bot.summary")
-
-PROMPT_TEXT = "Отправьте ответ на это сообщение для установки нового прозвища для рулетки (или напишите 'reset' чтобы сбросить)."
 
 DEFAULT_SUMMARY_PROMPT = (
     "Ты — {style_label}. Сделай краткую, но живую сводку последних сообщений в своей манере."
@@ -449,10 +448,10 @@ async def handle_custom_title_reply(
     text = (message.text or "").strip()
     if not text or text.lower() in {"reset", "сброс", "отмена"}:
         await settings.set(chat_id, "roulette_custom_title", None)
-        await message.reply("Прозвище сброшено.")
+        await message.reply("Фиксированное звание сброшено. Теперь бот снова будет придумывать его сам по истории чата.")
     else:
         await settings.set(chat_id, "roulette_custom_title", text)
-        await message.reply(f"Новое прозвище установлено: {text}")
+        await message.reply(f"Новое фиксированное звание установлено: {text}")
 
 
 @router.message(Command("rolltitle"))
@@ -462,8 +461,8 @@ async def cmd_rolltitle(message: types.Message, settings: SettingsService):
         return
     args = (message.text or "").split(maxsplit=1)
     if len(args) < 2:
-        await message.reply("Использование: /rolltitle новое_прозвище")
+        await message.reply("Использование: /rolltitle новое_звание")
         return
     title = args[1].strip()
     await settings.set(message.chat.id, "roulette_custom_title", title)
-    await message.reply(f"Новое прозвище установлено: {title}")
+    await message.reply(f"Новое фиксированное звание установлено: {title}")

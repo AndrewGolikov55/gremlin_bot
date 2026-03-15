@@ -395,7 +395,7 @@ class UserMemoryService:
             return None
 
         label = speaker_name or "участник"
-        parts = [f"- {label}: {_relationship_summary(relation) if relation else 'отношение нейтральное'}"]
+        parts = [f"- {label}: {_relationship_summary(relation) if relation else 'отношения нейтральные'}"]
 
         if profile is not None:
             visible_memory = _profile_memory_values(profile)
@@ -485,16 +485,11 @@ def _parse_json_object(raw_text: str) -> dict[str, Any] | None:
 
 def _relationship_summary(relation: RelationshipState) -> str:
     rapport = _relationship_rapport(relation)
-    tone = relation.tone_hint or "neutral"
-
     if rapport >= 0.35:
-        rapport_label = "отношение скорее тёплое"
-    elif rapport <= -0.35:
-        rapport_label = "отношение скорее настороженное"
-    else:
-        rapport_label = "отношение сдержанно-нейтральное"
-
-    return f"{rapport_label}; тон {tone}"
+        return "отношения тёплые"
+    if rapport <= -0.35:
+        return "отношения напряжённые"
+    return "отношения нейтральные"
 
 
 def _message_score(text: str, date: datetime, query_tokens: set[str]) -> float:

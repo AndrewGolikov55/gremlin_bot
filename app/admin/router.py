@@ -287,6 +287,7 @@ def create_admin_router(
         context_turns: int = Form(...),
         max_length: int = Form(...),
         context_tokens: int = Form(...),
+        roulette_title_context_messages: int = Form(...),
         interject_p: int = Form(...),
         interject_cooldown: int = Form(...),
         summary_daily_limit: int = Form(...),
@@ -312,6 +313,7 @@ def create_admin_router(
 
         context_turns = max(5, min(150, context_turns))
         context_tokens = max(2000, min(60000, context_tokens))
+        roulette_title_context_messages = max(20, min(500, roulette_title_context_messages))
         interject_p = max(0, min(100, interject_p))
         interject_cooldown = max(10, min(3600, interject_cooldown))
         summary_daily_limit = max(0, min(20, summary_daily_limit))
@@ -346,6 +348,7 @@ def create_admin_router(
             await app_config.set("context_max_turns", context_turns)
             await app_config.set("max_length", max_length)
             await app_config.set("context_max_prompt_tokens", context_tokens)
+            await app_config.set("roulette_title_context_messages", roulette_title_context_messages)
             await app_config.set("interject_p", interject_p)
             await app_config.set("interject_cooldown", interject_cooldown)
             await app_config.set("summary_daily_limit", summary_daily_limit)
@@ -607,8 +610,10 @@ def _render_chat_settings_body(
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
     style_current = str(conf.get("style", styles[0][0] if styles else DEFAULT_STYLE_KEY))
-    custom_title = conf.get("roulette_custom_title")
-    title_label = custom_title if custom_title else "скуф"
+    custom_title = str(conf.get("roulette_custom_title") or "").strip()
+    title_label = custom_title if custom_title else "авто по истории"
+    title_mode = "фиксированное вручную" if custom_title else "автогенерация по истории"
+    title_context_messages = int(app_conf.get("roulette_title_context_messages", 200) or 200)
     temperature_value = resolve_temperature(conf)
     temperature_str = f"{temperature_value:.2f}".rstrip("0").rstrip(".")
     if not temperature_str:
@@ -634,7 +639,9 @@ def _render_chat_settings_body(
         f"<tr><td>Лимит окна</td><td>{escape(str(app_conf.get('context_max_prompt_tokens', 32000)))} токенов</td></tr>"
         f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, кулдаун {escape(str(app_conf.get('interject_cooldown', 60)))}с</td></tr>"
         f"<tr><td>Память участников</td><td>{'включена' if app_conf.get('user_memory_enabled', True) else 'выключена'}; top-k {escape(str(app_conf.get('memory_top_k', 6)))}</td></tr>"
-        f"<tr><td>Прозвище рулетки</td><td>{escape(title_label)}</td></tr>"
+        f"<tr><td>Звание рулетки</td><td>{escape(title_label)}</td></tr>"
+        f"<tr><td>Режим звания</td><td>{escape(title_mode)}</td></tr>"
+        f"<tr><td>Сообщений для автозвания</td><td>{title_context_messages}</td></tr>"
     )
 
     return (
@@ -761,14 +768,14 @@ def _render_memory_users_body(
         username = user.username if user and user.username else str(profile.user_id)
         detail_url = _build_url(f"/admin/chats/{chat.id}/memory/{profile.user_id}", token)
         rapport = f"{_relationship_rapport(relation):.2f}" if relation else "0.00"
-        tone = _tone_hint_label(relation.tone_hint if relation else None)
+        relation_kind = _relationship_kind_label(relation)
         visible_count = str(_visible_memory_count(profile))
         items.append(
             "<tr>"
             f"<td>{escape(username)}</td>"
             f"<td>{escape(visible_count)}</td>"
             f"<td>{escape(rapport)}</td>"
-            f"<td>{escape(tone)}</td>"
+            f"<td>{escape(relation_kind)}</td>"
             f"<td>{escape(profile.updated_at.strftime('%Y-%m-%d %H:%M:%S') if profile.updated_at else '—')}</td>"
             f"<td class='text-end'><a class='btn btn-sm btn-outline-primary' href='{escape(detail_url)}'>Открыть</a></td>"
             "</tr>"
@@ -776,7 +783,7 @@ def _render_memory_users_body(
 
     table = (
         "<div class='table-responsive'><table class='table table-hover align-middle'>"
-        "<thead><tr><th>Пользователь</th><th>Записей</th><th>Отношение</th><th>Тон</th><th>Обновлено</th><th></th></tr></thead>"
+        "<thead><tr><th>Пользователь</th><th>Записей</th><th>Отношение</th><th>Тип отношений</th><th>Обновлено</th><th></th></tr></thead>"
         f"<tbody>{''.join(items)}</tbody></table></div>"
         if items
         else "<div class='alert alert-info'>Память по участникам ещё не накопилась.</div>"
@@ -827,7 +834,7 @@ def _render_memory_user_detail_body(
     if relation is not None:
         summary_rows.append(f"<tr><td>Отношение</td><td>{_relationship_rapport(relation):.2f}</td></tr>")
         summary_rows.append(
-            f"<tr><td>Подсказка по тону</td><td>{escape(_tone_hint_label(relation.tone_hint))}</td></tr>"
+            f"<tr><td>Тип отношений</td><td>{escape(_relationship_kind_label(relation))}</td></tr>"
         )
 
     summary_table = (
@@ -884,6 +891,17 @@ def _tone_hint_label(value: str | None) -> str:
     }
     normalized = (value or "neutral").strip().lower()
     return labels.get(normalized, normalized or "нейтральный")
+
+
+def _relationship_kind_label(relation: RelationshipState | None) -> str:
+    if relation is None:
+        return "нейтральные"
+    rapport = _relationship_rapport(relation)
+    if rapport >= 0.35:
+        return "тёплые"
+    if rapport <= -0.35:
+        return "напряжённые"
+    return "нейтральные"
 
 
 def _relationship_rapport(relation: RelationshipState | None) -> float:
@@ -976,6 +994,7 @@ def _render_app_config_body(
     memory_max_prompt_tokens = int(conf.get("memory_max_prompt_tokens", 500) or 500)
     memory_rag_candidate_limit = int(conf.get("memory_rag_candidate_limit", 120) or 120)
     memory_group_users = int(conf.get("memory_group_users", 3) or 3)
+    roulette_title_context_messages = int(conf.get("roulette_title_context_messages", 200) or 200)
     prompt_chat_base = str(conf.get("prompt_chat_base", ""))
     prompt_chat_interject_suffix = str(conf.get("prompt_chat_interject_suffix", ""))
     prompt_focus_suffix = str(conf.get("prompt_focus_suffix", ""))
@@ -1009,6 +1028,10 @@ def _render_app_config_body(
         "<div class='col-md-6'>"
         "<label class='form-label'>Лимит окна (токены 2k-60k)</label>"
         f"<input class='form-control' type='number' name='context_tokens' min='2000' max='60000' value='{context_tokens}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Сообщений для автозвания рулетки (20-500)</label>"
+        f"<input class='form-control' type='number' name='roulette_title_context_messages' min='20' max='500' value='{roulette_title_context_messages}'>"
         "</div>"
         "<div class='col-md-6'>"
         "<label class='form-label'>Макс. длина ответа (0 = без ограничения)</label>"

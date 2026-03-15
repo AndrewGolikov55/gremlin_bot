@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..models.roulette import RouletteWinner, RouletteParticipant
 from ..models.chat import Chat
 from ..services.context import (
+    ChatTurn,
     ContextService,
     build_messages,
     build_system_prompt,
@@ -40,18 +42,35 @@ from ..utils.llm import resolve_temperature
 logger = logging.getLogger("roulette")
 MoscowTZ = ZoneInfo("Europe/Moscow")
 
-TITLE_CHOICES = [
+LEGACY_TITLE_CHOICES = [
     ("pidor", "Пидор"),
     ("skuf", "Скуф"),
     ("beauty", "Красавчик"),
     ("clown", "Клоун"),
 ]
+DEFAULT_GENERATED_TITLE = "Герой дня"
 
 DEFAULT_ROULETTE_PROMPT = (
     "Ты — ведущий шуточной рулетки. Говори от первого лица и не описывай себя со стороны."
     " Пиши 1–2 короткие фразы без Markdown, поддержи стиль выбранной персоны и не раскрывай победителя."
 )
+DEFAULT_ROULETTE_TITLE_PROMPT = (
+    "Ты придумываешь одно короткое шуточное звание для рулетки в чате. "
+    "Опирайся только на последние сообщения этого чата и активную роль бота. "
+    "Верни только само звание без кавычек, без пояснений, без эмодзи, максимум 4 слова. "
+    "Не называй конкретного участника и не пиши слово 'звание'. "
+    "Избегай слишком общих вариантов вроде 'герой дня', 'победитель дня' и 'лучший дня', "
+    "если в истории есть более конкретные поводы для шутки."
+)
 WINNER_PLACEHOLDER = "[[winner]]"
+GENERIC_GENERATED_TITLES = {
+    "герой дня",
+    "героя дня",
+    "победитель дня",
+    "лучший дня",
+    "лучший чат",
+    "звезда дня",
+}
 
 
 @dataclass
@@ -110,11 +129,18 @@ class RouletteService:
                 return RollResult(False, "Некого разыгрывать — зарегистрируйтесь командой /reg.")
 
             winner_user_id, winner_username = random.choice(participants)
-            title_code, title_display = await self._pick_title(chat_id)
+            conf = await self.settings.get_all(chat_id)
+            app_conf = await self.app_config.get_all()
+            title_code, title_display = await self._pick_title(
+                session,
+                chat_id=chat_id,
+                conf=conf,
+                app_conf=app_conf,
+            )
 
             delivered = False
             try:
-                delivered = await self._announce(chat_id, winner_user_id, winner_username, title_code, title_display)
+                delivered = await self._announce(chat_id, winner_user_id, winner_username, title_display)
             except LLMRateLimitError as exc:
                 logger.warning(
                     "Rate limit during roulette announcement chat=%s retry_after=%s",
@@ -202,19 +228,115 @@ class RouletteService:
             await session.commit()
         return True, await self.participant_count(chat_id)
 
-    async def _pick_title(self, chat_id: int) -> tuple[str, str]:
-        conf = await self.settings.get_all(chat_id)
-        custom = conf.get("roulette_custom_title")
+    async def _pick_title(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        conf: dict[str, object] | None = None,
+        app_conf: dict[str, object] | None = None,
+    ) -> tuple[str, str]:
+        conf = conf or await self.settings.get_all(chat_id)
+        custom = str(conf.get("roulette_custom_title") or "").strip()
         if custom:
-            return "custom", str(custom)
-        return random.choice(TITLE_CHOICES)
+            return "custom", self._sanitize_generated_title(custom, fallback=custom)
+
+        app_conf = app_conf or await self.app_config.get_all()
+        generated = await self._generate_title(session, chat_id=chat_id, conf=conf, app_conf=app_conf)
+        if generated:
+            return "generated", generated
+        return "generated", DEFAULT_GENERATED_TITLE
+
+    async def _generate_title(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        conf: dict[str, object],
+        app_conf: dict[str, object],
+    ) -> str | None:
+        title_turns_raw = app_conf.get("roulette_title_context_messages", 200) or 200
+        try:
+            title_turns = int(title_turns_raw)
+        except (TypeError, ValueError):
+            title_turns = 200
+        title_turns = max(20, min(500, title_turns))
+
+        fetch_limit = max(100, min(1200, title_turns * 3))
+        turns = await self.context.get_recent_turns(session, chat_id, fetch_limit)
+        history_block = self._build_title_history(turns, title_turns)
+        if not history_block:
+            return DEFAULT_GENERATED_TITLE
+
+        provider, fallback_enabled = resolve_llm_options(app_conf)
+        style = str(conf.get("style", ""))
+        style_prompts = await self.personas.get_all()
+        style_prompt = style_prompts.get(style) or style_prompts.get("gopnik", "")
+        system_prompt = DEFAULT_ROULETTE_TITLE_PROMPT
+        if style_prompt:
+            system_prompt += "\n\n" + style_prompt.strip()
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": history_block},
+        ]
+
+        try:
+            raw_title = await llm_generate(
+                messages,
+                temperature=resolve_temperature(conf),
+                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                max_tokens=32,
+                provider=provider,
+                fallback_enabled=fallback_enabled,
+            )
+        except (LLMRateLimitError, LLMError):
+            logger.exception("Failed to generate roulette title chat=%s", chat_id)
+            return self._heuristic_title(turns) or DEFAULT_GENERATED_TITLE
+
+        title = self._sanitize_generated_title(raw_title, fallback=DEFAULT_GENERATED_TITLE)
+        logger.debug("Roulette title candidate chat=%s raw=%r sanitized=%r", chat_id, raw_title, title)
+        if self._is_generic_generated_title(title):
+            retry_messages = [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": history_block
+                    + "\n\n"
+                    + "Это слишком общее. Придумай более конкретное, смешное и привязанное к теме чата звание. "
+                    + "Верни только новое короткое звание.",
+                },
+            ]
+            try:
+                retry_raw_title = await llm_generate(
+                    retry_messages,
+                    temperature=resolve_temperature(conf),
+                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    max_tokens=32,
+                    provider=provider,
+                    fallback_enabled=fallback_enabled,
+                )
+                retry_title = self._sanitize_generated_title(
+                    retry_raw_title,
+                    fallback=DEFAULT_GENERATED_TITLE,
+                )
+                logger.debug(
+                    "Roulette title retry chat=%s raw=%r sanitized=%r",
+                    chat_id,
+                    retry_raw_title,
+                    retry_title,
+                )
+                if retry_title and not self._is_generic_generated_title(retry_title):
+                    return retry_title
+            except (LLMRateLimitError, LLMError):
+                logger.exception("Failed to retry roulette title generation chat=%s", chat_id)
+        return self._heuristic_title(turns) or title
 
     async def _announce(
         self,
         chat_id: int,
         user_id: int,
         username: str | None,
-        title_code: str,
         title_display: str,
     ) -> bool:
         conf = await self.settings.get_all(chat_id)
@@ -358,7 +480,10 @@ class RouletteService:
             "Сохрани манеру активной роли и стиль шуточной рулетки. "
             "Обыграй звание через известные факты о победителе, его недавние сообщения и твоё "
             "текущее отношение к нему. Если данных мало, опирайся только на его последние сообщения "
-            "и не выдумывай. Не пересказывай внутреннюю справку напрямую. "
+            "и не выдумывай. Не пересказывай внутреннюю справку напрямую. Отношение используй "
+            "только как лёгкий оттенок подачи, а не как главную тему сообщения. Не заканчивай "
+            "фразами про недоверие, слежку, контроль, настороженность или скрытую угрозу: "
+            "победное объявление должно звучать уместно, живо и чуть празднично. "
             f"Обязательно используй маркер {WINNER_PLACEHOLDER} вместо имени победителя."
         )
         base_prompt = str(app_conf.get("prompt_roulette_base") or DEFAULT_ROULETTE_PROMPT).strip()
@@ -411,6 +536,150 @@ class RouletteService:
 
     def _default_intrigue(self, title_display: str) -> str:
         return f"🎰 Я кручу барабан за «{title_display}». Скоро назову победителя."
+
+    def _sanitize_generated_title(self, raw_title: str, *, fallback: str) -> str:
+        cleaned = " ".join((raw_title or "").replace("\n", " ").split())
+        quoted_match = re.search(r"[«\"]([^»\"]{2,80})[»\"]", cleaned)
+        if quoted_match:
+            cleaned = quoted_match.group(1)
+        cleaned = re.sub(r"^```(?:\w+)?", "", cleaned).strip("` ")
+        cleaned = re.sub(r"^звание[:\s-]+", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^(скоро\s+объявлю|объявляю|кручу\s+рулетку|рулетка)\s+", "", cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip(" \"'«».,:;!?-")
+        cleaned = re.sub(r"[@#][\w_]+", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            return fallback
+        words = cleaned.split()
+        if len(words) > 4:
+            cleaned = " ".join(words[:4]).strip()
+        if len(cleaned) > 80:
+            cleaned = cleaned[:80].rsplit(" ", 1)[0].strip() or cleaned[:80].strip()
+        return cleaned or fallback
+
+    def _build_title_history(self, turns: list[ChatTurn], max_messages: int) -> str | None:
+        lines: list[str] = []
+        for turn in reversed(turns):
+            if turn.is_bot:
+                continue
+            text = " ".join((turn.text or "").replace("\n", " ").split()).strip()
+            if not text or text.startswith("/"):
+                continue
+            speaker = (turn.speaker or "Участник").strip()
+            line = f"{speaker}: {text[:180]}"
+            lines.append(line)
+            if len(lines) >= max_messages:
+                break
+        if not lines:
+            return None
+        lines.reverse()
+        return (
+            "Последние человеческие реплики в чате. Опирайся только на них, не на прошлые объявления рулетки.\n"
+            + "\n".join(lines)
+            + "\n\nПридумай одно новое короткое шуточное звание по мотивам этих реплик. Верни только само звание."
+        )
+
+    def _is_generic_generated_title(self, title: str) -> bool:
+        normalized = " ".join((title or "").strip().lower().split())
+        return normalized in GENERIC_GENERATED_TITLES
+
+    def _heuristic_title(self, turns: list[ChatTurn]) -> str | None:
+        recent_texts: list[str] = []
+        for turn in reversed(turns):
+            if turn.is_bot:
+                continue
+            text = " ".join((turn.text or "").replace("\n", " ").split()).strip().lower()
+            if not text or text.startswith("/"):
+                continue
+            recent_texts.append(text)
+            if len(recent_texts) >= 80:
+                break
+        if not recent_texts:
+            return None
+
+        combined = " ".join(reversed(recent_texts))
+        if "мыльные пузыри" in combined or (
+            "мыльн" in combined and "пузыр" in combined
+        ):
+            return "Повелитель пузырей"
+        if "аниме" in combined or "боруто" in combined or "каваки" in combined:
+            return "Аниме-эксперт"
+        if "пиво" in combined or "пив" in combined:
+            return "Пивной эстет"
+
+        profanity_hits = sum(
+            combined.count(word)
+            for word in ("долбо", "хуй", "лох", "пидор", "блять")
+        )
+        apology_hits = sum(
+            combined.count(word)
+            for word in ("прости", "извин", "ладно", "дружить")
+        )
+        if profanity_hits >= 3 and apology_hits >= 1:
+            return "Мастер примирений"
+        if profanity_hits >= 3:
+            return "Король подколов"
+
+        token_pattern = re.compile(r"[a-zA-Zа-яА-ЯёЁ]{4,}")
+        stopwords = {
+            "привет",
+            "работаешь",
+            "почему",
+            "прямо",
+            "ответь",
+            "вопрос",
+            "давно",
+            "недавно",
+            "можешь",
+            "рассказать",
+            "участников",
+            "участнике",
+            "ответ",
+            "делаешь",
+            "дело",
+            "ладно",
+            "люблю",
+            "прости",
+            "извини",
+            "давай",
+            "говорить",
+            "можно",
+            "круче",
+            "дела",
+            "мне",
+            "тебе",
+            "кого",
+            "только",
+            "этом",
+            "чате",
+        }
+        rude_roots = ("долбо", "хуй", "пидор", "блять", "лох")
+        counts: Counter[str] = Counter()
+        for text in recent_texts:
+            for token in token_pattern.findall(text):
+                normalized = token.lower()
+                if normalized in stopwords:
+                    continue
+                if any(root in normalized for root in rude_roots):
+                    continue
+                counts[normalized] += 1
+        if not counts:
+            return None
+
+        keyword, repeats = counts.most_common(1)[0]
+        if repeats < 2:
+            return None
+        if keyword.startswith("пузыр"):
+            return "Главный по пузырям"
+        if keyword.startswith("пив"):
+            return "Главный по пиву"
+        if keyword.startswith("аниме"):
+            return "Главный по аниме"
+        if keyword.startswith("борут"):
+            return "Эксперт по Боруто"
+        if keyword.startswith("кавак"):
+            return "Эксперт по Каваки"
+        return f"Главный по {keyword}"
 
     def _prepare_winner_message(
         self,
@@ -584,11 +853,16 @@ class RouletteService:
                 )
             ).scalar_one_or_none()
 
-        display_map = {code: name for code, name in TITLE_CHOICES}
-        custom_title = conf.get("roulette_custom_title")
-        display_map["custom"] = custom_title or "Прозвище"
+        display_map = {code: name for code, name in LEGACY_TITLE_CHOICES}
+        custom_title = str(conf.get("roulette_custom_title") or "").strip()
+        display_map["custom"] = custom_title or "Своё звание"
 
-        heading_title = last_winner or display_map.get("custom") or "«Пидор/Скуф/…»"
+        if custom_title:
+            heading_title = custom_title
+        elif last_winner:
+            heading_title = last_winner
+        else:
+            heading_title = "авто по истории"
         return heading_title, monthly, overall
 
     def _build_stats_header(self, heading_title: str) -> list[str]:
