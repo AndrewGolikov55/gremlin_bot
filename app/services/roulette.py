@@ -286,7 +286,7 @@ class RouletteService:
                 messages,
                 temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
-                max_tokens=32,
+                max_tokens=self._title_completion_tokens(app_conf),
                 provider=provider,
                 fallback_enabled=fallback_enabled,
             )
@@ -312,7 +312,7 @@ class RouletteService:
                     retry_messages,
                     temperature=resolve_temperature(conf),
                     top_p=float(conf.get("top_p", 0.9) or 0.9),
-                    max_tokens=32,
+                    max_tokens=self._title_completion_tokens(app_conf),
                     provider=provider,
                     fallback_enabled=fallback_enabled,
                 )
@@ -457,6 +457,7 @@ class RouletteService:
             query_text=None,
             app_conf=app_conf,
             speaker_name=speaker_name,
+            include_relation=False,
         )
 
     async def _generate_winner_result_message(
@@ -478,11 +479,10 @@ class RouletteService:
         focus_text = (
             f"Объяви, что звание «{title_display}» получает {WINNER_PLACEHOLDER}. "
             "Сохрани манеру активной роли и стиль шуточной рулетки. "
-            "Обыграй звание через известные факты о победителе, его недавние сообщения и твоё "
-            "текущее отношение к нему. Если данных мало, опирайся только на его последние сообщения "
-            "и не выдумывай. Не пересказывай внутреннюю справку напрямую. Отношение используй "
-            "только как лёгкий оттенок подачи, а не как главную тему сообщения. Не заканчивай "
-            "фразами про недоверие, слежку, контроль, настороженность или скрытую угрозу: "
+            "Обыграй звание через известные факты о победителе и его недавние сообщения. "
+            "Если данных мало, опирайся только на его последние сообщения и не выдумывай. "
+            "Не пересказывай внутреннюю справку напрямую. Не добавляй в объявление оценку ваших "
+            "отношений, недоверие, слежку, контроль, настороженность или скрытую угрозу: "
             "победное объявление должно звучать уместно, живо и чуть празднично. "
             f"Обязательно используй маркер {WINNER_PLACEHOLDER} вместо имени победителя."
         )
@@ -532,10 +532,32 @@ class RouletteService:
             trimmed = trimmed[:240].rsplit(" ", 1)[0].rstrip(",;:.!? ") + "…"
         if not trimmed:
             return self._default_intrigue(title_display)
-        return trimmed
+        return self._ensure_quoted_title(trimmed, title_display)
 
     def _default_intrigue(self, title_display: str) -> str:
         return f"🎰 Я кручу барабан за «{title_display}». Скоро назову победителя."
+
+    def _ensure_quoted_title(self, text: str, title_display: str) -> str:
+        if not text or not title_display:
+            return text
+        if f"«{title_display}»" in text or f"\"{title_display}\"" in text:
+            return text
+
+        escaped_title = re.escape(title_display)
+        pattern = re.compile(
+            rf"(?P<prefix>\b(?:звание|титул)\s+)(?P<title>{escaped_title})(?P<suffix>\b)",
+            flags=re.IGNORECASE,
+        )
+        replaced = pattern.sub(
+            lambda match: f"{match.group('prefix')}«{match.group('title')}»{match.group('suffix')}",
+            text,
+            count=1,
+        )
+        if replaced != text:
+            return replaced
+
+        bare_pattern = re.compile(rf"(?<![«\"']){escaped_title}(?![»\"'])")
+        return bare_pattern.sub(f"«{title_display}»", text, count=1)
 
     def _sanitize_generated_title(self, raw_title: str, *, fallback: str) -> str:
         cleaned = " ".join((raw_title or "").replace("\n", " ").split())
@@ -768,6 +790,18 @@ class RouletteService:
         if override and override > 0:
             allowed = min(allowed, override)
         return allowed
+
+    def _title_completion_tokens(self, app_conf: dict[str, object]) -> int | None:
+        override_raw = app_conf.get("max_length")
+        try:
+            override = int(override_raw)
+        except (TypeError, ValueError):
+            override = None
+        if override is not None and override <= 0:
+            return None
+        if override and override > 0:
+            return max(32, min(override, 256))
+        return None
 
     async def _deactivate_chat(self, chat_id: int) -> None:
         async with self.sessionmaker() as session:

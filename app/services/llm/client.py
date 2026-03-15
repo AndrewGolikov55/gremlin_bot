@@ -202,7 +202,7 @@ def _extract_openrouter_content(data: Mapping[str, object]) -> str:
     return content
 
 
-def _extract_openai_content(data: Mapping[str, object]) -> str:
+def _extract_openai_content_meta(data: Mapping[str, object]) -> tuple[str, str]:
     try:
         choice = data["choices"][0]
         message = choice.get("message", {})
@@ -210,6 +210,7 @@ def _extract_openai_content(data: Mapping[str, object]) -> str:
         raise LLMError(f"Unexpected OpenAI response: {data}") from exc
 
     content = str(message.get("content") or "").strip()
+    finish_reason = str(choice.get("finish_reason") or "").strip().lower()
     _log_content("OpenAI", content)
 
     if not content:
@@ -219,6 +220,11 @@ def _extract_openai_content(data: Mapping[str, object]) -> str:
             data.get("usage"),
             choice.get("content_filter_results"),
         )
+    return content, finish_reason
+
+
+def _extract_openai_content(data: Mapping[str, object]) -> str:
+    content, _finish_reason = _extract_openai_content_meta(data)
     return content
 
 
@@ -285,7 +291,27 @@ async def _generate_openai(
         headers=headers,
         payload=payload,
     )
-    return _extract_openai_content(data)
+    content, finish_reason = _extract_openai_content_meta(data)
+    if not content and finish_reason == "length" and max_tokens and 0 < max_tokens < 128:
+        retry_max_tokens = min(512, max(128, max_tokens * 4))
+        logger.info(
+            "OpenAI returned empty content with finish_reason=length and max_completion_tokens=%s; retrying with %s",
+            max_tokens,
+            retry_max_tokens,
+        )
+        retry_payload = _build_openai_payload(
+            message_list,
+            temperature=temperature,
+            max_tokens=retry_max_tokens,
+        )
+        retry_data = await _post_json(
+            label="OpenAI",
+            url=url,
+            headers=headers,
+            payload=retry_payload,
+        )
+        return _extract_openai_content(retry_data)
+    return content
 
 
 async def generate(

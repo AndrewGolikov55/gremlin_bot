@@ -61,12 +61,13 @@ class UserMemoryService:
         app_conf: dict[str, object],
         speaker_name: str | None = None,
         exclude_message_id: int | None = None,
+        include_relation: bool = True,
     ) -> str | None:
         if not self.is_enabled(app_conf):
             return None
 
         profile = await session.get(UserMemoryProfile, (chat_id, user_id))
-        relation = await session.get(RelationshipState, (chat_id, user_id))
+        relation = await session.get(RelationshipState, (chat_id, user_id)) if include_relation else None
         messages = await self._search_user_messages(
             session,
             chat_id=chat_id,
@@ -87,6 +88,7 @@ class UserMemoryService:
             messages=messages,
             speaker_name=speaker_name,
             max_tokens=max_tokens,
+            include_relation=include_relation,
         )
 
     async def build_group_memory_block(
@@ -351,6 +353,7 @@ class UserMemoryService:
         messages: Sequence[RetrievedUserMessage],
         speaker_name: str | None,
         max_tokens: int,
+        include_relation: bool,
     ) -> str:
         lines = [
             "Справка о пользователе. Эти сведения относятся к собеседнику, не к тебе."
@@ -367,8 +370,10 @@ class UserMemoryService:
                 values = visible_memory[kind]
                 if values:
                     lines.append(f"{KIND_LABELS[kind]}: {_truncate_text(values[0], 120)}")
-        if relation:
-            lines.append(f"Отношение к пользователю: {_relationship_summary(relation)}.")
+        if include_relation and relation:
+            relation_summary = _relationship_summary(relation)
+            if relation_summary:
+                lines.append(f"Отношение к пользователю: {relation_summary}.")
         if messages:
             lines.append("Ранее пользователь писал:")
             for message in messages[:4]:
@@ -395,7 +400,8 @@ class UserMemoryService:
             return None
 
         label = speaker_name or "участник"
-        parts = [f"- {label}: {_relationship_summary(relation) if relation else 'отношения нейтральные'}"]
+        relation_summary = _relationship_summary(relation) if relation else None
+        parts = [f"- {label}: {relation_summary or 'без выраженного отношения'}"]
 
         if profile is not None:
             visible_memory = _profile_memory_values(profile)
@@ -483,13 +489,17 @@ def _parse_json_object(raw_text: str) -> dict[str, Any] | None:
     return None
 
 
-def _relationship_summary(relation: RelationshipState) -> str:
+def _relationship_summary(relation: RelationshipState) -> str | None:
     rapport = _relationship_rapport(relation)
+    if rapport >= 0.85:
+        return "отношения почти дружеские"
     if rapport >= 0.35:
         return "отношения тёплые"
+    if rapport <= -0.85:
+        return "отношения близки к ненависти"
     if rapport <= -0.35:
         return "отношения напряжённые"
-    return "отношения нейтральные"
+    return None
 
 
 def _message_score(text: str, date: datetime, query_tokens: set[str]) -> float:

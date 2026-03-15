@@ -897,8 +897,12 @@ def _relationship_kind_label(relation: RelationshipState | None) -> str:
     if relation is None:
         return "нейтральные"
     rapport = _relationship_rapport(relation)
+    if rapport >= 0.85:
+        return "дружба"
     if rapport >= 0.35:
         return "тёплые"
+    if rapport <= -0.85:
+        return "ненависть"
     if rapport <= -0.35:
         return "напряжённые"
     return "нейтральные"
