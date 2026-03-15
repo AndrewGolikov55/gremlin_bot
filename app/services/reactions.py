@@ -23,43 +23,43 @@ from ..services.user_memory import UserMemoryService
 
 logger = logging.getLogger("reactions")
 
+# Official Bot API list from ReactionTypeEmoji:
+# https://core.telegram.org/bots/api#reactiontypeemoji
 REACTION_EMOJI_POOL: tuple[str, ...] = (
+    "❤",
     "👍",
-    "❤️",
-    "🔥",
-    "😁",
-    "🤔",
-    "🤡",
-    "😢",
     "👎",
-    "💩",
-    "🤝",
-    "🤣",
-    "🙏",
-    "💯",
-    "👌",
-    "🤯",
-    "🙈",
-    "🕊",
-    "😡",
-    "🗿",
+    "🔥",
     "🥰",
     "👏",
+    "😁",
+    "🤔",
+    "🤯",
     "😱",
     "🤬",
+    "😢",
     "🎉",
     "🤩",
     "🤮",
-    "😭",
-    "😏",
+    "💩",
+    "🙏",
+    "👌",
+    "🕊",
+    "🤡",
+    "🥱",
+    "🥴",
     "😍",
     "🐳",
-    "❤️‍🔥",
+    "❤‍🔥",
+    "🌚",
     "🌭",
+    "💯",
+    "🤣",
     "⚡",
     "🍌",
     "🏆",
     "💔",
+    "🤨",
     "😐",
     "🍓",
     "🍾",
@@ -67,38 +67,38 @@ REACTION_EMOJI_POOL: tuple[str, ...] = (
     "🖕",
     "😈",
     "😴",
+    "😭",
     "🤓",
     "👻",
     "👨‍💻",
     "👀",
     "🎃",
-    "🙉",
+    "🙈",
     "😇",
     "😨",
-    "✍️",
+    "🤝",
+    "✍",
     "🤗",
     "🫡",
     "🎅",
     "🎄",
-    "☃️",
+    "☃",
     "💅",
     "🤪",
-    "😎",
+    "🗿",
+    "🆒",
     "💘",
+    "🙉",
     "🦄",
     "😘",
     "💊",
     "🙊",
+    "😎",
     "👾",
-    "🤷‍♂️",
+    "🤷‍♂",
     "🤷",
-    "🤦",
-    "🤦‍♂️",
-    "🥱",
-    "🥴",
-    "🤨",
-    "😤",
-    "🤷‍♀️",
+    "🤷‍♀",
+    "😡",
 )
 
 DEFAULT_REACTION_PROMPT = (
@@ -242,7 +242,7 @@ class ReactionService:
                 messages,
                 temperature=1.0,
                 top_p=0.9,
-                max_tokens=_reaction_max_tokens(app_conf),
+                max_tokens=None,
                 provider=provider,
                 fallback_enabled=fallback_enabled,
             )
@@ -284,17 +284,6 @@ def _extract_reaction_emoji(raw: str, pool: Sequence[str]) -> str | None:
         if emoji in text:
             return emoji
     return None
-
-
-def _reaction_max_tokens(app_conf: dict[str, object]) -> int | None:
-    raw = app_conf.get("max_length", 0)
-    try:
-        value = int(float(raw))
-    except (TypeError, ValueError):
-        return None
-    if value <= 0:
-        return None
-    return max(64, min(value, 256))
 
 
 def _fallback_reaction_emoji(
