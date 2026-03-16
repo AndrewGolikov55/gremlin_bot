@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from html import escape
 
-from aiogram import F, Router, types
+from aiogram import Bot, F, Router, types
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardMarkup, ForceReply
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -70,9 +71,13 @@ async def cmd_settings(
     settings: SettingsService,
     personas: StylePromptService,
     app_config: AppConfigService,
+    bot: Bot,
 ):
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Эта команда доступна только в групповых чатах.")
+        return
+    if not message.from_user or not await _is_group_admin(bot, message.chat.id, message.from_user.id):
+        await message.reply("Настройки группы могут менять только админы.")
         return
     conf = await settings.get_all(message.chat.id)
     app_conf = await app_config.get_all()
@@ -352,10 +357,14 @@ async def cb_settings(
     settings: SettingsService,
     personas: StylePromptService,
     app_config: AppConfigService,
+    bot: Bot,
 ):
     chat_id = query.message.chat.id if query.message else None
     if chat_id is None:
         await _safe_answer(query)
+        return
+    if not query.from_user or not await _is_group_admin(bot, chat_id, query.from_user.id):
+        await _safe_answer(query, "Менять настройки могут только админы группы.", show_alert=True)
         return
 
     parts = query.data.split(":") if query.data else []
@@ -453,3 +462,11 @@ async def cb_settings(
             if "message is not modified" in str(exc).lower():
                 return
             raise
+
+
+async def _is_group_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+    except TelegramBadRequest:
+        return False
+    return member.status in {ChatMemberStatus.CREATOR, ChatMemberStatus.ADMINISTRATOR}
