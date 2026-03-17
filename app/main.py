@@ -277,6 +277,7 @@ def inc_messages():
 async def configure_bot_commands(bot: Bot) -> None:
     commands = [
         BotCommand(command="settings", description="Панель настроек"),
+        BotCommand(command="relationships", description="Отношения к участникам"),
         BotCommand(command="roll", description="Запустить рулетку"),
         BotCommand(command="rollstats_montly", description="Статистика рулетки за месяц"),
         BotCommand(command="rollstats_total", description="Статистика рулетки за всё время"),

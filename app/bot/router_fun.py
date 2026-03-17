@@ -8,8 +8,11 @@ from typing import Dict, List
 
 from aiogram import F, Router, types
 from aiogram.filters import Command
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.memory import RelationshipState, UserMemoryProfile
+from ..models.user import User
 from ..services.context import ChatTurn, ContextService, build_messages
 from ..services.llm.client import (
     LLMError,
@@ -394,6 +397,52 @@ async def cmd_summary(
             await message.reply(chunk, allow_sending_without_reply=True)
 
 
+@router.message(Command("relationships"))
+async def cmd_relationships(
+    message: types.Message,
+    session: AsyncSession,
+):
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.reply("Команда доступна только в групповых чатах.")
+        return
+
+    stmt = (
+        select(RelationshipState, UserMemoryProfile, User)
+        .outerjoin(
+            UserMemoryProfile,
+            (UserMemoryProfile.chat_id == RelationshipState.chat_id)
+            & (UserMemoryProfile.user_id == RelationshipState.user_id),
+        )
+        .outerjoin(User, User.tg_id == RelationshipState.user_id)
+        .where(RelationshipState.chat_id == message.chat.id)
+    )
+    rows = list((await session.execute(stmt)).all())
+    if not rows:
+        await message.reply("Пока не накопилось данных по взаимоотношениям в этом чате.", parse_mode=None)
+        return
+
+    rows.sort(
+        key=lambda row: (
+            -_relationship_rapport(row[0]),
+            str(row[2].username if row[2] and row[2].username else row[0].user_id).lower(),
+        )
+    )
+
+    lines = ["🤝 Взаимоотношения по чату:"]
+    for index, (relation, profile, user) in enumerate(rows, start=1):
+        username = user.username if user and user.username else str(relation.user_id)
+        relation_label = _relationship_kind_label(relation)
+        line = f"{index}. {username} - {relation_label}"
+        facts = _collect_relationship_facts(profile)
+        if facts:
+            line += f"; факты: {', '.join(facts)}"
+        lines.append(line)
+
+    text = "\n".join(lines)
+    for chunk in _split_message(text):
+        await message.reply(chunk, allow_sending_without_reply=True, parse_mode=None)
+
+
 @router.message(Command("reg"))
 async def cmd_reg(message: types.Message, roulette: RouletteService):
     if message.chat.type not in {"group", "supergroup"}:
@@ -466,3 +515,88 @@ async def cmd_rolltitle(message: types.Message, settings: SettingsService):
     title = args[1].strip()
     await settings.set(message.chat.id, "roulette_custom_title", title)
     await message.reply(f"Новое фиксированное звание установлено: {title}")
+
+
+def _collect_relationship_facts(profile: UserMemoryProfile | None) -> list[str]:
+    if profile is None:
+        return []
+
+    facts: list[str] = []
+    for value in profile.identity or []:
+        cleaned = _clean_relationship_fact(str(value))
+        if cleaned:
+            facts.append(cleaned)
+        if len(facts) >= 2:
+            return facts
+
+    for value in _visible_preferences(profile.preferences):
+        cleaned = _clean_relationship_fact(str(value))
+        if cleaned and cleaned not in facts:
+            facts.append(cleaned)
+        if len(facts) >= 2:
+            return facts
+
+    for value in profile.boundaries or []:
+        cleaned = _clean_relationship_fact(str(value))
+        if cleaned and cleaned not in facts:
+            facts.append(cleaned)
+        if len(facts) >= 2:
+            return facts
+
+    summary = _clean_relationship_fact(profile.summary or "")
+    if summary and summary not in facts:
+        facts.append(summary)
+    return facts[:2]
+
+
+def _clean_relationship_fact(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(
+        r"(?:,?\s*)предпочита(?:е|ё)мый\s+тон:\s*(?:neutral|warm|careful|нейтральный|т[её]плый|осторожный)\.?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(?:,?\s*)предпочитает\s+(?:нейтральный|т[её]плый|осторожный)\s+тон\.?",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return " ".join(text.split()).strip(" ,.;")
+
+
+def _visible_preferences(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    return [
+        item
+        for item in values
+        if not re.fullmatch(
+            r"предпочита(?:е|ё)мый тон:\s*(neutral|warm|careful|нейтральный|т[её]плый|осторожный)",
+            item.strip().lower(),
+        )
+    ]
+
+
+def _relationship_rapport(relation: RelationshipState | None) -> float:
+    if relation is None:
+        return 0.0
+    affinity = float(relation.affinity or 0)
+    tension = float(relation.tension or 0)
+    return max(-1.0, min(1.0, affinity - tension))
+
+
+def _relationship_kind_label(relation: RelationshipState | None) -> str:
+    rapport = _relationship_rapport(relation)
+    if rapport >= 0.85:
+        return "отношения почти дружеские"
+    if rapport >= 0.35:
+        return "отношения тёплые"
+    if rapport <= -0.85:
+        return "отношения близки к ненависти"
+    if rapport <= -0.35:
+        return "отношения напряжённые"
+    return "без выраженного отношения"
