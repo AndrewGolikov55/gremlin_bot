@@ -13,6 +13,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from sqlalchemy import desc, func, select
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models.roulette import RouletteWinner, RouletteParticipant
@@ -105,6 +106,14 @@ class RouletteService:
         self.context = context
         self.personas = personas
         self.memory = memory
+        self._roll_locks: dict[int, asyncio.Lock] = {}
+
+    def _get_roll_lock(self, chat_id: int) -> asyncio.Lock:
+        lock = self._roll_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._roll_locks[chat_id] = lock
+        return lock
 
     def _today(self) -> date:
         return datetime.now(MoscowTZ).date()
@@ -120,56 +129,62 @@ class RouletteService:
 
     async def roll(self, chat_id: int, *, initiator: str | None = None, force: bool = False) -> RollResult:
         today = self._today()
-        async with self.sessionmaker() as session:
-            if not force and await self._has_winner_today(session, chat_id):
-                return RollResult(False, "Рулетка уже запускалась сегодня. Возвращайся завтра!")
+        async with self._get_roll_lock(chat_id):
+            async with self.sessionmaker() as session:
+                if not force and await self._has_winner_today(session, chat_id):
+                    return RollResult(False, "Рулетка уже запускалась сегодня. Возвращайся завтра!")
 
-            participants = await self._fetch_participants(session, chat_id)
-            if not participants:
-                return RollResult(False, "Некого разыгрывать — зарегистрируйтесь командой /reg.")
+                participants = await self._fetch_participants(session, chat_id)
+                if not participants:
+                    return RollResult(False, "Некого разыгрывать — зарегистрируйтесь командой /reg.")
 
-            winner_user_id, winner_username = random.choice(participants)
-            conf = await self.settings.get_all(chat_id)
-            app_conf = await self.app_config.get_all()
-            title_code, title_display = await self._pick_title(
-                session,
-                chat_id=chat_id,
-                conf=conf,
-                app_conf=app_conf,
-            )
-
-            delivered = False
-            try:
-                delivered = await self._announce(chat_id, winner_user_id, winner_username, title_display)
-            except LLMRateLimitError as exc:
-                logger.warning(
-                    "Rate limit during roulette announcement chat=%s retry_after=%s",
-                    chat_id,
-                    exc.retry_after,
+                winner_user_id, winner_username = random.choice(participants)
+                conf = await self.settings.get_all(chat_id)
+                app_conf = await self.app_config.get_all()
+                title_code, title_display = await self._pick_title(
+                    session,
+                    chat_id=chat_id,
+                    conf=conf,
+                    app_conf=app_conf,
                 )
-                delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
-            except LLMError:
-                logger.exception("LLM failed while preparing roulette announcement chat=%s", chat_id)
-                delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
-            except Exception:
-                logger.exception("Unexpected error during roulette announcement chat=%s", chat_id)
-                delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
 
-            if not delivered:
-                return RollResult(False, "Не удалось отправить сообщение в чат.")
+                delivered = False
+                try:
+                    delivered = await self._announce(chat_id, winner_user_id, winner_username, title_display)
+                except LLMRateLimitError as exc:
+                    logger.warning(
+                        "Rate limit during roulette announcement chat=%s retry_after=%s",
+                        chat_id,
+                        exc.retry_after,
+                    )
+                    delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
+                except LLMError:
+                    logger.exception("LLM failed while preparing roulette announcement chat=%s", chat_id)
+                    delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
+                except Exception:
+                    logger.exception("Unexpected error during roulette announcement chat=%s", chat_id)
+                    delivered = await self._announce_without_llm(chat_id, winner_user_id, winner_username, title_display)
 
-            winner = RouletteWinner(
-                chat_id=chat_id,
-                user_id=winner_user_id,
-                username=winner_username,
-                title=title_display,
-                title_code=title_code,
-                won_at=today,
-            )
-            session.add(winner)
-            await session.commit()
+                if not delivered:
+                    return RollResult(False, "Не удалось отправить сообщение в чат.")
 
-            return RollResult(True, "Розыгрыш завершён!")
+                winner = RouletteWinner(
+                    chat_id=chat_id,
+                    user_id=winner_user_id,
+                    username=winner_username,
+                    title=title_display,
+                    title_code=title_code,
+                    won_at=today,
+                )
+                session.add(winner)
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    logger.info("Roulette winner already exists chat=%s date=%s", chat_id, today)
+                    return RollResult(False, "Рулетка уже запускалась сегодня. Возвращайся завтра!")
+
+                return RollResult(True, "Розыгрыш завершён!")
 
     async def _fetch_participants(self, session: AsyncSession, chat_id: int) -> list[tuple[int, str | None]]:
         stmt = (
@@ -201,7 +216,11 @@ class RouletteService:
                 if username and existing.username != username:
                     existing.username = username
                 is_new = False
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                is_new = False
 
         count = await self.participant_count(chat_id)
         return is_new, count

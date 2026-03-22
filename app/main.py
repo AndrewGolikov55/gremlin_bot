@@ -169,6 +169,32 @@ app.include_router(
 )
 app.state.polling_task = None
 app.state.scheduler = None
+app.state.webhook_tasks = set()
+
+
+def _track_background_task(task: asyncio.Task[None]) -> None:
+    app.state.webhook_tasks.add(task)
+
+    def _done(done_task: asyncio.Task[None]) -> None:
+        app.state.webhook_tasks.discard(done_task)
+        with contextlib.suppress(asyncio.CancelledError):
+            exc = done_task.exception()
+            if exc is not None:
+                logger.error(
+                    "Background Telegram update processing failed",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+    task.add_done_callback(_done)
+
+
+async def _process_update_in_background(update_obj: Update) -> None:
+    try:
+        await dp.feed_update(bot, update_obj)
+    except LookupError as exc:
+        logger.debug("Ignoring unhandled update: %s", exc)
+    except Exception:
+        logger.exception("Unhandled exception while processing Telegram update")
 
 
 @app.on_event("startup")
@@ -233,6 +259,13 @@ async def on_shutdown():
     if sched:
         sched.shutdown(wait=False)
 
+    tasks = list(getattr(app.state, "webhook_tasks", set()))
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
     await shutdown_redis(redis)
     await shutdown_engine(engine)
 
@@ -262,10 +295,7 @@ async def telegram_webhook(
     payload = await request.json()
     METRIC_UPDATES.inc()
     update_obj = Update.model_validate(payload)
-    try:
-        await dp.feed_update(bot, update_obj)
-    except LookupError as exc:
-        logger.debug("Ignoring unhandled update: %s", exc)
+    _track_background_task(asyncio.create_task(_process_update_in_background(update_obj)))
     return JSONResponse({"ok": True})
 
 

@@ -9,6 +9,7 @@ from typing import Dict, List
 from aiogram import F, Router, types
 from aiogram.filters import Command
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.memory import RelationshipState, UserMemoryProfile
@@ -23,6 +24,7 @@ from ..services.llm.client import (
 from ..services.moderation import apply_moderation
 from ..services.persona import StylePromptService, DEFAULT_STYLE_KEY
 from ..services.app_config import AppConfigService
+from ..services.message_history import store_telegram_message
 from ..services.roulette import RouletteService
 from ..services.settings import SettingsService
 from ..services.usage_limits import UsageLimiter
@@ -125,11 +127,33 @@ def _summary_participants(turns: list[ChatTurn]) -> list[tuple[int, str | None]]
     return participants
 
 
+async def _store_command_once(session: AsyncSession, message: types.Message) -> bool:
+    try:
+        created = await store_telegram_message(session, message)
+        await session.commit()
+        return created
+    except IntegrityError:
+        await session.rollback()
+        logger.debug(
+            "Duplicate command ignored chat=%s message_id=%s text=%r",
+            message.chat.id,
+            message.message_id,
+            message.text,
+        )
+        return False
+    except Exception:
+        await session.rollback()
+        raise
+
+
 @router.message(Command("roll"))
 async def cmd_roll(
     message: types.Message,
+    session: AsyncSession,
     roulette: RouletteService,
 ):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
@@ -140,7 +164,9 @@ async def cmd_roll(
 
 
 @router.message(Command("rollstats_montly"))
-async def cmd_rollstats_monthly(message: types.Message, roulette: RouletteService):
+async def cmd_rollstats_monthly(message: types.Message, session: AsyncSession, roulette: RouletteService):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
@@ -149,7 +175,9 @@ async def cmd_rollstats_monthly(message: types.Message, roulette: RouletteServic
 
 
 @router.message(Command("rollstats_total"))
-async def cmd_rollstats_total(message: types.Message, roulette: RouletteService):
+async def cmd_rollstats_total(message: types.Message, session: AsyncSession, roulette: RouletteService):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
@@ -158,7 +186,9 @@ async def cmd_rollstats_total(message: types.Message, roulette: RouletteService)
 
 
 @router.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, session: AsyncSession):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type != "private":
         return
     await message.reply(START_PRIVATE_RESPONSE)
@@ -175,6 +205,8 @@ async def cmd_summary(
     usage_limits: UsageLimiter,
     memory: UserMemoryService,
 ):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
@@ -402,6 +434,8 @@ async def cmd_relationships(
     message: types.Message,
     session: AsyncSession,
 ):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
@@ -444,7 +478,9 @@ async def cmd_relationships(
 
 
 @router.message(Command("reg"))
-async def cmd_reg(message: types.Message, roulette: RouletteService):
+async def cmd_reg(message: types.Message, session: AsyncSession, roulette: RouletteService):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
@@ -469,7 +505,9 @@ async def cmd_reg(message: types.Message, roulette: RouletteService):
 
 
 @router.message(Command("unreg"))
-async def cmd_unreg(message: types.Message, roulette: RouletteService):
+async def cmd_unreg(message: types.Message, session: AsyncSession, roulette: RouletteService):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
@@ -504,7 +542,9 @@ async def handle_custom_title_reply(
 
 
 @router.message(Command("rolltitle"))
-async def cmd_rolltitle(message: types.Message, settings: SettingsService):
+async def cmd_rolltitle(message: types.Message, session: AsyncSession, settings: SettingsService):
+    if not await _store_command_once(session, message):
+        return
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Команда доступна только в групповых чатах.")
         return
