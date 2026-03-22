@@ -39,9 +39,11 @@ from .services.reactions import ReactionService
 from .services.roulette import RouletteService
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
+from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
 from zoneinfo import ZoneInfo
 from .utils.logging import ensure_trace_level
 from .utils.proxy import get_proxy_url
+from sqlalchemy import text
 
 
 # Metrics
@@ -101,6 +103,7 @@ app_config_service = AppConfigService(async_sessionmaker, redis)
 persona_service = StylePromptService(async_sessionmaker, redis, BASE_STYLE_DATA)
 user_memory_service = UserMemoryService(async_sessionmaker)
 usage_limits_service = UsageLimiter(redis, timezone=ZoneInfo("Europe/Moscow"))
+network_monitor_service = NetworkMonitorService()
 reaction_service = ReactionService(
     bot=bot,
     sessionmaker=async_sessionmaker,
@@ -172,7 +175,7 @@ app.state.scheduler = None
 app.state.webhook_tasks = set()
 
 
-def _track_background_task(task: asyncio.Task[None]) -> None:
+def _track_background_task(task: asyncio.Task[None], *, label: str = "Background task") -> None:
     app.state.webhook_tasks.add(task)
 
     def _done(done_task: asyncio.Task[None]) -> None:
@@ -181,7 +184,8 @@ def _track_background_task(task: asyncio.Task[None]) -> None:
             exc = done_task.exception()
             if exc is not None:
                 logger.error(
-                    "Background Telegram update processing failed",
+                    "%s failed",
+                    label,
                     exc_info=(type(exc), exc, exc.__traceback__),
                 )
 
@@ -244,7 +248,16 @@ async def on_startup():
         id="roulette_auto_roll",
         replace_existing=True,
     )
+    scheduler.add_job(
+        network_monitor_service.probe_once,
+        "interval",
+        seconds=PROBE_INTERVAL_SECONDS,
+        id="network_probe",
+        replace_existing=True,
+        max_instances=1,
+    )
     app.state.scheduler = scheduler
+    _track_background_task(asyncio.create_task(network_monitor_service.probe_once()), label="Initial network probe")
 
 
 @app.on_event("shutdown")
@@ -272,7 +285,39 @@ async def on_shutdown():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    checks: dict[str, object] = {}
+
+    db_ok = True
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        db_ok = False
+        checks["db"] = {"ok": False, "error": str(exc)}
+    else:
+        checks["db"] = {"ok": True}
+
+    redis_ok = True
+    try:
+        await redis.ping()
+    except Exception as exc:
+        redis_ok = False
+        checks["redis"] = {"ok": False, "error": str(exc)}
+    else:
+        checks["redis"] = {"ok": True}
+
+    proxy_state = network_monitor_service.snapshot()
+    checks["network"] = proxy_state
+
+    status = "ok"
+    if not db_ok or not redis_ok:
+        status = "fail"
+    elif proxy_state.get("enabled") and proxy_state.get("ok") is False:
+        status = "degraded"
+
+    payload = {"status": status, "checks": checks}
+    status_code = 503 if status == "fail" else 200
+    return JSONResponse(payload, status_code=status_code)
 
 
 @app.get("/metrics")
@@ -295,7 +340,7 @@ async def telegram_webhook(
     payload = await request.json()
     METRIC_UPDATES.inc()
     update_obj = Update.model_validate(payload)
-    _track_background_task(asyncio.create_task(_process_update_in_background(update_obj)))
+    _track_background_task(asyncio.create_task(_process_update_in_background(update_obj)), label="Telegram update")
     return JSONResponse({"ok": True})
 
 

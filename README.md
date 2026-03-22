@@ -28,6 +28,7 @@
    docker compose up --build
    ```
    Проверьте `http://localhost:8080/health` и `http://localhost:8080/metrics`.
+   Контейнер `bot` дополнительно помечается Docker healthcheck-ом через запрос к `/health`.
 
 3. Нужен hot reload? Используйте дев-конфиг:
    ```bash
@@ -93,6 +94,11 @@
 ## Вебхук или polling
 - **Polling** (`USE_POLLING=1`) — удобно для локальной разработки: бот сам опрашивает Telegram, внешний URL не нужен.
 - **Webhook** (`USE_POLLING=0` + `PUBLIC_BASE_URL`) — Telegram присылает запросы сам. Нужен доступный снаружи HTTPS-домен. При старте бота webhook выставляется автоматически.
+
+## Диагностика сети
+- `/health` показывает состояние приложения, Postgres, Redis и последний результат сетевого probe.
+- Фоновый probe раз в минуту делает HTTP-запрос через тот же outbound proxy, что использует бот.
+- При сетевых сбоях в логах появляются предупреждения `network.monitor`, а после восстановления — запись `Connectivity restored`.
 
 ## Разработка и миграции
 - Создать новую миграцию: `alembic revision -m "add something" --autogenerate`
