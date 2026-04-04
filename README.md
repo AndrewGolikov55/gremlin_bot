@@ -91,6 +91,16 @@ ssh-keyscan -p <ssh-port> <server-host>
 - делает `git pull --ff-only origin main`;
 - пересобирает и перезапускает контейнеры через `docker compose up -d --build`.
 
+## Локальная разработка
+- Установите dev-зависимости из [`requirements-dev.txt`](requirements-dev.txt):
+  ```bash
+  python -m pip install -r requirements-dev.txt
+  ```
+- `make lint` проверяет только `ruff check .` и ловит ошибки стиля, импортов и явные опечатки.
+- `make typecheck` запускает только `mypy app tests`, чтобы найти проблемы в типах до CI.
+- `make test` запускает только `pytest` и прогоняет тестовый набор локально.
+- `make check` запускает `ruff check .`, `mypy app tests`, `pytest` подряд и подходит для полного локального прогона перед пушем.
+
 ### Что должно быть готово на сервере
 - в `DEPLOY_PATH` уже лежит клонированный репозиторий;
 - пользователь из `SSH_USER` владеет каталогом проекта;

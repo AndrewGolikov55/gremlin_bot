@@ -6,7 +6,6 @@ from .persona import StylePrompt
 from .roulette import RouletteParticipant, RouletteWinner
 from .user import User
 
-
 __all__ = [
     "AppSetting",
     "Chat",

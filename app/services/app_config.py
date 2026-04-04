@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from redis.asyncio import Redis
 
 from ..models.app_setting import AppSetting
+
+
+class AppConfigCache(Protocol):
+    async def get(self, key: str) -> Any: ...
+    async def set(self, key: str, value: Any, ex: int | None = None) -> Any: ...
+    async def delete(self, *keys: str) -> Any: ...
 
 
 APP_CONFIG_DEFAULTS: Dict[str, Any] = {
@@ -48,7 +53,7 @@ APP_CONFIG_DEFAULTS: Dict[str, Any] = {
 
 
 class AppConfigService:
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], redis: Redis):
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], redis: AppConfigCache):
         self._sessionmaker = sessionmaker
         self._redis = redis
         self._cache_key = "app:settings"

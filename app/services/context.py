@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Mapping, Sequence
+from typing import Any, Iterable, List, Mapping, Sequence, TypedDict, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.message import Message
 from ..models.user import User
-from .persona import DEFAULT_STYLE_PROMPTS, DEFAULT_STYLE_KEY
-
+from .persona import DEFAULT_STYLE_KEY, DEFAULT_STYLE_PROMPTS
 
 DEFAULT_CHAT_PROMPT = (
     "Ты — участник чата. Отвечай строго в рамках роли ниже."
@@ -31,6 +30,18 @@ class ChatTurn:
     is_bot: bool
 
 
+class HistoryEntry(TypedDict):
+    speaker: str
+    text: str
+    is_bot: bool
+
+
+class CombinedHistoryEntry(TypedDict):
+    speaker: str
+    is_bot: bool
+    texts: list[str]
+
+
 class ContextService:
     """Мининструмент для выборки последних сообщений из чата."""
 
@@ -48,7 +59,7 @@ class ContextService:
             .limit(limit)
         )
         res = await session.execute(stmt)
-        rows: Sequence[tuple[Message, User | None]] = res.all()
+        rows = cast(Sequence[tuple[Message, User | None]], res.all())
         turns: List[ChatTurn] = []
         for msg, user in reversed(rows):
             speaker = _resolve_name(user, msg.user_id)
@@ -119,7 +130,7 @@ def build_messages(
         tokens_budget += _estimate_tokens(clean_block)
 
     tail = list(turns)[-max_turns:]
-    entries: list[dict[str, object]] = []
+    entries: list[HistoryEntry] = []
     for turn in tail:
         raw = (turn.text or "").strip()
         if not raw:
@@ -139,26 +150,32 @@ def build_messages(
             }
         )
 
-    # Выделяем последние подряд идущие сообщения одного пользователя как текущий запрос
+    # When a closing text is provided, keep trailing user turns in history.
     current_text: str | None = None
-    if entries and not entries[-1]["is_bot"]:
-        current_text = str(entries.pop()["text"]).strip()
+    if closing_text is None:
+        current_parts: list[str] = []
+        current_speaker: str | None = None
+        while entries and not entries[-1]["is_bot"]:
+            speaker = str(entries[-1]["speaker"] or "unknown")
+            if current_speaker is None:
+                current_speaker = speaker
+            elif speaker != current_speaker:
+                break
+            current_parts.append(str(entries.pop()["text"]).strip())
+        if current_parts:
+            current_text = "\n\n".join(reversed(current_parts))
 
     final_content = ""
-    if current_text:
-        final_content = current_text
-    if not final_content and closing_text:
+    if closing_text:
         final_content = closing_text.strip()
-    elif final_content and closing_text:
-        extra = closing_text.strip()
-        if extra:
-            final_content = f"{final_content}\n\n{extra}"
+    elif current_text:
+        final_content = current_text
     if not final_content:
         final_content = "Ответь одним сообщением."
     final_tokens = _estimate_tokens(final_content)
 
     # Объединяем последовательные сообщения одного автора
-    combined: list[dict[str, object]] = []
+    combined: list[CombinedHistoryEntry] = []
     for entry in entries:
         if (
             combined
@@ -176,9 +193,9 @@ def build_messages(
             )
 
     history_lines_raw: list[str] = []
-    for entry in combined:
-        speaker = str(entry["speaker"] or "unknown")
-        text = " ".join(entry["texts"])
+    for combined_entry in combined:
+        speaker = str(combined_entry["speaker"] or "unknown")
+        text = " ".join(combined_entry["texts"])
         history_lines_raw.append(f"{speaker}: {text}")
 
     history_header = "История:"

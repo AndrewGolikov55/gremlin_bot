@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import Dict
 
+from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from redis.asyncio import Redis
 
 from ..models.persona import StylePrompt
 

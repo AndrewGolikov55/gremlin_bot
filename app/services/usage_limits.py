@@ -1,18 +1,32 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Sequence, Tuple
-
-from redis.asyncio import Redis
+from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
-UsageRequest = Tuple[str, int]
+UsageRequest = tuple[str, int]
+
+
+class RedisPipeline(Protocol):
+    def incr(self, key: str, amount: int = 1) -> "RedisPipeline": ...
+    def decr(self, key: str, amount: int = 1) -> "RedisPipeline": ...
+    def expire(self, key: str, ttl: int, nx: bool = False) -> "RedisPipeline": ...
+    def set(self, key: str, value: Any) -> "RedisPipeline": ...
+    def delete(self, *keys: str) -> "RedisPipeline": ...
+    async def execute(self) -> list[Any]: ...
+
+
+class UsageRedis(Protocol):
+    def pipeline(self) -> RedisPipeline: ...
+    async def get(self, key: str) -> Any: ...
+    async def mget(self, *keys: str | list[str] | tuple[str, ...]) -> list[Any]: ...
 
 
 class UsageLimiter:
     """Simple per-chat daily limiter backed by Redis."""
 
-    def __init__(self, redis: Redis, *, timezone: ZoneInfo | None = None) -> None:
+    def __init__(self, redis: UsageRedis, *, timezone: ZoneInfo | None = None) -> None:
         self._redis = redis
         self._tz = timezone or ZoneInfo("UTC")
 
@@ -92,19 +106,26 @@ class UsageLimiter:
         if not prefixes:
             return
         keys = [self._key(prefix, chat_id) for prefix in prefixes]
+        existing_values = await self._redis.mget(keys)
         pipe = self._redis.pipeline()
         for key in keys:
             pipe.decr(key, 1)
         results = await pipe.execute()
-        corrections = [
-            key
-            for key, result in zip(keys, results)
-            if result is not None and result < 0
-        ]
+        corrections = []
+        for key, before, result in zip(keys, existing_values, results):
+            if result is None or result >= 0:
+                continue
+            if before is None:
+                corrections.append(("delete", key))
+            else:
+                corrections.append(("set", key))
         if corrections:
             pipe = self._redis.pipeline()
-            for key in corrections:
-                pipe.set(key, 0)
+            for action, key in corrections:
+                if action == "delete":
+                    pipe.delete(key)
+                else:
+                    pipe.set(key, 0)
             await pipe.execute()
 
     def _key(self, prefix: str, chat_id: int) -> str:

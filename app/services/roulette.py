@@ -6,39 +6,40 @@ import random
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import sqlalchemy as sa
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from sqlalchemy import desc, func, select
-import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models.roulette import RouletteWinner, RouletteParticipant
 from ..models.chat import Chat
+from ..models.roulette import RouletteParticipant, RouletteWinner
+from ..services.app_config import AppConfigService
 from ..services.context import (
+    DEFAULT_CHAT_PROMPT,
+    DEFAULT_FOCUS_SUFFIX,
     ChatTurn,
     ContextService,
     build_messages,
     build_system_prompt,
-    DEFAULT_CHAT_PROMPT,
-    DEFAULT_FOCUS_SUFFIX,
 )
 from ..services.llm.client import (
     LLMError,
     LLMRateLimitError,
-    generate as llm_generate,
     resolve_llm_options,
+)
+from ..services.llm.client import (
+    generate as llm_generate,
 )
 from ..services.moderation import apply_moderation
 from ..services.persona import StylePromptService
 from ..services.settings import SettingsService
-from ..services.app_config import AppConfigService
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
-
 
 logger = logging.getLogger("roulette")
 MoscowTZ = ZoneInfo("Europe/Moscow")
@@ -72,6 +73,34 @@ GENERIC_GENERATED_TITLES = {
     "лучший чат",
     "звезда дня",
 }
+
+
+def _looks_like_bot_username(username: str | None) -> bool:
+    return bool(username and username.strip().lower().endswith("bot"))
+
+
+def _coerce_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, (float, str, bytes, bytearray)):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: object, default: float) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, (str, bytes, bytearray)):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass
@@ -196,7 +225,7 @@ class RouletteService:
 
     async def register_participant(self, chat_id: int, user_id: int, username: str | None) -> tuple[bool, int]:
         # ignore obvious bot accounts by username suffix
-        if username and username.lower().endswith("bot"):
+        if _looks_like_bot_username(username):
             return False, await self.participant_count(chat_id)
         async with self.sessionmaker() as session:
             stmt = select(RouletteParticipant).where(
@@ -227,7 +256,7 @@ class RouletteService:
 
     async def participant_count(self, chat_id: int) -> int:
         async with self.sessionmaker() as session:
-            username_col = sa.func.coalesce(RouletteParticipant.username, "")
+            username_col = sa.func.trim(sa.func.coalesce(RouletteParticipant.username, ""))
             stmt = select(func.count(RouletteParticipant.id)).where(
                 RouletteParticipant.chat_id == chat_id,
                 sa.not_(username_col.ilike("%bot")),
@@ -275,10 +304,7 @@ class RouletteService:
         app_conf: dict[str, object],
     ) -> str | None:
         title_turns_raw = app_conf.get("roulette_title_context_messages", 200) or 200
-        try:
-            title_turns = int(title_turns_raw)
-        except (TypeError, ValueError):
-            title_turns = 200
+        title_turns = _coerce_int(title_turns_raw, 200)
         title_turns = max(20, min(500, title_turns))
 
         fetch_limit = max(100, min(1200, title_turns * 3))
@@ -304,7 +330,7 @@ class RouletteService:
             raw_title = await llm_generate(
                 messages,
                 temperature=resolve_temperature(conf),
-                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                 max_tokens=self._title_completion_tokens(app_conf),
                 provider=provider,
                 fallback_enabled=fallback_enabled,
@@ -330,7 +356,7 @@ class RouletteService:
                 retry_raw_title = await llm_generate(
                     retry_messages,
                     temperature=resolve_temperature(conf),
-                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                     max_tokens=self._title_completion_tokens(app_conf),
                     provider=provider,
                     fallback_enabled=fallback_enabled,
@@ -399,7 +425,7 @@ class RouletteService:
             intrigue = await llm_generate(
                 messages,
                 temperature=resolve_temperature(conf),
-                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                 max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
                 provider=provider,
                 fallback_enabled=fallback_enabled,
@@ -528,7 +554,7 @@ class RouletteService:
             raw_result = await llm_generate(
                 messages,
                 temperature=resolve_temperature(conf),
-                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                 max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
                 provider=provider,
                 fallback_enabled=fallback_enabled,
@@ -784,10 +810,7 @@ class RouletteService:
 
     def _prompt_token_limit(self, app_conf: dict[str, object]) -> int:
         raw_limit = app_conf.get("context_max_prompt_tokens", 32000)
-        try:
-            limit = int(raw_limit)
-        except (TypeError, ValueError):
-            limit = 32000
+        limit = _coerce_int(raw_limit, 32000)
         if limit <= 0:
             limit = 32000
         return max(2000, min(60000, limit))
@@ -802,21 +825,15 @@ class RouletteService:
         base_cap = max(limit // 4, 200)
         allowed = max(200, min(default_cap, base_cap))
         override_raw = app_conf.get("max_length")
-        try:
-            override = int(override_raw)
-        except (TypeError, ValueError):
-            override = None
+        override = _coerce_int(override_raw, 0)
         if override and override > 0:
             allowed = min(allowed, override)
         return allowed
 
     def _title_completion_tokens(self, app_conf: dict[str, object]) -> int | None:
         override_raw = app_conf.get("max_length")
-        try:
-            override = int(override_raw)
-        except (TypeError, ValueError):
-            override = None
-        if override is not None and override <= 0:
+        override = _coerce_int(override_raw, 0)
+        if override <= 0:
             return None
         if override and override > 0:
             return max(32, min(override, 256))
@@ -965,7 +982,7 @@ class RouletteService:
         today = self._today()
         async with self.sessionmaker() as session:
             await session.execute(
-                RouletteWinner.__table__.delete().where(
+                sa.delete(RouletteWinner).where(
                     RouletteWinner.chat_id == chat_id,
                     RouletteWinner.won_at == today,
                 )
@@ -973,7 +990,6 @@ class RouletteService:
             await session.commit()
 
     async def run_auto_roll(self) -> None:
-        today = self._today()
         async with self.sessionmaker() as session:
             stmt = select(Chat.id).where(Chat.is_active.is_(True))
             chats = [row[0] for row in (await session.execute(stmt)).fetchall()]

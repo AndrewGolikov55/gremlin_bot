@@ -1,6 +1,12 @@
 import os
 
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
 
 def init_engine_and_sessionmaker():
     url = os.getenv("DATABASE_URL", "postgresql+asyncpg://bot:bot@db:5432/botdb")

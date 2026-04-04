@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, BigInteger, DateTime, Float, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,10 +15,10 @@ class UserMemoryProfile(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    identity: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    preferences: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    boundaries: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    projects: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    identity: Mapped[list[str]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), default=list)
+    preferences: Mapped[list[str]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), default=list)
+    boundaries: Mapped[list[str]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), default=list)
+    projects: Mapped[list[str]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), default=list)
     memory_count: Mapped[int] = mapped_column(Integer, default=0)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

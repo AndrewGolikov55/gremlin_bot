@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Mapping, Any
+from typing import Any, Mapping
 
 
 def resolve_temperature(

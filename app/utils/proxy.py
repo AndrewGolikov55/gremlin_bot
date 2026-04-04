@@ -7,7 +7,6 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
-
 logger = logging.getLogger(__name__)
 
 NETWORK_PROXY_URL_ENV = "NETWORK_SOCKS5_PROXY"

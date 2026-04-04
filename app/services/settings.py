@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from redis.asyncio import Redis
 
 from ..models.chat import Chat, ChatSetting
+
+
+class SettingsCache(Protocol):
+    async def get(self, key: str) -> Any: ...
+    async def set(self, key: str, value: Any, ex: int | None = None) -> Any: ...
+    async def delete(self, *keys: str) -> Any: ...
 
 
 DEFAULTS: Dict[str, Any] = {
@@ -22,7 +28,7 @@ DEFAULTS: Dict[str, Any] = {
 
 
 class SettingsService:
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], redis: Redis):
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession], redis: SettingsCache):
         self._sessionmaker = sessionmaker
         self._redis = redis
 
@@ -30,8 +36,6 @@ class SettingsService:
         cache_key = f"chat:{chat_id}:setting:{key}"
         cached = await self._redis.get(cache_key)
         if cached is not None:
-            import json
-
             return json.loads(cached)
         async with self._sessionmaker() as session:
             res = await session.execute(
@@ -39,7 +43,7 @@ class SettingsService:
             )
             row = res.scalar_one_or_none()
             value = row.value if row else DEFAULTS.get(key)
-        await self._redis.set(cache_key, __serialize(value), ex=300)
+        await self._redis.set(cache_key, _serialize(value), ex=300)
         return value
 
     async def get_all(self, chat_id: int) -> Dict[str, Any]:
@@ -72,7 +76,5 @@ class SettingsService:
         await self._redis.delete(f"chat:{chat_id}:setting:{key}")
 
 
-def __serialize(value: Any) -> str:
-    import json
-
+def _serialize(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)

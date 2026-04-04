@@ -391,3 +391,6 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/macos,linux,windows,visualstudiocode,pycharm,python
+.mypy_cache/
+.ruff_cache/
+docs/superpowers/
