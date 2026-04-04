@@ -38,6 +38,65 @@
 
 При старте каждый контейнер прогоняет `alembic upgrade head`, так что таблицы всегда актуальные.
 
+## Автодеплой через GitHub Actions
+В репозитории уже можно включить CD-поток: каждый `push` в `main` подключается к серверу по SSH, атомарно обновляет `/opt/.../.env` из GitHub Secrets, подтягивает свежий код и выполняет `docker compose up -d --build`.
+
+Workflow лежит в [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) и использует только секреты GitHub, поэтому IP-адрес сервера, SSH-логин, приватный ключ и production `.env` не попадают в git-историю.
+
+### Какие GitHub Secrets создать
+Откройте `GitHub -> Settings -> Secrets and variables -> Actions -> New repository secret` и добавьте:
+
+- `SSH_HOST` — IP или DNS-имя сервера.
+- `SSH_PORT` — SSH-порт сервера.
+- `SSH_USER` — пользователь для деплоя.
+- `SSH_PRIVATE_KEY` — приватный deploy-ключ в формате OpenSSH.
+- `SSH_KNOWN_HOSTS` — результат `ssh-keyscan`, чтобы workflow проверял подлинность сервера.
+- `DEPLOY_PATH` — абсолютный путь к каталогу проекта на сервере, например `/opt/gremlin_bot`.
+- `PROD_ENV_FILE` — полное содержимое production-файла `.env` одним многострочным секретом.
+
+### Как подготовить SSH-ключ для GitHub Actions
+На своей машине создайте отдельный ключ только для деплоя:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/gremlin-bot-deploy -C "github-actions@gremlin-bot" -N ""
+```
+
+Публичную часть добавьте на сервер в `~/.ssh/authorized_keys` пользователя деплоя:
+
+```bash
+cat ~/.ssh/gremlin-bot-deploy.pub | ssh -p <ssh-port> <ssh-user>@<server-host> "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys"
+```
+
+Содержимое приватного ключа положите в секрет `SSH_PRIVATE_KEY`:
+
+```bash
+cat ~/.ssh/gremlin-bot-deploy
+```
+
+### Как заполнить `SSH_KNOWN_HOSTS`
+Соберите host key сервера и сохраните вывод целиком в secret:
+
+```bash
+ssh-keyscan -p <ssh-port> <server-host>
+```
+
+Так workflow будет подключаться только к ожидаемому серверу и не примет подменённый хост.
+
+### Как заполнить `PROD_ENV_FILE`
+Откройте production `.env` на сервере, скопируйте его целиком и вставьте в GitHub Secret `PROD_ENV_FILE` как многострочный текст.
+
+При каждом деплое workflow:
+- записывает секрет во временный файл `.env.tmp`;
+- заменяет им боевой `.env` через `mv`;
+- делает `git pull --ff-only origin main`;
+- пересобирает и перезапускает контейнеры через `docker compose up -d --build`.
+
+### Что должно быть готово на сервере
+- в `DEPLOY_PATH` уже лежит клонированный репозиторий;
+- пользователь из `SSH_USER` владеет каталогом проекта;
+- этот пользователь умеет запускать `docker compose` без интерактивного `sudo`;
+- локальные ручные правки отслеживаемых файлов в каталоге деплоя отсутствуют, иначе `git pull --ff-only` остановит деплой.
+
 ## Основные переменные окружения
 - `BOT_TOKEN` — токен Telegram бота.
 - `USE_POLLING` — `1` для long-polling, `0` для вебхуков.

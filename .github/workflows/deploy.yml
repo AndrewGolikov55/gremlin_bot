@@ -1,0 +1,84 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy over SSH
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      PROD_ENV_FILE: ${{ secrets.PROD_ENV_FILE }}
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+    steps:
+      - name: Prepare SSH
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+
+      - name: Sync env, update code, and restart containers
+        run: |
+          set -euo pipefail
+
+          ssh_target="${SSH_USER}@${SSH_HOST}"
+
+          printf '%s' "$PROD_ENV_FILE" | ssh \
+            -i ~/.ssh/id_ed25519 \
+            -p "$SSH_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$ssh_target" \
+            "set -euo pipefail
+            cd '$DEPLOY_PATH'
+
+            if [ ! -d .git ]; then
+              echo 'Deploy path does not contain a git repository: $DEPLOY_PATH' >&2
+              exit 1
+            fi
+
+            umask 077
+            cat > .env.tmp
+            mv .env.tmp .env
+
+            git checkout main
+            git fetch --prune origin
+            git pull --ff-only origin main
+
+            docker compose up -d --build --remove-orphans
+            docker compose ps
+
+            bot_container_id=\$(docker compose ps -q bot)
+            if [ -z \"\$bot_container_id\" ]; then
+              echo 'bot container was not created' >&2
+              exit 1
+            fi
+
+            for attempt in \$(seq 1 20); do
+              bot_status=\$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \"\$bot_container_id\")
+              if [ \"\$bot_status\" = 'healthy' ] || [ \"\$bot_status\" = 'running' ]; then
+                echo \"bot status: \$bot_status\"
+                exit 0
+              fi
+
+              echo \"waiting for bot healthcheck: \$bot_status (attempt \$attempt/20)\"
+              sleep 5
+            done
+
+            echo 'bot did not become healthy in time' >&2
+            docker compose logs --tail=100 bot >&2
+            exit 1"
