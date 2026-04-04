@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,11 +20,12 @@ def test_readme_documents_dev_requirements_and_make_checks() -> None:
 
 def test_quality_workflow_runs_validation_on_push_and_pr() -> None:
     workflow = _read(".github/workflows/quality.yml")
+    expected_python = f"{sys.version_info.major}.{sys.version_info.minor}"
 
     assert "on:" in workflow
     assert "push:" in workflow
     assert "pull_request:" in workflow
-    assert "python-version: '3.11'" in workflow
+    assert f"python-version: '{expected_python}'" in workflow
     assert "python -m pip install -r requirements-dev.txt" in workflow
     assert "ruff check ." in workflow
     assert "mypy app tests" in workflow
