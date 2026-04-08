@@ -31,15 +31,6 @@ OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 OPENAI_ORG = os.getenv("OPENAI_ORG")
 OPENAI_PROJECT = os.getenv("OPENAI_PROJECT")
 
-CENSORSHIP_MARKERS = [
-    "i'm sorry, but i can't help with that.",
-    "i'm sorry, but i can't help with that",
-    "i'm sorry, but i can't comply with that.",
-    "i'm sorry, but i can't comply with that",
-    "извини, но я не могу помочь с этим.",
-    "извини, но я не могу помочь с этим",
-]
-
 
 class LLMError(RuntimeError):
     """Base error raised while talking to an LLM provider."""
@@ -98,13 +89,6 @@ def _log_content(label: str, content: str) -> None:
     if logger.isEnabledFor(TRACE_LEVEL):
         logger.log(TRACE_LEVEL, "%s content: %s", label, content)
 
-
-def _looks_censored(text: str) -> bool:
-    if not text:
-        return False
-    normalized = text.strip().lower().replace("’", "'")
-    normalized = " ".join(normalized.split())
-    return any(marker in normalized for marker in CENSORSHIP_MARKERS)
 
 
 def _build_openrouter_payload(
@@ -339,81 +323,30 @@ async def generate(
     top_p: float = 0.9,
     max_tokens: int | None = None,
     provider: str | None = None,
-    fallback_enabled: bool | None = None,
 ) -> str:
     message_list = list(messages)
     provider_name = _normalize_provider(provider)
-    fallback_active = bool(fallback_enabled)
-    fallback_provider = "openai" if provider_name == "openrouter" else "openrouter"
 
-    async def _call(target: str) -> str:
-        if target == "openai":
-            return await _generate_openai(
-                message_list,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-        return await _generate_openrouter(
+    if provider_name == "openai":
+        return await _generate_openai(
             message_list,
             temperature=temperature,
-            top_p=top_p,
             max_tokens=max_tokens,
         )
-
-    try:
-        primary_response = await _call(provider_name)
-    except LLMRateLimitError as exc:
-        if fallback_active:
-            logger.info(
-                "Primary provider %s hit rate limit (%s); attempting fallback to %s",
-                provider_name,
-                exc,
-                fallback_provider,
-            )
-            return await _call(fallback_provider)
-        raise
-    except LLMError as exc:
-        if fallback_active:
-            logger.warning(
-                "Primary provider %s failed (%s); attempting fallback to %s",
-                provider_name,
-                exc,
-                fallback_provider,
-            )
-            return await _call(fallback_provider)
-        raise
-
-    if fallback_active and not (primary_response or "").strip():
-        logger.info(
-            "Primary provider %s returned empty response; attempting fallback to %s",
-            provider_name,
-            fallback_provider,
-        )
-        return await _call(fallback_provider)
-
-    if (
-        fallback_active
-        and provider_name == "openai"
-        and _looks_censored(primary_response)
-    ):
-        logger.info(
-            "Detected possible OpenAI censorship, falling back to OpenRouter model %s",
-            OPENROUTER_MODEL,
-        )
-        return await _call("openrouter")
-
-    return primary_response
+    return await _generate_openrouter(
+        message_list,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+    )
 
 
-def resolve_llm_options(conf: Mapping[str, object] | None) -> tuple[str, bool]:
+def resolve_llm_options(conf: Mapping[str, object] | None) -> str:
     provider_raw: str | None = None
-    fallback_enabled = False
 
     if conf:
         raw_value = conf.get("llm_provider")
         if isinstance(raw_value, str):
             provider_raw = raw_value
-        fallback_enabled = bool(conf.get("llm_openai_censorship_fallback", False))
 
-    provider = _normalize_provider(provider_raw)
-    return provider, fallback_enabled
+    return _normalize_provider(provider_raw)

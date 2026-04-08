@@ -136,7 +136,6 @@ class InterjectorService:
             context_blocks=[memory_block] if memory_block else None,
             message_content_override=vision_content,
             provider_override="openai" if vision_content else None,
-            fallback_enabled_override=False if vision_content else None,
         )
         if not generated:
             return
@@ -253,7 +252,7 @@ class InterjectorService:
             if group_memory:
                 context_blocks = [group_memory]
 
-        provider, fallback_enabled = resolve_llm_options(app_conf)
+        provider = resolve_llm_options(app_conf)
         messages = build_messages(
             system_prompt,
             turns,
@@ -270,7 +269,6 @@ class InterjectorService:
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 max_tokens=self._max_tokens_from_config(app_conf),
                 provider=provider,
-                fallback_enabled=fallback_enabled,
             )
         except LLMRateLimitError as exc:
             logger.warning(
@@ -398,7 +396,6 @@ class InterjectorService:
         context_blocks: list[str] | None = None,
         message_content_override: object | None = None,
         provider_override: str | None = None,
-        fallback_enabled_override: bool | None = None,
     ) -> tuple[str, object | None] | None:
         if chat_id is not None and not await self._consume_llm_budget(chat_id, app_conf):
             if chat_id is not None:
@@ -432,12 +429,9 @@ class InterjectorService:
         if message_content_override is not None:
             messages[-1] = {"role": "user", "content": message_content_override}
 
-        provider, fallback_enabled = resolve_llm_options(app_conf)
+        provider = resolve_llm_options(app_conf)
         if provider_override:
             provider = provider_override
-        if fallback_enabled_override is not None:
-            fallback_enabled = fallback_enabled_override
-
         try:
             raw_reply = await llm_generate(
                 messages,
@@ -445,7 +439,6 @@ class InterjectorService:
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 max_tokens=self._max_tokens_from_config(app_conf),
                 provider=provider,
-                fallback_enabled=fallback_enabled,
             )
         except LLMRateLimitError as exc:
             logger.warning(

@@ -235,7 +235,7 @@ class ReactionService:
             messages.append({"role": "user", "content": chat_block})
         messages.append({"role": "user", "content": f"Сообщение: {text}"})
 
-        provider, fallback_enabled = resolve_llm_options(app_conf)
+        provider = resolve_llm_options(app_conf)
 
         try:
             raw = await llm_generate(
@@ -244,7 +244,6 @@ class ReactionService:
                 top_p=0.9,
                 max_tokens=None,
                 provider=provider,
-                fallback_enabled=fallback_enabled,
             )
         except LLMRateLimitError as exc:
             logger.debug("Rate limit during reaction selection retry_after=%s", exc.retry_after)

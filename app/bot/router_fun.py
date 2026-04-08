@@ -223,7 +223,7 @@ async def cmd_summary(
 
     async with lock:
         app_conf = await app_config.get_all()
-        provider, fallback_enabled = resolve_llm_options(app_conf)
+        provider = resolve_llm_options(app_conf)
         max_turns_raw = app_conf.get("context_max_turns", 100) or 100
         try:
             max_turns = int(max_turns_raw)
@@ -332,7 +332,6 @@ async def cmd_summary(
                 temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 provider=provider,
-                fallback_enabled=fallback_enabled,
             )
         except LLMRateLimitError as exc:
             if consumed_prefixes:
@@ -353,7 +352,6 @@ async def cmd_summary(
             logger.exception(
                 "Unexpected error while generating summary (provider=%s fallback=%s)",
                 provider,
-                fallback_enabled,
             )
             await message.reply("🤖 Не удалось подготовить сводку.", allow_sending_without_reply=True)
             return
@@ -364,7 +362,6 @@ async def cmd_summary(
                 "Summary model returned empty text; retrying chat=%s provider=%s fallback=%s",
                 message.chat.id,
                 provider,
-                fallback_enabled,
             )
             retry_turns = turns[-max(10, min(len(turns), 20)) :]
             retry_limit = min(default_cap, max(prompt_token_limit // 2, 200))
@@ -384,7 +381,6 @@ async def cmd_summary(
                     temperature=resolve_temperature(conf),
                     top_p=float(conf.get("top_p", 0.9) or 0.9),
                     provider=provider,
-                    fallback_enabled=fallback_enabled,
                 )
             except LLMRateLimitError as exc:
                 if consumed_prefixes:
@@ -405,7 +401,6 @@ async def cmd_summary(
                 logger.exception(
                     "Unexpected error during summary retry (provider=%s fallback=%s)",
                     provider,
-                    fallback_enabled,
                 )
                 await message.reply("🤖 Не удалось подготовить сводку.", allow_sending_without_reply=True)
                 return

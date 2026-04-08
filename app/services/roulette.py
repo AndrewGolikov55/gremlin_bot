@@ -313,7 +313,7 @@ class RouletteService:
         if not history_block:
             return DEFAULT_GENERATED_TITLE
 
-        provider, fallback_enabled = resolve_llm_options(app_conf)
+        provider = resolve_llm_options(app_conf)
         style = str(conf.get("style", ""))
         style_prompts = await self.personas.get_all()
         style_prompt = style_prompts.get(style) or style_prompts.get("gopnik", "")
@@ -333,8 +333,7 @@ class RouletteService:
                 top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                 max_tokens=self._title_completion_tokens(app_conf),
                 provider=provider,
-                fallback_enabled=fallback_enabled,
-            )
+                )
         except (LLMRateLimitError, LLMError):
             logger.exception("Failed to generate roulette title chat=%s", chat_id)
             return self._heuristic_title(turns) or DEFAULT_GENERATED_TITLE
@@ -359,8 +358,7 @@ class RouletteService:
                     top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                     max_tokens=self._title_completion_tokens(app_conf),
                     provider=provider,
-                    fallback_enabled=fallback_enabled,
-                )
+                        )
                 retry_title = self._sanitize_generated_title(
                     retry_raw_title,
                     fallback=DEFAULT_GENERATED_TITLE,
@@ -387,7 +385,7 @@ class RouletteService:
         conf = await self.settings.get_all(chat_id)
         app_conf = await self.app_config.get_all()
         style_prompts = await self.personas.get_all()
-        provider, fallback_enabled = resolve_llm_options(app_conf)
+        provider = resolve_llm_options(app_conf)
 
         max_turns = int(app_conf.get("context_max_turns", 100) or 100)
         prompt_limit = self._prompt_token_limit(app_conf)
@@ -428,8 +426,7 @@ class RouletteService:
                 top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                 max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
                 provider=provider,
-                fallback_enabled=fallback_enabled,
-            )
+                )
         except (LLMRateLimitError, LLMError):
             logger.exception("Failed to generate roulette intrigue chat=%s", chat_id)
             return await self._announce_without_llm(chat_id, user_id, username, title_display)
@@ -458,7 +455,6 @@ class RouletteService:
             app_conf=app_conf,
             style_prompts=style_prompts,
             provider=provider,
-            fallback_enabled=fallback_enabled,
             title_display=title_display,
             user_id=user_id,
             username=username,
@@ -514,7 +510,6 @@ class RouletteService:
         app_conf: dict[str, object],
         style_prompts: dict[str, str],
         provider: str,
-        fallback_enabled: bool,
         title_display: str,
         user_id: int,
         username: str | None,
@@ -557,8 +552,7 @@ class RouletteService:
                 top_p=_coerce_float(conf.get("top_p", 0.9) or 0.9, 0.9),
                 max_tokens=self._max_completion_tokens(app_conf, prompt_limit),
                 provider=provider,
-                fallback_enabled=fallback_enabled,
-            )
+                )
         except (LLMRateLimitError, LLMError):
             logger.exception("Failed to generate personalized roulette winner message chat=%s", chat_id)
             return self._format_final_message(title_display, user_id, username)

@@ -107,7 +107,7 @@ async def collect_messages(
     )
 
     app_conf = await app_config.get_all()
-    provider, fallback_enabled = resolve_llm_options(app_conf)
+    provider = resolve_llm_options(app_conf)
     base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
     focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
     personalization_enabled = bool(conf.get("personalization_enabled", True))
@@ -186,7 +186,6 @@ async def collect_messages(
                 temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
                 provider=provider,
-                fallback_enabled=fallback_enabled,
             )
         except LLMRateLimitError as exc:
             wait_hint = ""
@@ -199,9 +198,8 @@ async def collect_messages(
             return
         except Exception:
             logger.exception(
-                "Unexpected error while generating LLM reply (provider=%s fallback=%s)",
+                "Unexpected error while generating LLM reply (provider=%s)",
                 provider,
-                fallback_enabled,
             )
             await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
             return
@@ -438,7 +436,6 @@ async def _handle_photo_reply(
             temperature=resolve_temperature(conf),
             top_p=float(conf.get("top_p", 0.9) or 0.9),
             provider="openai",
-            fallback_enabled=False,
         )
     except LLMRateLimitError as exc:
         wait_hint = ""

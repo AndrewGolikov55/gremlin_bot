@@ -294,7 +294,6 @@ def create_admin_router(
         summary_daily_limit: int = Form(...),
         llm_daily_limit: int = Form(...),
         llm_provider: str = Form(...),
-        llm_openai_censorship_fallback: bool = Form(False),
         user_memory_enabled: bool = Form(False),
         memory_sidecar_enabled: bool = Form(False),
         memory_top_k: int = Form(...),
@@ -336,7 +335,6 @@ def create_admin_router(
         provider_value = (llm_provider or "").strip().lower()
         if provider_value not in {"openrouter", "openai"}:
             errors.append("Выберите корректного провайдера LLM.")
-        fallback_value = bool(llm_openai_censorship_fallback)
 
         if max_length < 0:
             max_length = 0
@@ -358,7 +356,6 @@ def create_admin_router(
             await app_config.set("llm_daily_limit", llm_daily_limit)
             if provider_value in {"openrouter", "openai"}:
                 await app_config.set("llm_provider", provider_value)
-                await app_config.set("llm_openai_censorship_fallback", fallback_value)
             await app_config.set("user_memory_enabled", bool(user_memory_enabled))
             await app_config.set("memory_sidecar_enabled", bool(memory_sidecar_enabled))
             await app_config.set("memory_top_k", memory_top_k)
@@ -996,7 +993,6 @@ def _render_app_config_body(
     summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
     llm_provider = str(conf.get("llm_provider", "openrouter") or "openrouter")
-    fallback_enabled = bool(conf.get("llm_openai_censorship_fallback", False))
     user_memory_enabled = bool(conf.get("user_memory_enabled", True))
     memory_sidecar_enabled = bool(conf.get("memory_sidecar_enabled", True))
     memory_top_k = int(conf.get("memory_top_k", 6) or 6)
@@ -1069,12 +1065,6 @@ def _render_app_config_body(
         "<div class='col-md-6'>"
         "<label class='form-label'>Провайдер LLM</label>"
         f"<select class='form-select' name='llm_provider'>{provider_options_html}</select>"
-        "</div>"
-        "<div class='col-md-6 d-flex align-items-end'>"
-        "<div class='form-check form-switch'>"
-        f"<input class='form-check-input' type='checkbox' name='llm_openai_censorship_fallback' value='1'{' checked' if fallback_enabled else ''}>"
-        "<label class='form-check-label'>Автоматический fallback между OpenAI и OpenRouter</label>"
-        "</div>"
         "</div>"
         "<div class='col-md-6 d-flex align-items-end'>"
         "<div class='form-check form-switch'>"
