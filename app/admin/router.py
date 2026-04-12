@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import datetime
 from html import escape
 from urllib.parse import urlencode
 
@@ -87,6 +88,10 @@ def create_admin_router(
         revive_enabled: bool = Form(False),
         personalization_enabled: bool = Form(False),
         revive_days: int = Form(2),
+        is_active: bool = Form(False),
+        quiet_hours: str = Form(""),
+        roulette_auto_enabled: bool = Form(False),
+        roulette_custom_title: str = Form(""),
         token: str = Depends(require_token),
         session: AsyncSession = Depends(get_session),
     ) -> str:
@@ -115,11 +120,24 @@ def create_admin_router(
             notices.append("Температура ограничена диапазоном 0.0–2.0.")
         temp_value = round(temp_value, 2)
 
+        quiet_value, quiet_error = _parse_quiet_hours_input(quiet_hours)
+        if quiet_error:
+            notices.append(quiet_error)
+
+        title_value = roulette_custom_title.strip() or None
+        if title_value and len(title_value) > 120:
+            title_value = title_value[:120]
+            notices.append("Звание рулетки обрезано до 120 символов.")
+
         await settings.set(chat_id, "style", style)
         await settings.set(chat_id, "revive_enabled", bool(revive_enabled))
         await settings.set(chat_id, "personalization_enabled", bool(personalization_enabled))
         await settings.set(chat_id, "revive_after_hours", revive_hours)
         await settings.set(chat_id, "temperature", temp_value)
+        await settings.set(chat_id, "is_active", bool(is_active))
+        await settings.set(chat_id, "quiet_hours", quiet_value)
+        await settings.set(chat_id, "roulette_auto_enabled", bool(roulette_auto_enabled))
+        await settings.set(chat_id, "roulette_custom_title", title_value)
 
         conf = await settings.get_all(chat_id)
         app_conf = await app_config.get_all()
@@ -596,6 +614,21 @@ def _render_chats_body(chats: list[Chat], token: str | None) -> str:
     )
 
 
+def _parse_quiet_hours_input(value: str) -> tuple[str | None, str | None]:
+    raw = (value or "").strip().lower()
+    if not raw or raw == "off":
+        return None, None
+    if "-" not in raw:
+        return None, "Тихие часы: неверный формат, ожидается HH:MM-HH:MM или пусто."
+    start_raw, end_raw = raw.split("-", 1)
+    try:
+        datetime.strptime(start_raw, "%H:%M")
+        datetime.strptime(end_raw, "%H:%M")
+    except ValueError:
+        return None, "Тихие часы: неверный формат, ожидается HH:MM-HH:MM или пусто."
+    return f"{start_raw}-{end_raw}", None
+
+
 def _render_chat_settings_body(
     chat: Chat,
     conf: dict[str, object],
@@ -607,6 +640,9 @@ def _render_chat_settings_body(
 ) -> str:
     revive_enabled = bool(conf.get("revive_enabled", False))
     personalization_enabled = bool(conf.get("personalization_enabled", True))
+    is_active = bool(conf.get("is_active", True))
+    roulette_auto = bool(conf.get("roulette_auto_enabled", False))
+    quiet_hours_value = str(conf.get("quiet_hours") or "")
     revive_hours = int(conf.get("revive_after_hours", 48) or 48)
     revive_days = max(1, revive_hours // 24)
     style_current = str(conf.get("style", styles[0][0] if styles else DEFAULT_STYLE_KEY))
@@ -668,6 +704,18 @@ def _render_chat_settings_body(
         "<label class='form-label'>Оживление через (дней)</label>"
         f"<input class='form-control' type='number' name='revive_days' min='1' max='30' value='{revive_days}'>"
         "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Тихие часы (HH:MM-HH:MM, пусто = отключено)</label>"
+        f"<input class='form-control' type='text' name='quiet_hours' placeholder='23:00-08:00' value='{escape(quiet_hours_value)}'>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Фиксированное звание рулетки (пусто = автогенерация)</label>"
+        f"<input class='form-control' type='text' name='roulette_custom_title' maxlength='120' value='{escape(custom_title)}'>"
+        "</div>"
+        "<div class='col-md-6 d-flex align-items-end'>"
+        f"<div class='form-check'><input class='form-check-input' type='checkbox' name='is_active' value='1'{' checked' if is_active else ''}>"
+        "<label class='form-check-label'>Бот активен в чате</label></div>"
+        "</div>"
         "<div class='col-md-6 d-flex align-items-end'>"
         f"<div class='form-check'><input class='form-check-input' type='checkbox' name='revive_enabled' value='1'{' checked' if revive_enabled else ''}>"
         "<label class='form-check-label'>Оживление при тишине</label></div>"
@@ -675,6 +723,10 @@ def _render_chat_settings_body(
         "<div class='col-md-6 d-flex align-items-end'>"
         f"<div class='form-check'><input class='form-check-input' type='checkbox' name='personalization_enabled' value='1'{' checked' if personalization_enabled else ''}>"
         "<label class='form-check-label'>Персонализация по участникам</label></div>"
+        "</div>"
+        "<div class='col-md-6 d-flex align-items-end'>"
+        f"<div class='form-check'><input class='form-check-input' type='checkbox' name='roulette_auto_enabled' value='1'{' checked' if roulette_auto else ''}>"
+        "<label class='form-check-label'>Автоматическая рулетка (ежедневно)</label></div>"
         "</div>"
         "<div class='col-12'>"
         "<button class='btn btn-primary' type='submit'>Сохранить</button>"

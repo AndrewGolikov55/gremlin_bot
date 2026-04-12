@@ -40,6 +40,8 @@ from .services.roulette import RouletteService
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
+from .services.release_broadcast import ReleaseBroadcaster
+from .utils.version import get_version
 from zoneinfo import ZoneInfo
 from .utils.logging import ensure_trace_level
 from .utils.proxy import get_proxy_url
@@ -158,7 +160,13 @@ dp.update.middleware(
 scheduler = get_scheduler()
 
 
-app = FastAPI(title="Gremlin Bot", version="0.1.0")
+app = FastAPI(title="Gremlin Bot", version=get_version())
+
+release_broadcaster = ReleaseBroadcaster(
+    bot=bot,
+    sessionmaker=async_sessionmaker,
+    app_config=app_config_service,
+)
 app.include_router(
     create_admin_router(
         async_sessionmaker,
@@ -258,6 +266,10 @@ async def on_startup():
     )
     app.state.scheduler = scheduler
     _track_background_task(asyncio.create_task(network_monitor_service.probe_once()), label="Initial network probe")
+    _track_background_task(
+        asyncio.create_task(release_broadcaster.broadcast_if_new_version()),
+        label="Release broadcast",
+    )
 
 
 @app.on_event("shutdown")
