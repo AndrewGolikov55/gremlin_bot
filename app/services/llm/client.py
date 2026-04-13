@@ -35,6 +35,10 @@ OPENAI_PROJECT = os.getenv("OPENAI_PROJECT")
 class LLMError(RuntimeError):
     """Base error raised while talking to an LLM provider."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class LLMRateLimitError(LLMError):
     """Raised when a provider returns 429 Too Many Requests."""
@@ -157,7 +161,7 @@ async def _post_json(
                     retry_after=retry_after,
                 ) from exc
             logger.error("%s request failed status=%s body=%s", label, status, text)
-            raise LLMError(f"{label} request failed: {status} {text}") from exc
+            raise LLMError(f"{label} request failed: {status} {text}", status_code=status) from exc
         except httpx.HTTPError as exc:
             proxy_hint = get_proxy_display()
             if proxy_hint:
