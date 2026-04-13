@@ -3,6 +3,13 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-04-13
+
+### Internal
+
+- Skill `/release` теперь обязательно прогоняет ruff, mypy и pytest перед публикацией релиза.
+- Мелкая чистка форматирования в сервисе рассылки релизов.
+
 ## [0.1.0] - 2026-04-12
 
 ### Added
