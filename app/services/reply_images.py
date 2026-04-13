@@ -28,6 +28,7 @@ def _pick_reply_photo_size(photos: list[types.PhotoSize]) -> types.PhotoSize | N
         size = getattr(photo, "file_size", None)
         if isinstance(size, int) and 0 < size <= _PHOTO_SIZE_CAP:
             return photo
+    logger.warning("All PhotoSize entries exceed %d byte cap; using largest available", _PHOTO_SIZE_CAP)
     return photos[-1]
 
 
@@ -97,7 +98,7 @@ async def collect_reply_images(
         return []
 
     urls: list[str] = []
-    for fid in file_ids[:MAX_REPLY_IMAGES]:
+    for fid in file_ids[:MAX_REPLY_IMAGES]:  # safety cap; upstream sources already enforce this
         url = await download(bot, fid)
         if url:
             urls.append(url)
