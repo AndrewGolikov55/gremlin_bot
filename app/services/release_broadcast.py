@@ -10,7 +10,6 @@ from ..models.chat import Chat
 from ..utils.version import get_version, read_release_notes
 from .app_config import AppConfigService
 
-
 logger = logging.getLogger(__name__)
 
 LAST_BROADCASTED_KEY = "last_broadcasted_version"
