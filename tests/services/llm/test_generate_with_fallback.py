@@ -12,7 +12,6 @@ from app.services.llm.client import (
     generate_with_fallback,
 )
 
-
 MESSAGES: list[dict[str, Any]] = [
     {"role": "system", "content": "sys"},
     {"role": "user", "content": "hi"},
@@ -35,6 +34,7 @@ async def test_primary_success_returns_without_fallback() -> None:
 
     assert result == "ok"
     assert mock_generate.await_count == 1
+    assert mock_generate.await_args is not None
     assert mock_generate.await_args.kwargs["provider"] == "openrouter"
 
 

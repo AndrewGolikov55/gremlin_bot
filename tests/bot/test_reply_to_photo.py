@@ -5,13 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.message import Message
 from app.services.reply_images import collect_reply_images
 
 
 async def _seed_photo_message(
-    sessionmaker,
+    sessionmaker: async_sessionmaker[AsyncSession],
     *,
     chat_id: int,
     message_id: int,
@@ -34,7 +35,7 @@ async def _seed_photo_message(
 
 
 @pytest.mark.asyncio
-async def test_collect_images_from_db_album(sessionmaker) -> None:
+async def test_collect_images_from_db_album(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     chat_id = 777
     for mid, fid in [(10, "a"), (11, "b"), (12, "c")]:
         await _seed_photo_message(
@@ -54,7 +55,7 @@ async def test_collect_images_from_db_album(sessionmaker) -> None:
     async with sessionmaker() as session:
         urls = await collect_reply_images(
             bot=AsyncMock(),
-            message=incoming,
+            message=incoming,  # type: ignore[arg-type]
             session=session,
             _download=download,
         )
@@ -63,7 +64,7 @@ async def test_collect_images_from_db_album(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_photo_in_reply_returns_empty(sessionmaker) -> None:
+async def test_no_photo_in_reply_returns_empty(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     chat_id = 888
     async with sessionmaker() as session:
         session.add(Message(
@@ -85,7 +86,7 @@ async def test_no_photo_in_reply_returns_empty(sessionmaker) -> None:
     async with sessionmaker() as session:
         urls = await collect_reply_images(
             bot=AsyncMock(),
-            message=incoming,
+            message=incoming,  # type: ignore[arg-type]
             session=session,
         )
 

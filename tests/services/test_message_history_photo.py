@@ -4,15 +4,16 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.services.message_history import store_telegram_message
 
 
-def _fake_chat(chat_id: int = 500):
+def _fake_chat(chat_id: int = 500) -> SimpleNamespace:
     return SimpleNamespace(id=chat_id, type="supergroup", title="Test", username=None)
 
 
-def _fake_user(user_id: int = 42):
+def _fake_user(user_id: int = 42) -> SimpleNamespace:
     return SimpleNamespace(
         id=user_id,
         is_bot=False,
@@ -23,7 +24,7 @@ def _fake_user(user_id: int = 42):
     )
 
 
-def _fake_photo(file_id: str, file_size: int = 100_000):
+def _fake_photo(file_id: str, file_size: int = 100_000) -> SimpleNamespace:
     return SimpleNamespace(file_id=file_id, file_unique_id="u_" + file_id, file_size=file_size, width=800, height=600)
 
 
@@ -34,7 +35,7 @@ def _fake_message(
     photo: list | None = None,
     caption: str | None = None,
     media_group_id: str | None = None,
-):
+) -> SimpleNamespace:
     return SimpleNamespace(
         message_id=message_id,
         chat=_fake_chat(),
@@ -53,15 +54,16 @@ def _fake_message(
 
 
 @pytest.mark.asyncio
-async def test_photo_message_persists_file_id(sessionmaker) -> None:
+async def test_photo_message_persists_file_id(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     photos = [_fake_photo("small", 2_000), _fake_photo("large", 500_000)]
     msg = _fake_message(message_id=10, photo=photos, caption="hi", media_group_id=None)
 
     async with sessionmaker() as session:
-        await store_telegram_message(session, msg)
+        await store_telegram_message(session, msg)  # type: ignore[arg-type]
         await session.commit()
 
     from sqlalchemy import select
+
     from app.models.message import Message
 
     async with sessionmaker() as session:
@@ -73,15 +75,16 @@ async def test_photo_message_persists_file_id(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_album_message_persists_media_group_id(sessionmaker) -> None:
+async def test_album_message_persists_media_group_id(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     photos = [_fake_photo("f1", 10_000)]
     msg = _fake_message(message_id=11, photo=photos, media_group_id="gid-xyz")
 
     async with sessionmaker() as session:
-        await store_telegram_message(session, msg)
+        await store_telegram_message(session, msg)  # type: ignore[arg-type]
         await session.commit()
 
     from sqlalchemy import select
+
     from app.models.message import Message
 
     async with sessionmaker() as session:
@@ -93,14 +96,15 @@ async def test_album_message_persists_media_group_id(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_text_message_leaves_photo_refs_null(sessionmaker) -> None:
+async def test_text_message_leaves_photo_refs_null(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     msg = _fake_message(message_id=12, text="hello")
 
     async with sessionmaker() as session:
-        await store_telegram_message(session, msg)
+        await store_telegram_message(session, msg)  # type: ignore[arg-type]
         await session.commit()
 
     from sqlalchemy import select
+
     from app.models.message import Message
 
     async with sessionmaker() as session:
@@ -112,16 +116,17 @@ async def test_text_message_leaves_photo_refs_null(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_oversized_photo_falls_back_to_last(sessionmaker) -> None:
+async def test_oversized_photo_falls_back_to_last(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     huge = 16 * 1024 * 1024
     photos = [_fake_photo("only", huge)]
     msg = _fake_message(message_id=13, photo=photos)
 
     async with sessionmaker() as session:
-        await store_telegram_message(session, msg)
+        await store_telegram_message(session, msg)  # type: ignore[arg-type]
         await session.commit()
 
     from sqlalchemy import select
+
     from app.models.message import Message
 
     async with sessionmaker() as session:

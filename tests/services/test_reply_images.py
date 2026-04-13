@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.message import Message
 from app.services.reply_images import MAX_REPLY_IMAGES, collect_reply_images
 
 
-def _reply_msg(chat_id: int = 100, reply_to_id: int | None = 50, reply_photo=None):
+def _reply_msg(chat_id: int = 100, reply_to_id: int | None = 50, reply_photo: list | None = None) -> SimpleNamespace:
     reply_to = None
     if reply_to_id is not None:
         reply_to = SimpleNamespace(
@@ -23,7 +25,7 @@ def _reply_msg(chat_id: int = 100, reply_to_id: int | None = 50, reply_photo=Non
     )
 
 
-async def _seed_message(sessionmaker, **fields) -> None:
+async def _seed_message(sessionmaker: async_sessionmaker[AsyncSession], **fields: Any) -> None:
     async with sessionmaker() as session:
         session.add(Message(
             chat_id=fields["chat_id"],
@@ -40,22 +42,22 @@ async def _seed_message(sessionmaker, **fields) -> None:
 
 
 @pytest.mark.asyncio
-async def test_returns_empty_when_no_reply(sessionmaker) -> None:
+async def test_returns_empty_when_no_reply(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     msg = SimpleNamespace(chat=SimpleNamespace(id=100), reply_to_message=None)
     async with sessionmaker() as session:
-        result = await collect_reply_images(bot=AsyncMock(), message=msg, session=session)
+        result = await collect_reply_images(bot=AsyncMock(), message=msg, session=session)  # type: ignore[arg-type]
     assert result == []
 
 
 @pytest.mark.asyncio
-async def test_single_photo_from_db(sessionmaker) -> None:
+async def test_single_photo_from_db(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     await _seed_message(sessionmaker, chat_id=100, message_id=50, tg_file_id="fid-1")
     msg = _reply_msg()
     download = AsyncMock(return_value="data:image/jpeg;base64,AAA")
     async with sessionmaker() as session:
         result = await collect_reply_images(
             bot=AsyncMock(),
-            message=msg,
+            message=msg,  # type: ignore[arg-type]
             session=session,
             _download=download,
         )
@@ -64,7 +66,7 @@ async def test_single_photo_from_db(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_album_returns_all_file_ids_in_order(sessionmaker) -> None:
+async def test_album_returns_all_file_ids_in_order(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     for mid, fid in [(50, "a"), (51, "b"), (52, "c")]:
         await _seed_message(sessionmaker, chat_id=100, message_id=mid,
                             tg_file_id=fid, media_group_id="G1")
@@ -73,7 +75,7 @@ async def test_album_returns_all_file_ids_in_order(sessionmaker) -> None:
     async with sessionmaker() as session:
         result = await collect_reply_images(
             bot=AsyncMock(),
-            message=msg,
+            message=msg,  # type: ignore[arg-type]
             session=session,
             _download=download,
         )
@@ -85,7 +87,7 @@ async def test_album_returns_all_file_ids_in_order(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_album_truncates_to_max(sessionmaker) -> None:
+async def test_album_truncates_to_max(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     for i in range(15):
         await _seed_message(sessionmaker, chat_id=100, message_id=50 + i,
                             tg_file_id=f"f{i}", media_group_id="big")
@@ -94,7 +96,7 @@ async def test_album_truncates_to_max(sessionmaker) -> None:
     async with sessionmaker() as session:
         result = await collect_reply_images(
             bot=AsyncMock(),
-            message=msg,
+            message=msg,  # type: ignore[arg-type]
             session=session,
             _download=download,
         )
@@ -104,7 +106,7 @@ async def test_album_truncates_to_max(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_partial_download_failure_drops_failed_entries(sessionmaker) -> None:
+async def test_partial_download_failure_drops_failed_entries(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     for mid, fid in [(50, "ok1"), (51, "bad"), (52, "ok2")]:
         await _seed_message(sessionmaker, chat_id=100, message_id=mid,
                             tg_file_id=fid, media_group_id="G2")
@@ -118,7 +120,7 @@ async def test_partial_download_failure_drops_failed_entries(sessionmaker) -> No
     async with sessionmaker() as session:
         result = await collect_reply_images(
             bot=AsyncMock(),
-            message=msg,
+            message=msg,  # type: ignore[arg-type]
             session=session,
             _download=fake_download,
         )
@@ -126,17 +128,18 @@ async def test_partial_download_failure_drops_failed_entries(sessionmaker) -> No
 
 
 @pytest.mark.asyncio
-async def test_fallback_to_reply_to_message_photo(sessionmaker) -> None:
+async def test_fallback_to_reply_to_message_photo(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     reply_photo = [SimpleNamespace(file_id="live-fid", file_size=50_000, width=800, height=600)]
     msg = _reply_msg(reply_to_id=999, reply_photo=reply_photo)
     download = AsyncMock(return_value="data:image/jpeg;base64,LIVE")
     async with sessionmaker() as session:
         result = await collect_reply_images(
             bot=AsyncMock(),
-            message=msg,
+            message=msg,  # type: ignore[arg-type]
             session=session,
             _download=download,
         )
     assert result == ["data:image/jpeg;base64,LIVE"]
     download.assert_awaited_once()
+    assert download.await_args is not None
     assert download.await_args.args[1] == "live-fid"

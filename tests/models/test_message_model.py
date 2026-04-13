@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.message import Message
 
 
 @pytest.mark.asyncio
-async def test_message_persists_photo_refs(sessionmaker) -> None:
+async def test_message_persists_photo_refs(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     async with sessionmaker() as session:
         msg = Message(
             chat_id=100,
@@ -29,7 +30,7 @@ async def test_message_persists_photo_refs(sessionmaker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_message_photo_refs_default_null(sessionmaker) -> None:
+async def test_message_photo_refs_default_null(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     async with sessionmaker() as session:
         msg = Message(
             chat_id=100,

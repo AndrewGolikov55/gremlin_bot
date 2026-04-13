@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.message import Message
 from .llm.vision import download_file_id_as_data_url
 
-
 logger = logging.getLogger(__name__)
 
 MAX_REPLY_IMAGES = 10  # Telegram album cap
