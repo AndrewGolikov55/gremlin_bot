@@ -391,7 +391,7 @@ async def generate_with_fallback(
             max_tokens=max_tokens,
             provider=primary_name,
         )
-    except (LLMRateLimitError, LLMError) as exc:
+    except LLMError as exc:
         if not _is_retriable(exc):
             raise
         fallback = _fallback_provider(primary_name)

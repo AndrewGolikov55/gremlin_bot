@@ -19,8 +19,7 @@ MESSAGES: list[dict[str, Any]] = [
 ]
 
 
-@pytest.mark.asyncio
-async def test_fallback_map_is_symmetric() -> None:
+def test_fallback_map_is_symmetric() -> None:
     assert FALLBACK_MAP == {"openrouter": "openai", "openai": "openrouter"}
 
 
