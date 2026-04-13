@@ -21,6 +21,7 @@ from ..services.llm.client import (
     LLMError,
     LLMRateLimitError,
     generate as llm_generate,
+    generate_with_fallback,
     resolve_llm_options,
 )
 from ..services.message_history import store_telegram_message
@@ -180,12 +181,12 @@ async def collect_messages(
                 if max_len_value and max_len_value > 0:
                     max_tokens = max_len_value
 
-            raw_reply = await llm_generate(
+            raw_reply = await generate_with_fallback(
                 messages_for_llm,
                 max_tokens=max_tokens,
                 temperature=resolve_temperature(conf),
                 top_p=float(conf.get("top_p", 0.9) or 0.9),
-                provider=provider,
+                primary=provider,
             )
         except LLMRateLimitError as exc:
             wait_hint = ""
