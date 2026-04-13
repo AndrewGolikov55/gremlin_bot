@@ -48,6 +48,8 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
  && rm -rf /wheels
 
 # App files
+COPY pyproject.toml ./
+COPY RELEASE_NOTES.md ./
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY scripts ./scripts

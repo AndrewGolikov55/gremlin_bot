@@ -3,6 +3,12 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] - 2026-04-13
+
+### Fixed
+
+- Исправлен запуск контейнера: `pyproject.toml` и `RELEASE_NOTES.md` теперь копируются в образ, иначе `get_version()` падал с `FileNotFoundError` на старте.
+
 ## [0.1.1] - 2026-04-13
 
 ### Internal
