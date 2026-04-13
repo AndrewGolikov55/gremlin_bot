@@ -23,6 +23,7 @@ from ..services.llm.client import (
 )
 from ..services.llm.vision import download_file_id_as_data_url
 from ..services.message_history import store_telegram_message
+from ..services.reply_images import collect_reply_images
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
@@ -198,6 +199,31 @@ async def collect_messages(
             context_blocks=[memory_block] if memory_block else None,
         )
 
+        reply_images: list[str] = []
+        replied = message.reply_to_message
+        if replied is not None and not _is_reply_to_bot(replied, bot_user.id, bot_user.username):
+            reply_images = await collect_reply_images(
+                bot=bot,
+                message=message,
+                session=session,
+            )
+
+        if reply_images:
+            vision_messages = build_vision_messages(
+                system_prompt=system_prompt,
+                turns=turns,
+                max_turns=max_turns,
+                prompt_token_limit=prompt_token_limit,
+                focus_text=focus_text,
+                image_data_urls=reply_images,
+                vision_detail="low",
+                context_blocks=[memory_block] if memory_block else None,
+            )
+            vision_primary = "openai"
+        else:
+            vision_messages = None
+            vision_primary = None
+
         try:
             max_length_conf = app_conf.get("max_length")
             max_tokens = None
@@ -209,13 +235,22 @@ async def collect_messages(
                 if max_len_value and max_len_value > 0:
                     max_tokens = max_len_value
 
-            raw_reply = await generate_with_fallback(
-                messages_for_llm,
-                max_tokens=max_tokens,
-                temperature=resolve_temperature(conf),
-                top_p=float(conf.get("top_p", 0.9) or 0.9),
-                primary=provider,
-            )
+            if vision_messages is not None and vision_primary is not None:
+                raw_reply = await generate_with_fallback(
+                    vision_messages,
+                    max_tokens=max_tokens,
+                    temperature=resolve_temperature(conf),
+                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    primary=vision_primary,
+                )
+            else:
+                raw_reply = await generate_with_fallback(
+                    messages_for_llm,
+                    max_tokens=max_tokens,
+                    temperature=resolve_temperature(conf),
+                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    primary=provider,
+                )
         except LLMRateLimitError as exc:
             wait_hint = ""
             if exc.retry_after and exc.retry_after > 0:
@@ -598,29 +633,29 @@ def _is_bot_mentioned(
     return f"@{bot_username}" in text.lower()
 
 
-def _is_reply(message: types.Message, bot_id: int, bot_username: str | None) -> bool:
-    if not message.reply_to_message:
-        return False
-    replied = message.reply_to_message
+def _is_reply_to_bot(replied: types.Message, bot_id: int, bot_username: str | None) -> bool:
     if replied.from_user and replied.from_user.id == bot_id:
         return True
     if replied.from_user and bot_username and replied.from_user.username:
         if replied.from_user.username.lower() == bot_username.lower():
             return True
-    # Messages sent via inline mode reference the bot in via_bot
     if replied.via_bot and replied.via_bot.id == bot_id:
         return True
     if replied.via_bot and bot_username and replied.via_bot.username:
         if replied.via_bot.username.lower() == bot_username.lower():
             return True
-    # Some chats can substitute sender_chat instead of from_user (e.g. topics or protected content)
     if replied.sender_chat and replied.sender_chat.id == bot_id:
         return True
     if replied.sender_chat and bot_username and replied.sender_chat.username:
         if replied.sender_chat.username.lower() == bot_username.lower():
             return True
     return False
-    return False
+
+
+def _is_reply(message: types.Message, bot_id: int, bot_username: str | None) -> bool:
+    if not message.reply_to_message:
+        return False
+    return _is_reply_to_bot(message.reply_to_message, bot_id, bot_username)
 
 
 def _should_reply(is_mention: bool, is_reply: bool, chat_type: ChatType | str | None) -> bool:
