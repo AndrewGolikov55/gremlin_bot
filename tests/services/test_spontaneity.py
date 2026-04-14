@@ -181,3 +181,55 @@ async def test_can_react_false_in_quiet_hours() -> None:
 async def test_can_react_false_when_dice_fails() -> None:
     policy = _make_policy(rng=0.99, app_conf={"reaction_p": 5})
     assert await policy.can_react(chat_id=-100) is False
+
+
+@pytest.mark.asyncio
+async def test_should_reply_with_voice_false_when_p_is_zero() -> None:
+    policy = _make_policy(app_conf={"tts_reply_p": 0, "tts_voice_reply_p": 0})
+    assert await policy.should_reply_with_voice(
+        chat_id=-100, incoming_is_voice_reply_to_bot=False,
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_should_reply_with_voice_uses_default_p_for_normal_case() -> None:
+    policy = _make_policy(
+        rng=0.5,
+        app_conf={"tts_reply_p": 100, "tts_voice_reply_p": 0},
+    )
+    assert await policy.should_reply_with_voice(
+        chat_id=-100, incoming_is_voice_reply_to_bot=False,
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_should_reply_with_voice_uses_boost_p_for_voice_reply_to_bot() -> None:
+    policy = _make_policy(
+        rng=0.5,
+        app_conf={"tts_reply_p": 0, "tts_voice_reply_p": 100},
+    )
+    assert await policy.should_reply_with_voice(
+        chat_id=-100, incoming_is_voice_reply_to_bot=True,
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_should_reply_with_voice_does_not_use_boost_for_other_cases() -> None:
+    policy = _make_policy(
+        rng=0.5,
+        app_conf={"tts_reply_p": 0, "tts_voice_reply_p": 100},
+    )
+    assert await policy.should_reply_with_voice(
+        chat_id=-100, incoming_is_voice_reply_to_bot=False,
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_should_reply_with_voice_respects_quiet_hours() -> None:
+    policy = _make_policy(
+        app_conf={"tts_reply_p": 100, "tts_voice_reply_p": 100},
+        chat_conf={"quiet_hours": "00:00-23:59"},
+    )
+    assert await policy.should_reply_with_voice(
+        chat_id=-100, incoming_is_voice_reply_to_bot=True,
+    ) is False
