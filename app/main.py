@@ -37,6 +37,7 @@ from .services.persona import StylePromptService, BASE_STYLE_DATA
 from .services.app_config import AppConfigService
 from .services.reactions import ReactionService
 from .services.roulette import RouletteService
+from .services.spontaneity import SpontaneityPolicy
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
@@ -105,6 +106,11 @@ app_config_service = AppConfigService(async_sessionmaker, redis)
 persona_service = StylePromptService(async_sessionmaker, redis, BASE_STYLE_DATA)
 user_memory_service = UserMemoryService(async_sessionmaker)
 usage_limits_service = UsageLimiter(redis, timezone=ZoneInfo("Europe/Moscow"))
+spontaneity_policy = SpontaneityPolicy(
+    redis=redis,
+    app_config=app_config_service,
+    settings=settings_service,
+)
 network_monitor_service = NetworkMonitorService()
 reaction_service = ReactionService(
     bot=bot,
@@ -143,6 +149,7 @@ interjector_service = InterjectorService(
     personas=persona_service,
     usage_limits=usage_limits_service,
     memory=user_memory_service,
+    policy=spontaneity_policy,
 )
 dp.update.middleware(
     ServicesMiddleware(
@@ -155,6 +162,7 @@ dp.update.middleware(
         roulette_service,
         usage_limits_service,
         user_memory_service,
+        spontaneity_policy,
     )
 )
 scheduler = get_scheduler()

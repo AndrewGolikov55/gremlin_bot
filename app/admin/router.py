@@ -308,7 +308,9 @@ def create_admin_router(
         roulette_title_context_messages: int = Form(...),
         interject_p: int = Form(...),
         reaction_p: int = Form(...),
-        interject_cooldown: int = Form(...),
+        revive_p: int = Form(...),
+        interject_cooldown_min: int = Form(...),
+        react_cooldown_min: int = Form(...),
         summary_daily_limit: int = Form(...),
         llm_daily_limit: int = Form(...),
         llm_provider: str = Form(...),
@@ -334,7 +336,9 @@ def create_admin_router(
         roulette_title_context_messages = max(20, min(500, roulette_title_context_messages))
         interject_p = max(0, min(100, interject_p))
         reaction_p = max(0, min(100, reaction_p))
-        interject_cooldown = max(10, min(3600, interject_cooldown))
+        revive_p = max(0, min(100, revive_p))
+        interject_cooldown_min = max(0, min(240, interject_cooldown_min))
+        react_cooldown_min = max(0, min(240, react_cooldown_min))
         summary_daily_limit = max(0, min(20, summary_daily_limit))
         llm_daily_limit = max(0, min(5000, llm_daily_limit))
         memory_top_k = max(1, min(16, memory_top_k))
@@ -369,7 +373,9 @@ def create_admin_router(
             await app_config.set("roulette_title_context_messages", roulette_title_context_messages)
             await app_config.set("interject_p", interject_p)
             await app_config.set("reaction_p", reaction_p)
-            await app_config.set("interject_cooldown", interject_cooldown)
+            await app_config.set("revive_p", revive_p)
+            await app_config.set("interject_cooldown_min", interject_cooldown_min)
+            await app_config.set("react_cooldown_min", react_cooldown_min)
             await app_config.set("summary_daily_limit", summary_daily_limit)
             await app_config.set("llm_daily_limit", llm_daily_limit)
             if provider_value in {"openrouter", "openai"}:
@@ -673,8 +679,9 @@ def _render_chat_settings_body(
         f"<tr><td>Контекст</td><td>{escape(str(app_conf.get('context_max_turns', 100)))} сообщений</td></tr>"
         f"<tr><td>Макс. длина ответа</td><td>{escape(str(app_conf.get('max_length', 0)))} символов</td></tr>"
         f"<tr><td>Лимит окна</td><td>{escape(str(app_conf.get('context_max_prompt_tokens', 32000)))} токенов</td></tr>"
-        f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, кулдаун {escape(str(app_conf.get('interject_cooldown', 60)))}с</td></tr>"
-        f"<tr><td>Реакции</td><td>{escape(str(app_conf.get('reaction_p', 5)))}% шанс</td></tr>"
+        f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, cooldown {escape(str(app_conf.get('interject_cooldown_min', 30)))} мин</td></tr>"
+        f"<tr><td>Реакции</td><td>{escape(str(app_conf.get('reaction_p', 5)))}% шанс, cooldown {escape(str(app_conf.get('react_cooldown_min', 10)))} мин</td></tr>"
+        f"<tr><td>Revive</td><td>{escape(str(app_conf.get('revive_p', 50)))}% шанс</td></tr>"
         f"<tr><td>Память по участникам чата</td><td>{'включена' if app_conf.get('user_memory_enabled', True) else 'выключена'}; top-k {escape(str(app_conf.get('memory_top_k', 6)))}</td></tr>"
         f"<tr><td>Звание рулетки</td><td>{escape(title_label)}</td></tr>"
         f"<tr><td>Режим звания</td><td>{escape(title_mode)}</td></tr>"
@@ -1039,9 +1046,11 @@ def _render_app_config_body(
     context_turns = int(conf.get("context_max_turns", 100) or 100)
     max_length = int(conf.get("max_length", 0) or 0)
     context_tokens = int(conf.get("context_max_prompt_tokens", 32000) or 32000)
-    interject_p = int(conf.get("interject_p", 0) or 0)
+    interject_p = int(conf.get("interject_p", 5) or 5)
     reaction_p = int(conf.get("reaction_p", 5) or 5)
-    interject_cooldown = int(conf.get("interject_cooldown", 60) or 60)
+    revive_p = int(conf.get("revive_p", 50) or 50)
+    interject_cooldown_min = int(conf.get("interject_cooldown_min", 30) or 30)
+    react_cooldown_min = int(conf.get("react_cooldown_min", 10) or 10)
     summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
     llm_provider = str(conf.get("llm_provider", "openrouter") or "openrouter")
@@ -1095,16 +1104,29 @@ def _render_app_config_body(
         f"<input class='form-control' type='number' name='max_length' min='0' max='2000' value='{max_length}'>"
         "</div>"
         "<div class='col-md-6'>"
-        "<label class='form-label'>Вероятность вмешательства (0-100%)</label>"
+        "<label class='form-label'>Шанс интерджекта (%)</label>"
         f"<input class='form-control' type='number' name='interject_p' min='0' max='100' value='{interject_p}'>"
+        "<div class='form-text'>Шанс спонтанного комментария на каждое сообщение чата.</div>"
         "</div>"
         "<div class='col-md-6'>"
-        "<label class='form-label'>Вероятность реакций (0-100%)</label>"
+        "<label class='form-label'>Шанс revive (%)</label>"
+        f"<input class='form-control' type='number' name='revive_p' min='0' max='100' value='{revive_p}'>"
+        "<div class='form-text'>Шанс реплики, когда чат давно молчит и пришло время будить.</div>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Шанс реакции (%)</label>"
         f"<input class='form-control' type='number' name='reaction_p' min='0' max='100' value='{reaction_p}'>"
+        "<div class='form-text'>Шанс эмодзи-реакции на сообщение.</div>"
         "</div>"
         "<div class='col-md-6'>"
-        "<label class='form-label'>Кулдаун вмешательств (10-3600 сек)</label>"
-        f"<input class='form-control' type='number' name='interject_cooldown' min='10' max='3600' value='{interject_cooldown}'>"
+        "<label class='form-label'>Cooldown интерджекта (минут)</label>"
+        f"<input class='form-control' type='number' name='interject_cooldown_min' min='0' max='240' value='{interject_cooldown_min}'>"
+        "<div class='form-text'>Минут тишины после комментария или прямого ответа бота, прежде чем он снова может высказаться спонтанно.</div>"
+        "</div>"
+        "<div class='col-md-6'>"
+        "<label class='form-label'>Cooldown реакций (минут)</label>"
+        f"<input class='form-control' type='number' name='react_cooldown_min' min='0' max='240' value='{react_cooldown_min}'>"
+        "<div class='form-text'>Минут после последней реакции, прежде чем бот может поставить ещё одну.</div>"
         "</div>"
         "<div class='col-md-6'>"
         "<label class='form-label'>Сводки в сутки (0 = без ограничения)</label>"

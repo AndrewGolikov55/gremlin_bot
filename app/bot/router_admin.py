@@ -43,7 +43,7 @@ async def cmd_bot(
         active = conf.get("is_active", True)
         prob = app_conf.get("interject_p", 0)
         reaction_prob = app_conf.get("reaction_p", 5)
-        cooldown = app_conf.get("interject_cooldown", 60)
+        cooldown = app_conf.get("interject_cooldown_min", 30)
         revive_enabled = conf.get("revive_enabled", False)
         revive_hours = int(conf.get("revive_after_hours", 48) or 48)
         revive_days = max(1, revive_hours // 24)
@@ -57,7 +57,7 @@ async def cmd_bot(
             f"Тихие часы: {quiet_label}\n"
             f"Вероятность вмешательства: {prob}%\n"
             f"Вероятность реакций: {reaction_prob}%\n"
-            f"Кулдаун: {cooldown}с\n"
+            f"Кулдаун: {cooldown} мин\n"
             f"Оживление: {'включено' if revive_enabled else 'выключено'} (порог {revive_days} д.)\n"
             f"Персонализация: {'включена' if personalization_enabled and user_memory_enabled else 'выключена'}"
         )
@@ -98,7 +98,7 @@ async def cmd_interject(
 ):
     args = (command.args or "").strip().split()
     if len(args) != 2 or args[0].lower() not in {"p", "cooldown"}:
-        return await message.reply("Использование: /interject p 0-100 или /interject cooldown секунды", parse_mode=None)
+        return await message.reply("Использование: /interject p 0-100 или /interject cooldown минуты", parse_mode=None)
 
     action = args[0].lower()
     value = args[1]
@@ -112,12 +112,12 @@ async def cmd_interject(
         return await message.reply(f"Вероятность вмешательства {prob}% (глобально)")
 
     if not value.isdigit():
-        return await message.reply("Кулдаун задаётся целым числом секунд")
+        return await message.reply("Кулдаун задаётся целым числом минут")
     cooldown = int(value)
-    if cooldown < 10:
-        return await message.reply("Кулдаун должен быть не меньше 10 секунд")
-    await app_config.set("interject_cooldown", cooldown)
-    return await message.reply(f"Кулдаун вмешательства {cooldown} сек (глобально)")
+    if not 0 <= cooldown <= 240:
+        return await message.reply("Кулдаун должен быть в диапазоне 0-240 минут")
+    await app_config.set("interject_cooldown_min", cooldown)
+    return await message.reply(f"Кулдаун вмешательства {cooldown} мин (глобально)")
 
 
 @router.message(Command("quiet"))
@@ -245,7 +245,7 @@ def _render_settings(
     quiet_value = conf.get("quiet_hours") or "off"
     quiet_label = QUIET_LABELS.get(quiet_value, quiet_value)
     interject_p = int(app_conf.get("interject_p", 0) or 0)
-    interject_cooldown = int(app_conf.get("interject_cooldown", 60) or 60)
+    interject_cooldown_min = int(app_conf.get("interject_cooldown_min", 30) or 30)
     context_turns = int(app_conf.get("context_max_turns", 100) or 100)
     context_tokens = int(app_conf.get("context_max_prompt_tokens", 32000) or 32000)
     revive_enabled = bool(conf.get("revive_enabled", False))
@@ -259,7 +259,7 @@ def _render_settings(
         "<b>⚙️ Настройки бота ⚙️</b>\n"
         #f"Стиль: {style_label}\n"
         #f"Тихие часы: {quiet_label}\n"
-        #f"Вмешательства: {interject_p}% (кулдаун {interject_cooldown}с)\n"
+        #f"Вмешательства: {interject_p}% (кулдаун {interject_cooldown_min} мин)\n"
         #f"Контекст: {context_turns} сообщений, окно {context_tokens} токенов\n"
         #"<i>Глобальные параметры меняются в админ-панели.</i>"
     )

@@ -4,8 +4,7 @@ import base64
 import io
 import logging
 import mimetypes
-import random
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import Iterable
 
 from aiogram import Bot
@@ -37,6 +36,7 @@ from ..services.message_history import persist_telegram_message
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
+from ..services.spontaneity import ActionKind, InterjectTrigger, SpontaneityPolicy
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
@@ -60,6 +60,7 @@ class InterjectorService:
         personas: StylePromptService,
         usage_limits: UsageLimiter,
         memory: UserMemoryService,
+        policy: SpontaneityPolicy,
     ) -> None:
         self.bot = bot
         self.settings = settings
@@ -70,38 +71,15 @@ class InterjectorService:
         self.personas = personas
         self.usage_limits = usage_limits
         self.memory = memory
-        self._cooldown_prefix = "interject:last:"
-        self._revive_prefix = "interject:revive:last:"
+        self.policy = policy
 
-    async def maybe_reply_to_message(
+    async def generate_spontaneous_reply(
         self,
         message: TgMessage,
         conf: dict[str, object],
         turns: list[ChatTurn],
-    ) -> None:
+    ) -> bool:
         app_conf = await self.app_config.get_all()
-
-        probability = int(app_conf.get("interject_p", 0) or 0)
-        if probability <= 0:
-            return
-
-        now = datetime.utcnow()
-        if self._is_quiet(conf.get("quiet_hours"), now):
-            return
-
-        cooldown = int(app_conf.get("interject_cooldown", 60) or 60)
-        if await self._is_on_cooldown(message.chat.id, cooldown, now):
-            return
-
-        roll = random.uniform(0, 100)
-        if roll > probability:
-            logger.debug(
-                "Skip spontaneous reply chat=%s roll=%.2f p=%s",
-                message.chat.id,
-                roll,
-                probability,
-            )
-            return
 
         focus_text = (message.text or message.caption or "").strip()
         if not focus_text:
@@ -138,7 +116,7 @@ class InterjectorService:
             provider_override="openai" if vision_content else None,
         )
         if not generated:
-            return
+            return False
         reply_text, sidecar = generated
 
         try:
@@ -149,7 +127,7 @@ class InterjectorService:
             )
         except Exception:
             logger.exception("Failed to send spontaneous reply to chat %s", message.chat.id)
-            return
+            return False
         try:
             await persist_telegram_message(
                 self.sessionmaker,
@@ -178,8 +156,8 @@ class InterjectorService:
                     message.from_user.id,
                 )
 
-        await self._mark_interject(message.chat.id, now)
         logger.info("Spontaneous reply sent to chat %s", message.chat.id)
+        return True
 
     async def run_idle_checks(self) -> None:
         now = datetime.utcnow()
@@ -191,25 +169,29 @@ class InterjectorService:
                 if not self._is_group_chat(chat.id):
                     logger.debug("Skip idle revival for non-group chat %s", chat.id)
                     continue
+                if not await self.policy.can_interject(chat.id, trigger=InterjectTrigger.REVIVE):
+                    continue
                 try:
-                    await self._maybe_revive_chat(session, chat, now, app_conf)
+                    sent = await self.generate_revive(session, chat, now, app_conf)
+                    if sent:
+                        await self.policy.mark_acted(chat_id=chat.id, action=ActionKind.INTERJECT)
                 except Exception:
                     logger.exception("Idle revival failed for chat %s", chat.id)
 
-    async def _maybe_revive_chat(
+    async def generate_revive(
         self,
         session: AsyncSession,
         chat: Chat,
         now: datetime,
         app_conf: dict[str, object],
-    ) -> None:
+    ) -> bool:
         if not self._is_group_chat(chat.id):
             logger.debug("Skip revive attempt for non-group chat %s", chat.id)
-            return
+            return False
 
         conf = await self.settings.get_all(chat.id)
         if not conf.get("revive_enabled", False):
-            return
+            return False
 
         hours = int(conf.get("revive_after_hours", 48) or 48)
         threshold = timedelta(hours=max(1, hours))
@@ -219,14 +201,11 @@ class InterjectorService:
             last_time = datetime.min
 
         if now - last_time < threshold:
-            return
-
-        if await self._recently_revived(chat.id, threshold, now):
-            return
+            return False
 
         if not await self._consume_llm_budget(chat.id, app_conf):
             logger.debug("LLM limit reached for chat %s during revive check", chat.id)
-            return
+            return False
 
         turns = await self.context.get_recent_turns(session, chat.id, 50)
         style_prompts = await self.personas.get_all()
@@ -274,14 +253,14 @@ class InterjectorService:
             logger.warning(
                 "Rate limit during idle revival chat=%s retry_after=%s", chat.id, exc.retry_after
             )
-            return
+            return False
         except LLMError:
             logger.exception("LLM request failed during idle revival chat=%s", chat.id)
-            return
+            return False
 
         reply_text = apply_moderation(raw_reply)
         if not reply_text.strip():
-            return
+            return False
 
         try:
             sent_reply = await self.bot.send_message(chat.id, reply_text.strip())
@@ -289,12 +268,12 @@ class InterjectorService:
             if self._is_missing_chat_error(exc):
                 await self._deactivate_chat(chat.id)
                 logger.warning("Disabling chat %s after Telegram rejection: %s", chat.id, exc)
-                return
+                return False
             logger.exception("Failed to send idle revival to chat %s", chat.id)
-            return
+            return False
         except Exception:
             logger.exception("Failed to send idle revival to chat %s", chat.id)
-            return
+            return False
         try:
             await persist_telegram_message(self.sessionmaker, sent_reply)
         except Exception:
@@ -304,8 +283,8 @@ class InterjectorService:
                 sent_reply.message_id,
             )
 
-        await self._mark_revive(chat.id, now)
         logger.info("Idle revival sent to chat %s", chat.id)
+        return True
 
     async def _deactivate_chat(self, chat_id: int) -> None:
         async with self.sessionmaker() as session:
@@ -338,52 +317,6 @@ class InterjectorService:
         )
         row = result.scalar_one_or_none()
         return row
-
-    async def _recently_revived(self, chat_id: int, threshold: timedelta, now: datetime) -> bool:
-        key = f"{self._revive_prefix}{chat_id}"
-        value = await self.redis.get(key)
-        if value is None:
-            return False
-        try:
-            last_ts = float(value)
-        except (TypeError, ValueError):
-            return False
-        return now - datetime.fromtimestamp(last_ts) < threshold
-
-    async def _mark_interject(self, chat_id: int, when: datetime) -> None:
-        key = f"{self._cooldown_prefix}{chat_id}"
-        await self.redis.set(key, str(when.timestamp()), ex=86400)
-
-    async def _mark_revive(self, chat_id: int, when: datetime) -> None:
-        key = f"{self._revive_prefix}{chat_id}"
-        await self.redis.set(key, str(when.timestamp()), ex=86400)
-
-    async def _is_on_cooldown(self, chat_id: int, cooldown: int, now: datetime) -> bool:
-        key = f"{self._cooldown_prefix}{chat_id}"
-        value = await self.redis.get(key)
-        if value is None:
-            return False
-        try:
-            last_ts = float(value)
-        except (TypeError, ValueError):
-            return False
-        return (now - datetime.fromtimestamp(last_ts)).total_seconds() < cooldown
-
-    def _is_quiet(self, quiet_hours: str | None, now: datetime) -> bool:
-        if not quiet_hours:
-            return False
-        try:
-            start_s, end_s = quiet_hours.split("-", 1)
-            start_t = time.fromisoformat(start_s)
-            end_t = time.fromisoformat(end_s)
-        except ValueError:
-            logger.debug("Invalid quiet hours format: %s", quiet_hours)
-            return False
-
-        now_time = now.time()
-        if start_t <= end_t:
-            return start_t <= now_time < end_t
-        return now_time >= start_t or now_time < end_t
 
     async def _generate_reply(
         self,

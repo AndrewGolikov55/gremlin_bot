@@ -29,6 +29,7 @@ from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
 from ..services.persona import StylePromptService
 from ..services.reactions import ReactionService
+from ..services.spontaneity import ActionKind, InterjectTrigger, SpontaneityPolicy
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
@@ -83,6 +84,7 @@ async def collect_messages(
     reactions: ReactionService,
     usage_limits: UsageLimiter,
     memory: UserMemoryService,
+    policy: SpontaneityPolicy,
     bot: Bot,
 ):
     bot_user = await bot.get_me()
@@ -146,7 +148,10 @@ async def collect_messages(
     prompt_token_limit = _resolve_prompt_token_limit(app_conf)
     style_prompts = await personas.get_all()
     turns = await context.get_recent_turns(session, message.chat.id, max_turns)
-    await reactions.maybe_react_to_message(message, conf, app_conf, turns)
+    if await policy.can_react(message.chat.id):
+        reacted = await reactions.generate_reaction(message, conf, app_conf, turns)
+        if reacted:
+            await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.REACTION)
 
     if _should_reply(is_mention, is_reply_to_bot, message.chat.type):
         llm_limit_raw = app_conf.get("llm_daily_limit", 0) or 0
@@ -278,6 +283,7 @@ async def collect_messages(
             return
 
         sent_reply = await message.reply(reply_text.strip())
+        await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.DIRECT_REPLY)
         try:
             await store_telegram_message(
                 session,
@@ -308,7 +314,10 @@ async def collect_messages(
                 )
         return
 
-    await interjector.maybe_reply_to_message(message, conf, turns)
+    if await policy.can_interject(message.chat.id, trigger=InterjectTrigger.NEW_MESSAGE):
+        sent = await interjector.generate_spontaneous_reply(message, conf, turns)
+        if sent:
+            await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.INTERJECT)
 
 
 @router.message(F.sticker | F.animation | F.photo | F.video | F.document)
@@ -322,6 +331,7 @@ async def handle_media_messages(
     app_config: AppConfigService,
     usage_limits: UsageLimiter,
     memory: UserMemoryService,
+    policy: SpontaneityPolicy,
     bot: Bot,
 ):
     bot_user = await bot.get_me()
@@ -362,7 +372,14 @@ async def handle_media_messages(
             app_conf = await app_config.get_all()
             max_turns = int(app_conf.get("context_max_turns", 100) or 100)
             turns = await context.get_recent_turns(session, message.chat.id, max_turns)
-            await interjector.maybe_reply_to_message(message, conf, turns)
+            if await policy.can_interject(
+                message.chat.id, trigger=InterjectTrigger.NEW_MESSAGE
+            ):
+                sent = await interjector.generate_spontaneous_reply(message, conf, turns)
+                if sent:
+                    await policy.mark_acted(
+                        chat_id=message.chat.id, action=ActionKind.INTERJECT
+                    )
         return
 
     if message.photo:
@@ -374,12 +391,14 @@ async def handle_media_messages(
             app_config=app_config,
             usage_limits=usage_limits,
             memory=memory,
+            policy=policy,
             bot=bot,
             conf=conf,
         )
         return
 
     await message.reply(_unsupported_media_text(message), parse_mode=None)
+    await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.DIRECT_REPLY)
 
 
 async def _handle_photo_reply(
@@ -391,6 +410,7 @@ async def _handle_photo_reply(
     app_config: AppConfigService,
     usage_limits: UsageLimiter,
     memory: UserMemoryService,
+    policy: SpontaneityPolicy,
     bot: Bot,
     conf: dict[str, object],
 ) -> None:
@@ -513,6 +533,7 @@ async def _handle_photo_reply(
         return
 
     sent_reply = await message.reply(reply_text.strip())
+    await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.DIRECT_REPLY)
     try:
         await store_telegram_message(
             session,
