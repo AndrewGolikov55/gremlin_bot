@@ -34,6 +34,7 @@ APP_CONFIG_DEFAULTS: Dict[str, Any] = {
     "tts_voice_reply_p": 60,
     "tts_daily_limit": 0,
     "tts_voice_gopnik": "onyx",
+    "tts_voice_chatmate": "alloy",
     "tts_voice_standup": "echo",
     "tts_voice_boss": "onyx",
     "tts_voice_zoomer": "nova",

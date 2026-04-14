@@ -320,6 +320,7 @@ def create_admin_router(
         tts_voice_reply_p: int = Form(60),
         tts_daily_limit: int = Form(0),
         tts_voice_gopnik: str = Form("onyx"),
+        tts_voice_chatmate: str = Form("alloy"),
         tts_voice_standup: str = Form("echo"),
         tts_voice_boss: str = Form("onyx"),
         tts_voice_zoomer: str = Form("nova"),
@@ -362,6 +363,7 @@ def create_admin_router(
             return value if value in OPENAI_TTS_VOICES else default
 
         tts_voice_gopnik = _valid_voice(tts_voice_gopnik, "onyx")
+        tts_voice_chatmate = _valid_voice(tts_voice_chatmate, "alloy")
         tts_voice_standup = _valid_voice(tts_voice_standup, "echo")
         tts_voice_boss = _valid_voice(tts_voice_boss, "onyx")
         tts_voice_zoomer = _valid_voice(tts_voice_zoomer, "nova")
@@ -411,6 +413,7 @@ def create_admin_router(
             await app_config.set("tts_voice_reply_p", tts_voice_reply_p)
             await app_config.set("tts_daily_limit", tts_daily_limit)
             await app_config.set("tts_voice_gopnik", tts_voice_gopnik)
+            await app_config.set("tts_voice_chatmate", tts_voice_chatmate)
             await app_config.set("tts_voice_standup", tts_voice_standup)
             await app_config.set("tts_voice_boss", tts_voice_boss)
             await app_config.set("tts_voice_zoomer", tts_voice_zoomer)
@@ -1104,6 +1107,7 @@ def _render_app_config_body(
     tts_voice_reply_p = int(conf.get("tts_voice_reply_p", 60) or 60)
     tts_daily_limit = int(conf.get("tts_daily_limit", 0) or 0)
     tts_voice_gopnik = str(conf.get("tts_voice_gopnik", "onyx"))
+    tts_voice_chatmate = str(conf.get("tts_voice_chatmate", "alloy"))
     tts_voice_standup = str(conf.get("tts_voice_standup", "echo"))
     tts_voice_boss = str(conf.get("tts_voice_boss", "onyx"))
     tts_voice_zoomer = str(conf.get("tts_voice_zoomer", "nova"))
@@ -1237,6 +1241,11 @@ def _render_app_config_body(
         "<label class='form-label'>Голос для «гопник»</label>"
         f"<select class='form-select' name='tts_voice_gopnik'>{_voice_options(tts_voice_gopnik)}</select>"
         "<div class='form-text'>OpenAI voice для персоны «гопник».</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Голос для «chatmate»</label>"
+        f"<select class='form-select' name='tts_voice_chatmate'>{_voice_options(tts_voice_chatmate)}</select>"
+        "<div class='form-text'>OpenAI voice для персоны «chatmate».</div>"
         "</div>"
         "<div class='col-md-6 mb-3'>"
         "<label class='form-label'>Голос для «standup»</label>"

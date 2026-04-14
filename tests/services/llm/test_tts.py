@@ -115,7 +115,7 @@ def test_persona_tts_instructions_covers_all_personas() -> None:
     from app.services.llm.tts import PERSONA_TTS_INSTRUCTIONS
 
     assert set(PERSONA_TTS_INSTRUCTIONS.keys()) == {
-        "gopnik", "standup", "boss", "zoomer", "jarvis",
+        "gopnik", "chatmate", "standup", "boss", "zoomer", "jarvis",
     }
 
 
