@@ -364,7 +364,14 @@ def _is_retriable(exc: Exception) -> bool:
         return True
     if isinstance(exc, LLMError):
         status = exc.status_code
-        return bool(status is not None and 500 <= status < 600)
+        if status is not None and 500 <= status < 600:
+            return True
+        # Network-level failures (connection refused, DNS, timeout, reset) come
+        # through as LLMError without a status_code, wrapping an httpx.HTTPError.
+        # These are exactly when fallback is most valuable — the primary provider
+        # is unreachable, try the sibling.
+        if status is None and isinstance(exc.__cause__, httpx.HTTPError):
+            return True
     return False
 
 

@@ -143,3 +143,24 @@ async def test_fallback_failure_raises_fallback_error() -> None:
             await generate_with_fallback(MESSAGES, primary="openrouter")
 
     assert excinfo.value is fallback_exc
+
+
+@pytest.mark.asyncio
+async def test_network_error_triggers_fallback() -> None:
+    """Connection-level failures (wraps httpx.HTTPError) should fall back to sibling provider."""
+    import httpx
+
+    cause = httpx.ConnectError("All connection attempts failed")
+    primary_exc = LLMError("openrouter network error: connection refused")
+    primary_exc.__cause__ = cause
+
+    with patch(
+        "app.services.llm.client.generate",
+        new=AsyncMock(side_effect=[primary_exc, "fallback-ok"]),
+    ) as mock_generate, patch(
+        "app.services.llm.client.OPENAI_API_KEY", "stub"
+    ):
+        result = await generate_with_fallback(MESSAGES, primary="openrouter")
+
+    assert result == "fallback-ok"
+    assert mock_generate.await_count == 2
