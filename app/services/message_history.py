@@ -103,6 +103,20 @@ async def _insert_message(
             if isinstance(file_id_value, str) and file_id_value:
                 tg_file_id = file_id_value
 
+    if tg_file_id is None:
+        voice = getattr(message, "voice", None)
+        if voice is not None:
+            file_id_value = getattr(voice, "file_id", None)
+            if isinstance(file_id_value, str) and file_id_value:
+                tg_file_id = file_id_value
+
+    if tg_file_id is None:
+        video_note = getattr(message, "video_note", None)
+        if video_note is not None:
+            file_id_value = getattr(video_note, "file_id", None)
+            if isinstance(file_id_value, str) and file_id_value:
+                tg_file_id = file_id_value
+
     msg = Message(
         chat_id=message.chat.id,
         message_id=message.message_id,
@@ -125,6 +139,10 @@ async def _insert_message(
 def render_message_storage_text(message: types.Message) -> str:
     if message.text:
         return message.text
+    if getattr(message, "voice", None) is not None:
+        return "[голосовое]"
+    if getattr(message, "video_note", None) is not None:
+        return "[круглое видео]"
     if message.photo:
         caption = (message.caption or "").strip()
         return f"[photo] {caption}" if caption else "[photo]"
