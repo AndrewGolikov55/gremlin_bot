@@ -89,9 +89,15 @@ async def transcribe_file_id(
         return None
 
     chosen_language = language if language is not None else WHISPER_LANGUAGE
+    filename = _extract_upload_filename(file_path)
 
     try:
-        response = await _post_audio(payload, model=WHISPER_MODEL, language=chosen_language)
+        response = await _post_audio(
+            payload,
+            filename=filename,
+            model=WHISPER_MODEL,
+            language=chosen_language,
+        )
     except Exception:
         logger.exception("Whisper: HTTP call failed (file_id=%s)", file_id)
         return None
@@ -120,15 +126,35 @@ async def transcribe_file_id(
     return TranscriptionResult(text=text, duration_seconds=duration_hint or 0.0)
 
 
+_WHISPER_SUPPORTED_EXTS = {"flac", "m4a", "mp3", "mp4", "mpeg", "mpga", "oga", "ogg", "wav", "webm"}
+
+
+def _extract_upload_filename(file_path: str) -> str:
+    """Derive a multipart filename whose extension Whisper recognises.
+
+    Telegram file_path looks like 'voice/file_1.oga' or 'video_notes/file_2.mp4'.
+    OpenAI infers format from the filename extension, not from content sniffing,
+    so we must surface the real extension. Voice → 'voice.oga' as a safe default
+    if we can't parse (Telegram voice messages are always OGG/Opus).
+    """
+    base = file_path.rsplit("/", 1)[-1]
+    if "." in base:
+        ext = base.rsplit(".", 1)[-1].lower()
+        if ext in _WHISPER_SUPPORTED_EXTS:
+            return base
+    return "voice.oga"
+
+
 async def _post_audio(
     payload_bytes: bytes,
     *,
+    filename: str,
     model: str,
     language: str | None,
 ) -> httpx.Response:
     """POST audio bytes to Whisper API as multipart/form-data."""
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-    files = {"file": ("audio.bin", payload_bytes, "application/octet-stream")}
+    files = {"file": (filename, payload_bytes, "application/octet-stream")}
     data: dict[str, str] = {"model": model}
     if language:
         data["language"] = language

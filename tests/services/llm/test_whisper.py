@@ -94,10 +94,13 @@ async def test_language_hint_passed_in_form_data() -> None:
     response = _make_response(200, {"text": "hello"})
     captured: dict[str, Any] = {}
 
-    async def capture_post(payload_bytes: bytes, *, model: str, language: str | None) -> httpx.Response:
+    async def capture_post(
+        payload_bytes: bytes, *, filename: str, model: str, language: str | None,
+    ) -> httpx.Response:
         captured["model"] = model
         captured["language"] = language
         captured["size"] = len(payload_bytes)
+        captured["filename"] = filename
         return response
 
     with patch("app.services.llm.whisper._post_audio", new=capture_post):
@@ -111,3 +114,17 @@ async def test_language_hint_passed_in_form_data() -> None:
     assert captured["language"] == "ru"
     assert captured["model"] == "whisper-1"
     assert captured["size"] == 4
+    assert captured["filename"] == "abc.oga"
+
+
+def test_extract_upload_filename_prefers_supported_extension() -> None:
+    from app.services.llm.whisper import _extract_upload_filename
+
+    # voice message typical path
+    assert _extract_upload_filename("voice/file_1.oga") == "file_1.oga"
+    # video_note typical path
+    assert _extract_upload_filename("video_notes/file_2.mp4") == "file_2.mp4"
+    # unsupported extension → fallback
+    assert _extract_upload_filename("something/file.unknown") == "voice.oga"
+    # no extension at all → fallback
+    assert _extract_upload_filename("weird/no_ext") == "voice.oga"
