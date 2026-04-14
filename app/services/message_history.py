@@ -11,6 +11,19 @@ from ..models.message import Message
 from ..models.user import User
 
 
+_PHOTO_SIZE_CAP_BYTES = 8 * 1024 * 1024
+
+
+def _largest_storable_photo(photos: list) -> object | None:
+    if not photos:
+        return None
+    for photo in reversed(photos):
+        size = getattr(photo, "file_size", None)
+        if isinstance(size, int) and 0 < size <= _PHOTO_SIZE_CAP_BYTES:
+            return photo
+    return photos[-1]
+
+
 async def store_telegram_message(
     session: AsyncSession,
     message: types.Message,
@@ -81,6 +94,15 @@ async def _insert_message(
     if msg_date.tzinfo is not None:
         msg_date = msg_date.astimezone(timezone.utc).replace(tzinfo=None)
 
+    tg_file_id: str | None = None
+    photo_sizes = list(message.photo or [])
+    if photo_sizes:
+        picked = _largest_storable_photo(photo_sizes)
+        if picked is not None:
+            file_id_value = getattr(picked, "file_id", None)
+            if isinstance(file_id_value, str) and file_id_value:
+                tg_file_id = file_id_value
+
     msg = Message(
         chat_id=message.chat.id,
         message_id=message.message_id,
@@ -93,6 +115,8 @@ async def _insert_message(
         else None,
         date=msg_date,
         is_bot=bool(message.from_user and message.from_user.is_bot),
+        tg_file_id=tg_file_id,
+        media_group_id=getattr(message, "media_group_id", None),
     )
     session.add(msg)
     return True

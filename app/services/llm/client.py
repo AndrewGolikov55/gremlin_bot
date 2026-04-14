@@ -35,6 +35,10 @@ OPENAI_PROJECT = os.getenv("OPENAI_PROJECT")
 class LLMError(RuntimeError):
     """Base error raised while talking to an LLM provider."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class LLMRateLimitError(LLMError):
     """Raised when a provider returns 429 Too Many Requests."""
@@ -157,7 +161,7 @@ async def _post_json(
                     retry_after=retry_after,
                 ) from exc
             logger.error("%s request failed status=%s body=%s", label, status, text)
-            raise LLMError(f"{label} request failed: {status} {text}") from exc
+            raise LLMError(f"{label} request failed: {status} {text}", status_code=status) from exc
         except httpx.HTTPError as exc:
             proxy_hint = get_proxy_display()
             if proxy_hint:
@@ -339,6 +343,75 @@ async def generate(
         top_p=top_p,
         max_tokens=max_tokens,
     )
+
+
+FALLBACK_MAP: dict[str, str] = {"openrouter": "openai", "openai": "openrouter"}
+
+
+def _fallback_provider(primary: str) -> str | None:
+    fallback = FALLBACK_MAP.get(primary)
+    if fallback is None:
+        return None
+    if fallback == "openai" and not OPENAI_API_KEY:
+        return None
+    if fallback == "openrouter" and not OPENROUTER_API_KEY:
+        return None
+    return fallback
+
+
+def _is_retriable(exc: Exception) -> bool:
+    if isinstance(exc, LLMRateLimitError):
+        return True
+    if isinstance(exc, LLMError):
+        status = exc.status_code
+        return bool(status is not None and 500 <= status < 600)
+    return False
+
+
+async def generate_with_fallback(
+    messages: Iterable[Mapping[str, object]],
+    *,
+    primary: str,
+    temperature: float = 1.0,
+    top_p: float = 0.9,
+    max_tokens: int | None = None,
+) -> str:
+    """Generate via primary provider; on 429/5xx, retry via fallback provider.
+
+    Fallback is chosen via FALLBACK_MAP and requires the sibling API key.
+    If no fallback is available, the original exception propagates.
+    """
+    message_list = list(messages)
+    primary_name = _normalize_provider(primary)
+    try:
+        return await generate(
+            message_list,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            provider=primary_name,
+        )
+    except LLMError as exc:
+        if not _is_retriable(exc):
+            raise
+        fallback = _fallback_provider(primary_name)
+        if fallback is None:
+            raise
+        status = getattr(exc, "status_code", None)
+        logger.warning(
+            "LLM primary=%s failed (status=%s, error=%s); retrying on fallback=%s",
+            primary_name,
+            status,
+            exc,
+            fallback,
+        )
+        return await generate(
+            message_list,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            provider=fallback,
+        )
 
 
 def resolve_llm_options(conf: Mapping[str, object] | None) -> str:

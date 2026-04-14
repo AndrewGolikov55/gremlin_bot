@@ -1,8 +1,6 @@
-import base64
-import io
 import logging
-import mimetypes
 import re
+from typing import Any
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ChatType, MessageEntityType
@@ -20,10 +18,12 @@ from ..services.interjector import InterjectorService
 from ..services.llm.client import (
     LLMError,
     LLMRateLimitError,
-    generate as llm_generate,
+    generate_with_fallback,
     resolve_llm_options,
 )
+from ..services.llm.vision import download_file_id_as_data_url
 from ..services.message_history import store_telegram_message
+from ..services.reply_images import collect_reply_images
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
@@ -36,6 +36,36 @@ from .constants import START_PRIVATE_RESPONSE
 
 
 logger = logging.getLogger(__name__)
+
+
+def build_vision_messages(
+    *,
+    system_prompt: str,
+    turns,
+    max_turns: int,
+    prompt_token_limit: int,
+    focus_text: str | None,
+    image_data_urls: list[str],
+    vision_detail: str,
+    context_blocks: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Assemble a multimodal messages list with the final user turn carrying image_urls."""
+    messages = build_messages(
+        system_prompt,
+        turns,
+        max_turns,
+        prompt_token_limit,
+        context_blocks=context_blocks,
+    )
+    prompt_text = _build_photo_prompt_text(focus_text)
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt_text}]
+    for url in image_data_urls:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": url, "detail": vision_detail},
+        })
+    messages[-1] = {"role": "user", "content": content}
+    return messages
 
 
 router = Router(name="triggers")
@@ -169,6 +199,31 @@ async def collect_messages(
             context_blocks=[memory_block] if memory_block else None,
         )
 
+        reply_images: list[str] = []
+        replied = message.reply_to_message
+        if replied is not None and not _is_reply_to_bot(replied, bot_user.id, bot_user.username):
+            reply_images = await collect_reply_images(
+                bot=bot,
+                message=message,
+                session=session,
+            )
+
+        if reply_images:
+            vision_messages = build_vision_messages(
+                system_prompt=system_prompt,
+                turns=turns,
+                max_turns=max_turns,
+                prompt_token_limit=prompt_token_limit,
+                focus_text=focus_text,
+                image_data_urls=reply_images,
+                vision_detail="low",
+                context_blocks=[memory_block] if memory_block else None,
+            )
+            vision_primary = "openai"
+        else:
+            vision_messages = None
+            vision_primary = None
+
         try:
             max_length_conf = app_conf.get("max_length")
             max_tokens = None
@@ -180,13 +235,22 @@ async def collect_messages(
                 if max_len_value and max_len_value > 0:
                     max_tokens = max_len_value
 
-            raw_reply = await llm_generate(
-                messages_for_llm,
-                max_tokens=max_tokens,
-                temperature=resolve_temperature(conf),
-                top_p=float(conf.get("top_p", 0.9) or 0.9),
-                provider=provider,
-            )
+            if vision_messages is not None and vision_primary is not None:
+                raw_reply = await generate_with_fallback(
+                    vision_messages,
+                    max_tokens=max_tokens,
+                    temperature=resolve_temperature(conf),
+                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    primary=vision_primary,
+                )
+            else:
+                raw_reply = await generate_with_fallback(
+                    messages_for_llm,
+                    max_tokens=max_tokens,
+                    temperature=resolve_temperature(conf),
+                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    primary=provider,
+                )
         except LLMRateLimitError as exc:
             wait_hint = ""
             if exc.retry_after and exc.retry_after > 0:
@@ -395,29 +459,16 @@ async def _handle_photo_reply(
     max_turns = int(app_conf.get("context_max_turns", 100) or 100)
     prompt_token_limit = _resolve_prompt_token_limit(app_conf)
     turns = await context.get_recent_turns(session, message.chat.id, max_turns)
-    messages_for_llm = build_messages(
-        system_prompt,
-        turns,
-        max_turns,
-        prompt_token_limit,
+    messages_for_llm = build_vision_messages(
+        system_prompt=system_prompt,
+        turns=turns,
+        max_turns=max_turns,
+        prompt_token_limit=prompt_token_limit,
+        focus_text=focus_text,
+        image_data_urls=[image_data_url],
+        vision_detail=_resolve_vision_detail(message),
         context_blocks=[memory_block] if memory_block else None,
     )
-    messages_for_llm[-1] = {
-        "role": "user",
-        "content": [
-            {
-                "type": "text",
-                "text": _build_photo_prompt_text(focus_text),
-            },
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": image_data_url,
-                    "detail": _resolve_vision_detail(message),
-                },
-            },
-        ],
-    }
 
     try:
         max_length_conf = app_conf.get("max_length")
@@ -430,12 +481,12 @@ async def _handle_photo_reply(
             if max_len_value and max_len_value > 0:
                 max_tokens = max_len_value
 
-        raw_reply = await llm_generate(
+        raw_reply = await generate_with_fallback(
             messages_for_llm,
             max_tokens=max_tokens,
             temperature=resolve_temperature(conf),
             top_p=float(conf.get("top_p", 0.9) or 0.9),
-            provider="openai",
+            primary="openai",
         )
     except LLMRateLimitError as exc:
         wait_hint = ""
@@ -497,28 +548,7 @@ async def _download_photo_as_data_url(bot: Bot, message: types.Message) -> str |
     if photo is None:
         logger.warning("Photo message has no downloadable photo sizes message=%s", message.message_id)
         return None
-
-    telegram_file = await bot.get_file(photo.file_id)
-    if not telegram_file.file_path:
-        logger.warning("Telegram returned empty file_path for message=%s file_id=%s", message.message_id, photo.file_id)
-        return None
-
-    buffer = io.BytesIO()
-    await bot.download_file(telegram_file.file_path, destination=buffer)
-    payload = buffer.getvalue()
-    if not payload:
-        logger.warning(
-            "Downloaded empty image payload for message=%s file_path=%s",
-            message.message_id,
-            telegram_file.file_path,
-        )
-        return None
-
-    mime_type, _encoding = mimetypes.guess_type(telegram_file.file_path)
-    if not mime_type:
-        mime_type = "image/jpeg"
-    encoded = base64.b64encode(payload).decode("ascii")
-    return f"data:{mime_type};base64,{encoded}"
+    return await download_file_id_as_data_url(bot, photo.file_id)
 
 
 def _pick_photo_size(message: types.Message) -> types.PhotoSize | None:
@@ -603,29 +633,29 @@ def _is_bot_mentioned(
     return f"@{bot_username}" in text.lower()
 
 
-def _is_reply(message: types.Message, bot_id: int, bot_username: str | None) -> bool:
-    if not message.reply_to_message:
-        return False
-    replied = message.reply_to_message
+def _is_reply_to_bot(replied: types.Message, bot_id: int, bot_username: str | None) -> bool:
     if replied.from_user and replied.from_user.id == bot_id:
         return True
     if replied.from_user and bot_username and replied.from_user.username:
         if replied.from_user.username.lower() == bot_username.lower():
             return True
-    # Messages sent via inline mode reference the bot in via_bot
     if replied.via_bot and replied.via_bot.id == bot_id:
         return True
     if replied.via_bot and bot_username and replied.via_bot.username:
         if replied.via_bot.username.lower() == bot_username.lower():
             return True
-    # Some chats can substitute sender_chat instead of from_user (e.g. topics or protected content)
     if replied.sender_chat and replied.sender_chat.id == bot_id:
         return True
     if replied.sender_chat and bot_username and replied.sender_chat.username:
         if replied.sender_chat.username.lower() == bot_username.lower():
             return True
     return False
-    return False
+
+
+def _is_reply(message: types.Message, bot_id: int, bot_username: str | None) -> bool:
+    if not message.reply_to_message:
+        return False
+    return _is_reply_to_bot(message.reply_to_message, bot_id, bot_username)
 
 
 def _should_reply(is_mention: bool, is_reply: bool, chat_type: ChatType | str | None) -> bool:
