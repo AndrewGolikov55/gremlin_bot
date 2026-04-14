@@ -7,21 +7,22 @@ from datetime import datetime
 from html import escape
 from urllib.parse import urlencode
 
+from aiogram import Bot
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from aiogram import Bot
 from ..models.chat import Chat
-from ..models.message import Message
 from ..models.memory import RelationshipState, UserMemoryProfile
+from ..models.message import Message
 from ..models.persona import StylePrompt
 from ..models.user import User
-from ..services.persona import StylePromptService, BASE_STYLE_DATA, DEFAULT_STYLE_KEY
-from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
+from ..services.llm.tts import OPENAI_TTS_VOICES
+from ..services.persona import BASE_STYLE_DATA, DEFAULT_STYLE_KEY, StylePromptService
 from ..services.roulette import RouletteService
+from ..services.settings import SettingsService
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 
@@ -314,6 +315,15 @@ def create_admin_router(
         voice_enabled: bool = Form(False),
         voice_max_seconds: int = Form(0),
         whisper_daily_limit: int = Form(0),
+        tts_enabled: bool = Form(False),
+        tts_reply_p: int = Form(5),
+        tts_voice_reply_p: int = Form(60),
+        tts_daily_limit: int = Form(0),
+        tts_voice_gopnik: str = Form("onyx"),
+        tts_voice_standup: str = Form("echo"),
+        tts_voice_boss: str = Form("onyx"),
+        tts_voice_zoomer: str = Form("nova"),
+        tts_voice_jarvis: str = Form("fable"),
         summary_daily_limit: int = Form(...),
         llm_daily_limit: int = Form(...),
         llm_provider: str = Form(...),
@@ -344,6 +354,18 @@ def create_admin_router(
         react_cooldown_min = max(0, min(240, react_cooldown_min))
         voice_max_seconds = max(0, min(3600, voice_max_seconds))
         whisper_daily_limit = max(0, min(1000, whisper_daily_limit))
+        tts_reply_p = max(0, min(100, tts_reply_p))
+        tts_voice_reply_p = max(0, min(100, tts_voice_reply_p))
+        tts_daily_limit = max(0, min(1000, tts_daily_limit))
+
+        def _valid_voice(value: str, default: str) -> str:
+            return value if value in OPENAI_TTS_VOICES else default
+
+        tts_voice_gopnik = _valid_voice(tts_voice_gopnik, "onyx")
+        tts_voice_standup = _valid_voice(tts_voice_standup, "echo")
+        tts_voice_boss = _valid_voice(tts_voice_boss, "onyx")
+        tts_voice_zoomer = _valid_voice(tts_voice_zoomer, "nova")
+        tts_voice_jarvis = _valid_voice(tts_voice_jarvis, "fable")
         summary_daily_limit = max(0, min(20, summary_daily_limit))
         llm_daily_limit = max(0, min(5000, llm_daily_limit))
         memory_top_k = max(1, min(16, memory_top_k))
@@ -384,6 +406,15 @@ def create_admin_router(
             await app_config.set("voice_enabled", bool(voice_enabled))
             await app_config.set("voice_max_seconds", voice_max_seconds)
             await app_config.set("whisper_daily_limit", whisper_daily_limit)
+            await app_config.set("tts_enabled", bool(tts_enabled))
+            await app_config.set("tts_reply_p", tts_reply_p)
+            await app_config.set("tts_voice_reply_p", tts_voice_reply_p)
+            await app_config.set("tts_daily_limit", tts_daily_limit)
+            await app_config.set("tts_voice_gopnik", tts_voice_gopnik)
+            await app_config.set("tts_voice_standup", tts_voice_standup)
+            await app_config.set("tts_voice_boss", tts_voice_boss)
+            await app_config.set("tts_voice_zoomer", tts_voice_zoomer)
+            await app_config.set("tts_voice_jarvis", tts_voice_jarvis)
             await app_config.set("summary_daily_limit", summary_daily_limit)
             await app_config.set("llm_daily_limit", llm_daily_limit)
             if provider_value in {"openrouter", "openai"}:
@@ -693,6 +724,9 @@ def _render_chat_settings_body(
         f"<tr><td>Голосовые</td><td>{('включены' if app_conf.get('voice_enabled', True) else 'выключены')}, "
         f"длина ≤ {escape(str(app_conf.get('voice_max_seconds', 0)))}с (0 = без лимита), "
         f"в сутки {escape(str(app_conf.get('whisper_daily_limit', 0)))} (0 = без лимита)</td></tr>"
+        f"<tr><td>Голосовые ответы</td><td>{('включены' if app_conf.get('tts_enabled', True) else 'выключены')}, "
+        f"{escape(str(app_conf.get('tts_reply_p', 5)))}% шанс ({escape(str(app_conf.get('tts_voice_reply_p', 60)))}% на voice-reply), "
+        f"лимит в сутки {escape(str(app_conf.get('tts_daily_limit', 0)))} (0 = без лимита)</td></tr>"
         f"<tr><td>Память по участникам чата</td><td>{'включена' if app_conf.get('user_memory_enabled', True) else 'выключена'}; top-k {escape(str(app_conf.get('memory_top_k', 6)))}</td></tr>"
         f"<tr><td>Звание рулетки</td><td>{escape(title_label)}</td></tr>"
         f"<tr><td>Режим звания</td><td>{escape(title_mode)}</td></tr>"
@@ -1065,6 +1099,15 @@ def _render_app_config_body(
     voice_enabled = bool(conf.get("voice_enabled", True))
     voice_max_seconds = int(conf.get("voice_max_seconds", 0) or 0)
     whisper_daily_limit = int(conf.get("whisper_daily_limit", 0) or 0)
+    tts_enabled = bool(conf.get("tts_enabled", True))
+    tts_reply_p = int(conf.get("tts_reply_p", 5) or 5)
+    tts_voice_reply_p = int(conf.get("tts_voice_reply_p", 60) or 60)
+    tts_daily_limit = int(conf.get("tts_daily_limit", 0) or 0)
+    tts_voice_gopnik = str(conf.get("tts_voice_gopnik", "onyx"))
+    tts_voice_standup = str(conf.get("tts_voice_standup", "echo"))
+    tts_voice_boss = str(conf.get("tts_voice_boss", "onyx"))
+    tts_voice_zoomer = str(conf.get("tts_voice_zoomer", "nova"))
+    tts_voice_jarvis = str(conf.get("tts_voice_jarvis", "fable"))
     summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
     llm_provider = str(conf.get("llm_provider", "openrouter") or "openrouter")
@@ -1092,6 +1135,13 @@ def _render_app_config_body(
         f"<option value='{escape(value)}'{' selected' if value == llm_provider else ''}>{escape(label)}</option>"
         for value, label in provider_options
     )
+
+    def _voice_options(selected: str) -> str:
+        parts = []
+        for voice in OPENAI_TTS_VOICES:
+            sel = " selected" if voice == selected else ""
+            parts.append(f"<option value='{escape(voice)}'{sel}>{escape(voice)}</option>")
+        return "".join(parts)
 
     return (
         "<div class='container py-4'>"
@@ -1159,6 +1209,54 @@ def _render_app_config_body(
         "<label class='form-label'>Лимит распознаваний на чат в сутки (0 = без лимита)</label>"
         f"<input class='form-control' type='number' name='whisper_daily_limit' min='0' max='1000' value='{whisper_daily_limit}'>"
         "<div class='form-text'>Когда счётчик достигнут — бот в этом чате до полуночи перестаёт распознавать голосовые.</div>"
+        "</div>"
+        "<div class='col-12'><h5 class='mt-4 mb-0'>Голосовые ответы</h5></div>"
+        "<div class='col-md-6 mb-3'>"
+        "<div class='form-check'>"
+        f"<input class='form-check-input' type='checkbox' name='tts_enabled' value='1'{' checked' if tts_enabled else ''}>"
+        "<label class='form-check-label'>Разрешить голосовые ответы бота</label>"
+        "</div>"
+        "<div class='form-text'>Главный kill-switch. Если выключить, бот никогда не отвечает голосом.</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Шанс голосового ответа (%)</label>"
+        f"<input class='form-control' type='number' name='tts_reply_p' min='0' max='100' value='{tts_reply_p}'>"
+        "<div class='form-text'>Обычный случай. Маленькое значение — редкий «сюрприз».</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Шанс голосового когда отвечают голосовым (%)</label>"
+        f"<input class='form-control' type='number' name='tts_voice_reply_p' min='0' max='100' value='{tts_voice_reply_p}'>"
+        "<div class='form-text'>Буст когда пользователь прислал голосовое в reply к сообщению бота — разговорный обмен.</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Лимит голосовых ответов в сутки на чат (0 = без лимита)</label>"
+        f"<input class='form-control' type='number' name='tts_daily_limit' min='0' max='1000' value='{tts_daily_limit}'>"
+        "<div class='form-text'>Предохранитель от неожиданных расходов OpenAI TTS.</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Голос для «гопник»</label>"
+        f"<select class='form-select' name='tts_voice_gopnik'>{_voice_options(tts_voice_gopnik)}</select>"
+        "<div class='form-text'>OpenAI voice для персоны «гопник».</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Голос для «standup»</label>"
+        f"<select class='form-select' name='tts_voice_standup'>{_voice_options(tts_voice_standup)}</select>"
+        "<div class='form-text'>OpenAI voice для персоны «standup».</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Голос для «boss»</label>"
+        f"<select class='form-select' name='tts_voice_boss'>{_voice_options(tts_voice_boss)}</select>"
+        "<div class='form-text'>OpenAI voice для персоны «boss».</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Голос для «zoomer»</label>"
+        f"<select class='form-select' name='tts_voice_zoomer'>{_voice_options(tts_voice_zoomer)}</select>"
+        "<div class='form-text'>OpenAI voice для персоны «zoomer».</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Голос для «jarvis»</label>"
+        f"<select class='form-select' name='tts_voice_jarvis'>{_voice_options(tts_voice_jarvis)}</select>"
+        "<div class='form-text'>OpenAI voice для персоны «jarvis».</div>"
         "</div>"
         "<div class='col-md-6'>"
         "<label class='form-label'>Сводки в сутки (0 = без ограничения)</label>"
