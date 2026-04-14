@@ -2,11 +2,10 @@
 
 Owns the "should the bot act now?" decision that is currently scattered
 across :mod:`app.services.interjector` and :mod:`app.services.reactions`.
-This module defines the skeleton: enums, the class shell with dependency
-injection, and :meth:`SpontaneityPolicy.mark_acted` — the write path that
-records cooldown timestamps in Redis. The probability / cooldown read
-paths (:meth:`can_interject`, :meth:`can_react`) will be filled in by
-follow-up tasks.
+Exposes :meth:`SpontaneityPolicy.mark_acted` to record cooldown
+timestamps in Redis, plus :meth:`can_interject` / :meth:`can_react` that
+combine quiet hours, cooldowns, and a dice roll to answer "can the bot
+act now?".
 """
 
 from __future__ import annotations
@@ -150,7 +149,27 @@ class SpontaneityPolicy:
         return self._roll_dice(probability)
 
     async def can_react(self, chat_id: int) -> bool:
-        raise NotImplementedError
+        """Decide whether the bot may add a reaction now.
+
+        Uses the "short" cooldown timer, independent of the long one
+        shared by messages — a recent interject must not block a
+        reaction. Vetoes in order: quiet hours, short cooldown, dice.
+        """
+
+        app_conf = await self._app_config.get_all()
+        chat_conf = await self._settings.get_all(chat_id)
+
+        if self._is_quiet(chat_conf):
+            return False
+
+        cooldown_min = int(
+            app_conf.get("react_cooldown_min", _DEFAULT_REACT_COOLDOWN_MIN) or 0
+        )
+        if await self._short_cooldown_active(chat_id, cooldown_min):
+            return False
+
+        probability = int(app_conf.get("reaction_p", _DEFAULT_REACTION_P) or 0)
+        return self._roll_dice(probability)
 
     def _roll_dice(self, probability_percent: int) -> bool:
         if probability_percent <= 0:
@@ -160,9 +179,17 @@ class SpontaneityPolicy:
         return self._rng() * 100 < probability_percent
 
     async def _long_cooldown_active(self, chat_id: int, cooldown_min: int) -> bool:
+        return await self._cooldown_active(_LONG_KEY, chat_id, cooldown_min)
+
+    async def _short_cooldown_active(self, chat_id: int, cooldown_min: int) -> bool:
+        return await self._cooldown_active(_SHORT_KEY, chat_id, cooldown_min)
+
+    async def _cooldown_active(
+        self, key_template: str, chat_id: int, cooldown_min: int
+    ) -> bool:
         if cooldown_min <= 0:
             return False
-        raw = await self._redis.get(_LONG_KEY.format(chat_id=chat_id))
+        raw = await self._redis.get(key_template.format(chat_id=chat_id))
         if raw is None:
             return False
         try:

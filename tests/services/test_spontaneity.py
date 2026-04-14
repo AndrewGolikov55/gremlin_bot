@@ -133,3 +133,51 @@ async def test_can_interject_revive_respects_long_cooldown() -> None:
     )
     policy._redis.get = AsyncMock(return_value=b"1000000.0")  # type: ignore[method-assign]
     assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.REVIVE) is False
+
+
+@pytest.mark.asyncio
+async def test_can_react_false_if_short_cooldown_active() -> None:
+    policy = _make_policy(
+        now=1_000_100.0,
+        app_conf={"reaction_p": 100, "react_cooldown_min": 10},
+    )
+    policy._redis.get = AsyncMock(return_value=b"1000000.0")  # type: ignore[method-assign]
+    assert await policy.can_react(chat_id=-100) is False
+
+
+@pytest.mark.asyncio
+async def test_can_react_true_after_short_cooldown_expired() -> None:
+    policy = _make_policy(
+        now=1_000_000.0 + 10 * 60 + 1,
+        rng=0.01,
+        app_conf={"reaction_p": 100, "react_cooldown_min": 10},
+    )
+    policy._redis.get = AsyncMock(return_value=b"1000000.0")  # type: ignore[method-assign]
+    assert await policy.can_react(chat_id=-100) is True
+
+
+@pytest.mark.asyncio
+async def test_can_react_independent_of_long_timer() -> None:
+    # Long timer active (recent interject), but short is not: react must still be allowed
+    policy = _make_policy(
+        rng=0.01,
+        app_conf={"reaction_p": 100, "react_cooldown_min": 10, "interject_cooldown_min": 30},
+    )
+    # Only `spontaneity:short:-100` is queried; `spontaneity:long:-100` shouldn't block
+    policy._redis.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    assert await policy.can_react(chat_id=-100) is True
+
+
+@pytest.mark.asyncio
+async def test_can_react_false_in_quiet_hours() -> None:
+    policy = _make_policy(
+        app_conf={"reaction_p": 100},
+        chat_conf={"quiet_hours": "00:00-23:59"},
+    )
+    assert await policy.can_react(chat_id=-100) is False
+
+
+@pytest.mark.asyncio
+async def test_can_react_false_when_dice_fails() -> None:
+    policy = _make_policy(rng=0.99, app_conf={"reaction_p": 5})
+    assert await policy.can_react(chat_id=-100) is False
