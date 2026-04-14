@@ -6,6 +6,7 @@ import pytest
 
 from app.services.spontaneity import (
     ActionKind,
+    InterjectTrigger,
     SpontaneityPolicy,
 )
 
@@ -67,3 +68,68 @@ async def test_mark_acted_reaction_sets_short_timer() -> None:
         "1234567.0",
         ex=86400,
     )
+
+
+@pytest.mark.asyncio
+async def test_can_interject_false_if_long_cooldown_active() -> None:
+    policy = _make_policy(
+        now=1_000_100.0,
+        app_conf={"interject_p": 100, "interject_cooldown_min": 30},
+    )
+    policy._redis.get = AsyncMock(return_value=b"1000000.0")  # type: ignore[method-assign]
+    assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.NEW_MESSAGE) is False
+
+
+@pytest.mark.asyncio
+async def test_can_interject_true_after_long_cooldown_expired() -> None:
+    policy = _make_policy(
+        now=1_000_000.0 + 30 * 60 + 1,
+        rng=0.01,  # dice passes
+        app_conf={"interject_p": 100, "interject_cooldown_min": 30},
+    )
+    policy._redis.get = AsyncMock(return_value=b"1000000.0")  # type: ignore[method-assign]
+    assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.NEW_MESSAGE) is True
+
+
+@pytest.mark.asyncio
+async def test_can_interject_false_in_quiet_hours() -> None:
+    policy = _make_policy(
+        app_conf={"interject_p": 100},
+        chat_conf={"quiet_hours": "00:00-23:59"},  # always quiet
+    )
+    assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.NEW_MESSAGE) is False
+
+
+@pytest.mark.asyncio
+async def test_can_interject_false_when_dice_fails() -> None:
+    policy = _make_policy(
+        rng=0.99,  # dice fails
+        app_conf={"interject_p": 5},
+    )
+    assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.NEW_MESSAGE) is False
+
+
+@pytest.mark.asyncio
+async def test_can_interject_new_chat_no_redis_key_passes_dice() -> None:
+    policy = _make_policy(rng=0.01, app_conf={"interject_p": 5})
+    policy._redis.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.NEW_MESSAGE) is True
+
+
+@pytest.mark.asyncio
+async def test_can_interject_revive_uses_revive_p_not_interject_p() -> None:
+    policy = _make_policy(
+        rng=0.5,
+        app_conf={"interject_p": 0, "revive_p": 100},
+    )
+    assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.REVIVE) is True
+
+
+@pytest.mark.asyncio
+async def test_can_interject_revive_respects_long_cooldown() -> None:
+    policy = _make_policy(
+        now=1_000_100.0,
+        app_conf={"interject_cooldown_min": 30, "revive_p": 100},
+    )
+    policy._redis.get = AsyncMock(return_value=b"1000000.0")  # type: ignore[method-assign]
+    assert await policy.can_interject(chat_id=-100, trigger=InterjectTrigger.REVIVE) is False

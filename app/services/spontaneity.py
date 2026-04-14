@@ -14,8 +14,10 @@ from __future__ import annotations
 import logging
 import random
 import time
+from datetime import datetime
+from datetime import time as dtime
 from enum import Enum
-from typing import Callable
+from typing import Any, Callable
 
 from redis.asyncio import Redis
 
@@ -35,6 +37,33 @@ _DEFAULT_REVIVE_P = 50
 _DEFAULT_REACTION_P = 5
 _DEFAULT_INTERJECT_COOLDOWN_MIN = 30
 _DEFAULT_REACT_COOLDOWN_MIN = 10
+
+
+def _parse_quiet_hours(raw: object) -> tuple[dtime, dtime] | None:
+    """Parse a ``"HH:MM-HH:MM"`` string into a pair of :class:`datetime.time`."""
+
+    if not isinstance(raw, str) or "-" not in raw:
+        return None
+    try:
+        start_s, end_s = raw.split("-", 1)
+        start = datetime.strptime(start_s.strip(), "%H:%M").time()
+        end = datetime.strptime(end_s.strip(), "%H:%M").time()
+        return start, end
+    except (ValueError, AttributeError):
+        return None
+
+
+def _is_quiet_now(window: tuple[dtime, dtime] | None, now: datetime) -> bool:
+    """Return ``True`` if ``now``'s wall-clock time falls inside ``window``."""
+
+    if window is None:
+        return False
+    start, end = window
+    current = now.time()
+    if start <= end:
+        return start <= current <= end
+    # Window crosses midnight (e.g. 22:00-06:00).
+    return current >= start or current <= end
 
 
 class InterjectTrigger(Enum):
@@ -94,7 +123,54 @@ class SpontaneityPolicy:
         await self._redis.set(key, str(now), ex=_KEY_TTL_SEC)
 
     async def can_interject(self, chat_id: int, *, trigger: InterjectTrigger) -> bool:
-        raise NotImplementedError
+        """Decide whether the bot may send an unsolicited message now.
+
+        Vetoes in this order: quiet hours (per-chat), the "long" cooldown
+        shared with direct replies, then a dice roll against either
+        ``interject_p`` or ``revive_p`` depending on the trigger.
+        """
+
+        app_conf = await self._app_config.get_all()
+        chat_conf = await self._settings.get_all(chat_id)
+
+        if self._is_quiet(chat_conf):
+            return False
+
+        cooldown_min = int(
+            app_conf.get("interject_cooldown_min", _DEFAULT_INTERJECT_COOLDOWN_MIN) or 0
+        )
+        if await self._long_cooldown_active(chat_id, cooldown_min):
+            return False
+
+        if trigger is InterjectTrigger.REVIVE:
+            probability = int(app_conf.get("revive_p", _DEFAULT_REVIVE_P) or 0)
+        else:
+            probability = int(app_conf.get("interject_p", _DEFAULT_INTERJECT_P) or 0)
+
+        return self._roll_dice(probability)
 
     async def can_react(self, chat_id: int) -> bool:
         raise NotImplementedError
+
+    def _roll_dice(self, probability_percent: int) -> bool:
+        if probability_percent <= 0:
+            return False
+        if probability_percent >= 100:
+            return True
+        return self._rng() * 100 < probability_percent
+
+    async def _long_cooldown_active(self, chat_id: int, cooldown_min: int) -> bool:
+        if cooldown_min <= 0:
+            return False
+        raw = await self._redis.get(_LONG_KEY.format(chat_id=chat_id))
+        if raw is None:
+            return False
+        try:
+            last = float(raw.decode() if isinstance(raw, (bytes, bytearray)) else raw)
+        except (ValueError, AttributeError):
+            return False
+        return (self._clock() - last) < cooldown_min * 60
+
+    def _is_quiet(self, chat_conf: dict[str, Any]) -> bool:
+        window = _parse_quiet_hours(chat_conf.get("quiet_hours"))
+        return _is_quiet_now(window, datetime.now())
