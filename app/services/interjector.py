@@ -36,6 +36,7 @@ from ..services.message_history import persist_telegram_message
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
+from ..services.spontaneity import SpontaneityPolicy
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
@@ -59,6 +60,7 @@ class InterjectorService:
         personas: StylePromptService,
         usage_limits: UsageLimiter,
         memory: UserMemoryService,
+        policy: SpontaneityPolicy,
     ) -> None:
         self.bot = bot
         self.settings = settings
@@ -69,6 +71,7 @@ class InterjectorService:
         self.personas = personas
         self.usage_limits = usage_limits
         self.memory = memory
+        self.policy = policy
 
     async def generate_spontaneous_reply(
         self,

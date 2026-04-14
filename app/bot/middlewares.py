@@ -11,6 +11,7 @@ from ..services.persona import StylePromptService
 from ..services.app_config import AppConfigService
 from ..services.reactions import ReactionService
 from ..services.roulette import RouletteService
+from ..services.spontaneity import SpontaneityPolicy
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 
@@ -42,6 +43,7 @@ class ServicesMiddleware(BaseMiddleware):
         roulette: RouletteService,
         usage_limits: UsageLimiter,
         memory: UserMemoryService,
+        policy: SpontaneityPolicy,
     ):
         self.settings = settings
         self.context = context
@@ -52,6 +54,7 @@ class ServicesMiddleware(BaseMiddleware):
         self.roulette = roulette
         self.usage_limits = usage_limits
         self.memory = memory
+        self.policy = policy
 
     async def __call__(
         self,
@@ -68,4 +71,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["roulette"] = self.roulette
         data["usage_limits"] = self.usage_limits
         data["memory"] = self.memory
+        data["policy"] = self.policy
         return await handler(event, data)
