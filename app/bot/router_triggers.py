@@ -610,10 +610,6 @@ async def _handle_voice_message(
     chat_id = message.chat.id
     app_conf = await app_config.get_all()
 
-    if not bool(app_conf.get("voice_enabled", True)):
-        await message.answer(_unsupported_media_text(message), parse_mode=None)
-        return
-
     voice_obj = message.voice or message.video_note
     if voice_obj is None:
         return
@@ -630,6 +626,12 @@ async def _handle_voice_message(
     is_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
     is_reply_to_bot = _is_reply(message, bot_user.id, bot_user.username)
     is_addressed = _should_reply(is_mention, is_reply_to_bot, message.chat.type)
+
+    if not bool(app_conf.get("voice_enabled", True)):
+        # Only answer when directly addressed; silently drop unaddressed voices in groups.
+        if is_addressed:
+            await message.answer(_unsupported_media_text(message), parse_mode=None)
+        return
 
     max_seconds = int(app_conf.get("voice_max_seconds", 0) or 0)
     whisper_limit = int(app_conf.get("whisper_daily_limit", 0) or 0)

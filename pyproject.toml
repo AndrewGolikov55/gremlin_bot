@@ -77,7 +77,7 @@ module = [
     "app.services.network_monitor",
     "app.services.moderation",
     "app.services.message_history",
-    "app.services.llm.*",
+    "app.services.llm.client",
 ]
 follow_imports = "silent"
 ignore_errors = true
