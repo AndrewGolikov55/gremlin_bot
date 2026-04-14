@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from app.services.spontaneity import (
     ActionKind,
-    InterjectTrigger,
     SpontaneityPolicy,
 )
 
@@ -16,7 +16,7 @@ def _make_policy(
     rng: float = 0.5,
     app_conf: dict | None = None,
     chat_conf: dict | None = None,
-):
+) -> SpontaneityPolicy:
     redis = AsyncMock()
     redis.get = AsyncMock(return_value=None)
     redis.set = AsyncMock(return_value=True)
@@ -40,7 +40,7 @@ def _make_policy(
 async def test_mark_acted_interject_sets_long_timer() -> None:
     policy = _make_policy(now=1_234_567.0)
     await policy.mark_acted(chat_id=-100, action=ActionKind.INTERJECT)
-    policy._redis.set.assert_awaited_once_with(
+    policy._redis.set.assert_awaited_once_with(  # type: ignore[attr-defined]
         "spontaneity:long:-100",
         "1234567.0",
         ex=86400,
@@ -51,7 +51,7 @@ async def test_mark_acted_interject_sets_long_timer() -> None:
 async def test_mark_acted_direct_reply_sets_long_timer() -> None:
     policy = _make_policy(now=1_234_567.0)
     await policy.mark_acted(chat_id=-100, action=ActionKind.DIRECT_REPLY)
-    policy._redis.set.assert_awaited_once_with(
+    policy._redis.set.assert_awaited_once_with(  # type: ignore[attr-defined]
         "spontaneity:long:-100",
         "1234567.0",
         ex=86400,
@@ -62,7 +62,7 @@ async def test_mark_acted_direct_reply_sets_long_timer() -> None:
 async def test_mark_acted_reaction_sets_short_timer() -> None:
     policy = _make_policy(now=1_234_567.0)
     await policy.mark_acted(chat_id=-100, action=ActionKind.REACTION)
-    policy._redis.set.assert_awaited_once_with(
+    policy._redis.set.assert_awaited_once_with(  # type: ignore[attr-defined]
         "spontaneity:short:-100",
         "1234567.0",
         ex=86400,
