@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from typing import Sequence
 
 from aiogram import Bot
@@ -122,31 +121,16 @@ class ReactionService:
         self.usage_limits = usage_limits
         self.memory = memory
 
-    async def maybe_react_to_message(
+    async def generate_reaction(
         self,
         message: TgMessage,
         conf: dict[str, object],
         app_conf: dict[str, object],
         turns: Sequence[ChatTurn],
-    ) -> None:
-        probability = int(app_conf.get("reaction_p", 0) or 0)
-        if probability <= 0:
-            return
-
+    ) -> bool:
         text = (message.text or message.caption or "").strip()
         if not text or not message.from_user or message.from_user.is_bot:
-            return
-
-        roll = random.uniform(0, 100)
-        if roll > probability:
-            logger.debug(
-                "Skip reaction chat=%s message=%s roll=%.2f p=%s",
-                message.chat.id,
-                message.message_id,
-                roll,
-                probability,
-            )
-            return
+            return False
 
         if not await self._consume_llm_budget(message.chat.id, app_conf):
             logger.debug(
@@ -154,7 +138,7 @@ class ReactionService:
                 message.chat.id,
                 message.message_id,
             )
-            return
+            return False
 
         memory_block = None
         if bool(conf.get("personalization_enabled", True)):
@@ -180,7 +164,7 @@ class ReactionService:
             app_conf=app_conf,
         )
         if not emoji:
-            return
+            return False
 
         try:
             await self.bot(
@@ -197,8 +181,10 @@ class ReactionService:
                 message.message_id,
                 emoji,
             )
+            return True
         except TelegramForbiddenError:
             logger.debug("No permission to set reaction chat=%s", message.chat.id)
+            return False
         except TelegramBadRequest as exc:
             logger.debug(
                 "Failed to set reaction chat=%s message=%s emoji=%s: %s",
@@ -207,12 +193,14 @@ class ReactionService:
                 emoji,
                 exc,
             )
+            return False
         except Exception:
             logger.exception(
                 "Unexpected error while setting reaction chat=%s message=%s",
                 message.chat.id,
                 message.message_id,
             )
+            return False
 
     async def _generate_reaction_emoji(
         self,
