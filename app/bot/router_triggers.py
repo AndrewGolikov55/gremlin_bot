@@ -44,6 +44,7 @@ from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 from .constants import START_PRIVATE_RESPONSE
 from .typing_indicator import keep_typing
+from .voice_reply import send_reply_maybe_voice
 
 
 logger = logging.getLogger(__name__)
@@ -293,7 +294,18 @@ async def collect_messages(
             if not reply_text.strip():
                 return
 
-            sent_reply = await message.reply(reply_text.strip())
+            sent_reply = await send_reply_maybe_voice(
+                bot=bot,
+                message=message,
+                text=reply_text.strip(),
+                conf=conf,
+                app_conf=app_conf,
+                policy=policy,
+                usage_limits=usage_limits,
+                incoming_is_voice_reply_to_bot=False,
+            )
+        if sent_reply is None:
+            return
         await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.DIRECT_REPLY)
         try:
             await store_telegram_message(
@@ -562,7 +574,18 @@ async def _handle_photo_reply(
         if not reply_text.strip():
             return
 
-        sent_reply = await message.reply(reply_text.strip())
+        sent_reply = await send_reply_maybe_voice(
+            bot=bot,
+            message=message,
+            text=reply_text.strip(),
+            conf=conf,
+            app_conf=app_conf,
+            policy=policy,
+            usage_limits=usage_limits,
+            incoming_is_voice_reply_to_bot=False,
+        )
+    if sent_reply is None:
+        return
     await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.DIRECT_REPLY)
     try:
         await store_telegram_message(
@@ -720,6 +743,7 @@ async def _handle_voice_message(
                 personas=personas,
                 memory=memory,
                 usage_limits=usage_limits,
+                policy=policy,
                 conf=conf,
                 app_conf=app_conf,
             )
@@ -900,6 +924,7 @@ async def _generate_voice_direct_reply(
     personas: StylePromptService,
     memory: UserMemoryService,
     usage_limits: UsageLimiter,
+    policy: SpontaneityPolicy,
     conf: dict[str, object],
     app_conf: dict[str, object],
 ) -> bool:
@@ -1039,10 +1064,30 @@ async def _generate_voice_direct_reply(
     if not reply_text:
         return False
 
+    bot_user = await bot.get_me()
+    incoming_is_voice_reply_to_bot = (
+        (message.voice is not None or message.video_note is not None)
+        and message.reply_to_message is not None
+        and message.reply_to_message.from_user is not None
+        and message.reply_to_message.from_user.id == bot_user.id
+    )
+
     try:
-        sent_reply = await message.reply(reply_text)
+        sent_reply = await send_reply_maybe_voice(
+            bot=bot,
+            message=message,
+            text=reply_text,
+            conf=conf,
+            app_conf=app_conf,
+            policy=policy,
+            usage_limits=usage_limits,
+            incoming_is_voice_reply_to_bot=incoming_is_voice_reply_to_bot,
+        )
     except Exception:
         logger.exception("Failed to send voice direct reply chat=%s", chat_id)
+        return False
+
+    if sent_reply is None:
         return False
 
     try:

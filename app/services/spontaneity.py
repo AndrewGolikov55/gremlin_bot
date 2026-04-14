@@ -36,6 +36,8 @@ _DEFAULT_REVIVE_P = 50
 _DEFAULT_REACTION_P = 5
 _DEFAULT_INTERJECT_COOLDOWN_MIN = 30
 _DEFAULT_REACT_COOLDOWN_MIN = 10
+_DEFAULT_TTS_REPLY_P = 5
+_DEFAULT_TTS_VOICE_REPLY_P = 60
 
 
 def _parse_quiet_hours(raw: object) -> tuple[dtime, dtime] | None:
@@ -169,6 +171,32 @@ class SpontaneityPolicy:
             return False
 
         probability = int(app_conf.get("reaction_p", _DEFAULT_REACTION_P) or 0)
+        return self._roll_dice(probability)
+
+    async def should_reply_with_voice(
+        self, chat_id: int, *, incoming_is_voice_reply_to_bot: bool,
+    ) -> bool:
+        """Roll dice for 'reply as voice vs text'.
+
+        Quiet hours override. Boosted probability when the incoming message
+        is a voice reply to the bot's own message — that's a 'voice conversation'
+        signal and deserves a higher chance of voice response.
+        """
+        app_conf = await self._app_config.get_all()
+        chat_conf = await self._settings.get_all(chat_id)
+
+        if self._is_quiet(chat_conf):
+            return False
+
+        if incoming_is_voice_reply_to_bot:
+            probability = int(
+                app_conf.get("tts_voice_reply_p", _DEFAULT_TTS_VOICE_REPLY_P) or 0
+            )
+        else:
+            probability = int(
+                app_conf.get("tts_reply_p", _DEFAULT_TTS_REPLY_P) or 0
+            )
+
         return self._roll_dice(probability)
 
     def _roll_dice(self, probability_percent: int) -> bool:

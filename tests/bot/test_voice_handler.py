@@ -103,6 +103,7 @@ def _build_deps(
     usage_limits.consume = AsyncMock(return_value=(consume_allowed, {"whisper": 1}, []))
     policy = MagicMock()
     policy.can_interject = AsyncMock(return_value=can_interject)
+    policy.should_reply_with_voice = AsyncMock(return_value=False)
     policy.mark_acted = AsyncMock(return_value=None)
     interjector = MagicMock()
     interjector.generate_spontaneous_reply = AsyncMock(return_value=True)
