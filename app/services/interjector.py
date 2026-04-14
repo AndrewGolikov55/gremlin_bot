@@ -183,7 +183,7 @@ class InterjectorService:
             return False
 
         conf = await self.settings.get_all(chat.id)
-        if not conf.get("revive_enabled", True):
+        if not conf.get("revive_enabled", False):
             return False
 
         hours = int(conf.get("revive_after_hours", 48) or 48)
