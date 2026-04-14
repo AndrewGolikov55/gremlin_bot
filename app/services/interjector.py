@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..bot.typing_indicator import keep_typing
 from ..models.chat import Chat
 from ..models.message import Message as DBMessage
 from ..services.context import (
@@ -111,29 +112,30 @@ class InterjectorService:
                     exclude_message_id=message.message_id,
                 )
 
-        generated = await self._generate_reply(
-            conf,
-            app_conf,
-            turns,
-            focus_text,
-            chat_id=message.chat.id,
-            context_blocks=[memory_block] if memory_block else None,
-            message_content_override=vision_content,
-            provider_override="openai" if vision_content else None,
-        )
-        if not generated:
-            return False
-        reply_text, sidecar = generated
-
-        try:
-            sent_reply = await self.bot.send_message(
-                message.chat.id,
-                reply_text,
-                reply_to_message_id=message.message_id,
+        async with keep_typing(self.bot, message.chat.id):
+            generated = await self._generate_reply(
+                conf,
+                app_conf,
+                turns,
+                focus_text,
+                chat_id=message.chat.id,
+                context_blocks=[memory_block] if memory_block else None,
+                message_content_override=vision_content,
+                provider_override="openai" if vision_content else None,
             )
-        except Exception:
-            logger.exception("Failed to send spontaneous reply to chat %s", message.chat.id)
-            return False
+            if not generated:
+                return False
+            reply_text, sidecar = generated
+
+            try:
+                sent_reply = await self.bot.send_message(
+                    message.chat.id,
+                    reply_text,
+                    reply_to_message_id=message.message_id,
+                )
+            except Exception:
+                logger.exception("Failed to send spontaneous reply to chat %s", message.chat.id)
+                return False
         try:
             await persist_telegram_message(
                 self.sessionmaker,
@@ -247,39 +249,40 @@ class InterjectorService:
             context_blocks=context_blocks,
         )
 
-        try:
-            raw_reply = await llm_generate(
-                messages,
-                temperature=resolve_temperature(conf),
-                top_p=float(conf.get("top_p", 0.9) or 0.9),
-                max_tokens=self._max_tokens_from_config(app_conf),
-                provider=provider,
-            )
-        except LLMRateLimitError as exc:
-            logger.warning(
-                "Rate limit during idle revival chat=%s retry_after=%s", chat.id, exc.retry_after
-            )
-            return False
-        except LLMError:
-            logger.exception("LLM request failed during idle revival chat=%s", chat.id)
-            return False
-
-        reply_text = apply_moderation(raw_reply)
-        if not reply_text.strip():
-            return False
-
-        try:
-            sent_reply = await self.bot.send_message(chat.id, reply_text.strip())
-        except (TelegramBadRequest, TelegramForbiddenError) as exc:
-            if self._is_missing_chat_error(exc):
-                await self._deactivate_chat(chat.id)
-                logger.warning("Disabling chat %s after Telegram rejection: %s", chat.id, exc)
+        async with keep_typing(self.bot, chat.id):
+            try:
+                raw_reply = await llm_generate(
+                    messages,
+                    temperature=resolve_temperature(conf),
+                    top_p=float(conf.get("top_p", 0.9) or 0.9),
+                    max_tokens=self._max_tokens_from_config(app_conf),
+                    provider=provider,
+                )
+            except LLMRateLimitError as exc:
+                logger.warning(
+                    "Rate limit during idle revival chat=%s retry_after=%s", chat.id, exc.retry_after
+                )
                 return False
-            logger.exception("Failed to send idle revival to chat %s", chat.id)
-            return False
-        except Exception:
-            logger.exception("Failed to send idle revival to chat %s", chat.id)
-            return False
+            except LLMError:
+                logger.exception("LLM request failed during idle revival chat=%s", chat.id)
+                return False
+
+            reply_text = apply_moderation(raw_reply)
+            if not reply_text.strip():
+                return False
+
+            try:
+                sent_reply = await self.bot.send_message(chat.id, reply_text.strip())
+            except (TelegramBadRequest, TelegramForbiddenError) as exc:
+                if self._is_missing_chat_error(exc):
+                    await self._deactivate_chat(chat.id)
+                    logger.warning("Disabling chat %s after Telegram rejection: %s", chat.id, exc)
+                    return False
+                logger.exception("Failed to send idle revival to chat %s", chat.id)
+                return False
+            except Exception:
+                logger.exception("Failed to send idle revival to chat %s", chat.id)
+                return False
         try:
             await persist_telegram_message(self.sessionmaker, sent_reply)
         except Exception:
