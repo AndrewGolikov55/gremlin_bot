@@ -36,7 +36,7 @@ from ..services.message_history import persist_telegram_message
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
-from ..services.spontaneity import SpontaneityPolicy
+from ..services.spontaneity import ActionKind, InterjectTrigger, SpontaneityPolicy
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
@@ -169,8 +169,12 @@ class InterjectorService:
                 if not self._is_group_chat(chat.id):
                     logger.debug("Skip idle revival for non-group chat %s", chat.id)
                     continue
+                if not await self.policy.can_interject(chat.id, trigger=InterjectTrigger.REVIVE):
+                    continue
                 try:
-                    await self.generate_revive(session, chat, now, app_conf)
+                    sent = await self.generate_revive(session, chat, now, app_conf)
+                    if sent:
+                        await self.policy.mark_acted(chat_id=chat.id, action=ActionKind.INTERJECT)
                 except Exception:
                     logger.exception("Idle revival failed for chat %s", chat.id)
 
