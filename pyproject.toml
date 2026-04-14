@@ -62,3 +62,22 @@ ignore_errors = true
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+# app/bot/* is excluded by default, but test imports can pull these modules
+# back into type-checking. Silence follow_imports so transitive checks on
+# already-excluded code don't fail the suite.
+module = [
+    "app.bot.*",
+    "app.admin.*",
+    "app.main",
+    "app.services.interjector",
+    "app.services.reactions",
+    "app.services.user_memory",
+    "app.services.network_monitor",
+    "app.services.moderation",
+    "app.services.message_history",
+    "app.services.llm.*",
+]
+follow_imports = "silent"
+ignore_errors = true

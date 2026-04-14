@@ -78,12 +78,18 @@ class InterjectorService:
         message: TgMessage,
         conf: dict[str, object],
         turns: list[ChatTurn],
+        *,
+        focus_text_override: str | None = None,
     ) -> bool:
         app_conf = await self.app_config.get_all()
 
-        focus_text = (message.text or message.caption or "").strip()
-        if not focus_text:
-            focus_text = None
+        if focus_text_override is not None:
+            stripped_override = focus_text_override.strip()
+            focus_text = stripped_override or None
+        else:
+            focus_text = (message.text or message.caption or "").strip()
+            if not focus_text:
+                focus_text = None
         vision_content = None
         if message.photo:
             image_data_url = await self._download_photo_as_data_url(message)

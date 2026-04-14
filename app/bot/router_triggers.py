@@ -1,12 +1,15 @@
 import logging
+import os
 import re
 from typing import Any
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ChatType, MessageEntityType
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..models.message import Message as DBMessage
 from ..services.context import (
     ContextService,
     build_messages,
@@ -22,8 +25,14 @@ from ..services.llm.client import (
     resolve_llm_options,
 )
 from ..services.llm.vision import download_file_id_as_data_url
-from ..services.message_history import store_telegram_message
+from ..services.llm.whisper import transcribe_file_id
+from ..services.message_history import persist_telegram_message, store_telegram_message
 from ..services.reply_images import collect_reply_images
+from ..services.reply_voice import (
+    VIDEO_NOTE_MARKER,
+    VOICE_MARKER,
+    get_reply_voice_transcript,
+)
 from ..services.moderation import apply_moderation
 from ..services.settings import SettingsService
 from ..services.app_config import AppConfigService
@@ -320,7 +329,7 @@ async def collect_messages(
             await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.INTERJECT)
 
 
-@router.message(F.sticker | F.animation | F.photo | F.video | F.document)
+@router.message(F.sticker | F.animation | F.photo | F.video | F.document | F.voice | F.video_note)
 async def handle_media_messages(
     message: types.Message,
     session: AsyncSession,
@@ -363,6 +372,24 @@ async def handle_media_messages(
 
     if message.chat.type == ChatType.PRIVATE or message.chat.type == "private":
         await message.answer(_unsupported_media_text(message), parse_mode=None)
+        return
+
+    # Voice / video_note — dedicated handler that may transcribe and reply.
+    if message.voice is not None or message.video_note is not None:
+        await _handle_voice_message(
+            message,
+            session=session,
+            bot=bot,
+            settings=settings,
+            app_config=app_config,
+            context=context,
+            personas=personas,
+            memory=memory,
+            usage_limits=usage_limits,
+            policy=policy,
+            interjector=interjector,
+            conf=conf,
+        )
         return
 
     is_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
@@ -564,6 +591,478 @@ async def _handle_photo_reply(
             )
 
 
+async def _handle_voice_message(
+    message: types.Message,
+    *,
+    session: AsyncSession,
+    bot: Bot,
+    settings: SettingsService,
+    app_config: AppConfigService,
+    context: ContextService,
+    personas: StylePromptService,
+    memory: UserMemoryService,
+    usage_limits: UsageLimiter,
+    policy: SpontaneityPolicy,
+    interjector: InterjectorService,
+    conf: dict[str, object],
+) -> None:
+    """Voice / video_note pipeline: transcribe and respond or excuse in persona."""
+    chat_id = message.chat.id
+    app_conf = await app_config.get_all()
+
+    if not bool(app_conf.get("voice_enabled", True)):
+        await message.answer(_unsupported_media_text(message), parse_mode=None)
+        return
+
+    voice_obj = message.voice or message.video_note
+    if voice_obj is None:
+        return
+    file_id = getattr(voice_obj, "file_id", None)
+    if not file_id:
+        return
+    duration_raw = getattr(voice_obj, "duration", 0) or 0
+    try:
+        duration_hint = float(duration_raw)
+    except (TypeError, ValueError):
+        duration_hint = 0.0
+
+    bot_user = await bot.get_me()
+    is_mention = _is_bot_mentioned(message, bot_user.id, bot_user.username)
+    is_reply_to_bot = _is_reply(message, bot_user.id, bot_user.username)
+    is_addressed = _should_reply(is_mention, is_reply_to_bot, message.chat.type)
+
+    max_seconds = int(app_conf.get("voice_max_seconds", 0) or 0)
+    whisper_limit = int(app_conf.get("whisper_daily_limit", 0) or 0)
+    whisper_language = os.getenv("WHISPER_LANGUAGE")
+
+    # ---- Interject path: unaddressed, policy-gated. ----
+    if not is_addressed:
+        if not await policy.can_interject(chat_id, trigger=InterjectTrigger.NEW_MESSAGE):
+            return
+
+        if whisper_limit > 0:
+            allowed, _counts, _ = await usage_limits.consume(chat_id, [("whisper", whisper_limit)])
+            if not allowed:
+                return  # silent on interject path
+
+        result = await transcribe_file_id(
+            bot,
+            file_id,
+            max_seconds=max_seconds,
+            duration_hint=duration_hint,
+            language=whisper_language,
+        )
+        if result is None:
+            return  # silent on interject path
+
+        await _cache_voice_transcript(session, chat_id, message.message_id, result.text, message)
+
+        # Refresh turns so the new transcript is visible to the LLM.
+        max_turns = int(app_conf.get("context_max_turns", 100) or 100)
+        turns = await context.get_recent_turns(session, chat_id, max_turns)
+
+        sent = await interjector.generate_spontaneous_reply(
+            message, conf, turns, focus_text_override=result.text,
+        )
+        if sent:
+            await policy.mark_acted(chat_id=chat_id, action=ActionKind.INTERJECT)
+        return
+
+    # ---- Direct address path ----
+    if whisper_limit > 0:
+        allowed, _counts, _ = await usage_limits.consume(chat_id, [("whisper", whisper_limit)])
+        if not allowed:
+            await _generate_voice_excuse(
+                bot=bot,
+                message=message,
+                session=session,
+                conf=conf,
+                app_conf=app_conf,
+                context=context,
+                personas=personas,
+                memory=memory,
+                situation=(
+                    "На сегодня твой лимит распознавания голосовых закончился. "
+                    "Скажи об этом одной-двумя фразами и попроси продублировать текстом."
+                ),
+            )
+            await policy.mark_acted(chat_id=chat_id, action=ActionKind.DIRECT_REPLY)
+            return
+
+    result = await transcribe_file_id(
+        bot,
+        file_id,
+        max_seconds=max_seconds,
+        duration_hint=duration_hint,
+        language=whisper_language,
+    )
+
+    if result is None:
+        if max_seconds > 0 and duration_hint > max_seconds:
+            situation = (
+                f"Пользователь прислал голосовое длиной {int(duration_hint)} секунд, "
+                f"твой лимит — {max_seconds} секунд. Скажи, что не будешь слушать такое длинное, "
+                f"и попроси короче или текстом."
+            )
+        else:
+            situation = (
+                "Пользователь прислал тебе голосовое, но распознавание не сработало. "
+                "Скажи об этом одной-двумя фразами и попроси продублировать текстом."
+            )
+        await _generate_voice_excuse(
+            bot=bot,
+            message=message,
+            session=session,
+            conf=conf,
+            app_conf=app_conf,
+            context=context,
+            personas=personas,
+            memory=memory,
+            situation=situation,
+        )
+        await policy.mark_acted(chat_id=chat_id, action=ActionKind.DIRECT_REPLY)
+        return
+
+    # Success path: cache transcript and reply via LLM.
+    await _cache_voice_transcript(session, chat_id, message.message_id, result.text, message)
+
+    sent_ok = await _generate_voice_direct_reply(
+        message=message,
+        focus_text=result.text,
+        bot=bot,
+        session=session,
+        context=context,
+        personas=personas,
+        memory=memory,
+        usage_limits=usage_limits,
+        conf=conf,
+        app_conf=app_conf,
+    )
+    if sent_ok:
+        await policy.mark_acted(chat_id=chat_id, action=ActionKind.DIRECT_REPLY)
+
+
+async def _cache_voice_transcript(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+    transcript: str,
+    message: types.Message,
+) -> None:
+    """Write the transcript back into the persisted row, replacing the marker."""
+    marker = VOICE_MARKER if message.voice is not None else VIDEO_NOTE_MARKER
+    new_text = f"{marker} {transcript}"
+    try:
+        await session.execute(
+            update(DBMessage)
+            .where(
+                DBMessage.chat_id == chat_id,
+                DBMessage.message_id == message_id,
+                DBMessage.text == marker,
+            )
+            .values(text=new_text)
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception(
+            "Failed to cache voice transcript chat=%s message=%s",
+            chat_id,
+            message_id,
+        )
+
+
+async def _generate_voice_excuse(
+    *,
+    bot: Bot,
+    message: types.Message,
+    session: AsyncSession,
+    conf: dict[str, object],
+    app_conf: dict[str, object],
+    context: ContextService,
+    personas: StylePromptService,
+    memory: UserMemoryService,
+    situation: str,
+) -> None:
+    """Send an in-persona "excuse" message explaining the voice-handling failure."""
+    base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+    focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
+    style_prompts = await personas.get_all()
+    system_prompt = build_system_prompt(
+        conf,
+        None,
+        style_prompts=style_prompts,
+        base_prompt=base_prompt,
+        focus_suffix=focus_suffix,
+    )
+
+    personalization_enabled = bool(conf.get("personalization_enabled", True))
+    memory_block = None
+    if personalization_enabled and message.from_user:
+        speaker_name = message.from_user.username or message.from_user.full_name
+        memory_block = await memory.build_user_memory_block(
+            session,
+            chat_id=message.chat.id,
+            user_id=message.from_user.id,
+            query_text=situation,
+            app_conf=app_conf,
+            speaker_name=speaker_name,
+            exclude_message_id=message.message_id,
+        )
+
+    context_blocks: list[str] = [situation]
+    if memory_block:
+        context_blocks.append(memory_block)
+
+    max_turns = int(app_conf.get("context_max_turns", 100) or 100)
+    prompt_token_limit = _resolve_prompt_token_limit(app_conf)
+    turns = await context.get_recent_turns(session, message.chat.id, max_turns)
+    messages_for_llm = build_messages(
+        system_prompt,
+        turns,
+        max_turns,
+        prompt_token_limit,
+        context_blocks=context_blocks,
+    )
+
+    provider = resolve_llm_options(app_conf)
+    try:
+        max_length_conf = app_conf.get("max_length")
+        max_tokens: int | None = None
+        if isinstance(max_length_conf, (int, float, str)):
+            try:
+                max_len_value = int(float(max_length_conf))
+            except (TypeError, ValueError):
+                max_len_value = None
+            if max_len_value and max_len_value > 0:
+                max_tokens = max_len_value
+        raw_reply = await generate_with_fallback(
+            messages_for_llm,
+            max_tokens=max_tokens,
+            temperature=resolve_temperature(conf),
+            top_p=float(conf.get("top_p", 0.9) or 0.9),
+            primary=provider,
+        )
+    except (LLMError, LLMRateLimitError):
+        logger.warning("Voice excuse LLM call failed chat=%s", message.chat.id)
+        return
+    except Exception:
+        logger.exception("Unexpected error while generating voice excuse chat=%s", message.chat.id)
+        return
+
+    reply_text = apply_moderation(raw_reply or "").strip()
+    if not reply_text:
+        return
+
+    try:
+        sent_reply = await message.reply(reply_text)
+    except Exception:
+        logger.exception("Failed to send voice excuse chat=%s", message.chat.id)
+        return
+
+    try:
+        await store_telegram_message(
+            session,
+            sent_reply,
+            reply_to_message_id=message.message_id,
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception(
+            "Failed to persist voice excuse chat=%s source_message=%s",
+            message.chat.id,
+            message.message_id,
+        )
+
+
+async def _generate_voice_direct_reply(
+    *,
+    message: types.Message,
+    focus_text: str,
+    bot: Bot,
+    session: AsyncSession,
+    context: ContextService,
+    personas: StylePromptService,
+    memory: UserMemoryService,
+    usage_limits: UsageLimiter,
+    conf: dict[str, object],
+    app_conf: dict[str, object],
+) -> bool:
+    """Build and send an LLM reply using the transcript as focus_text. Returns True if sent."""
+    chat_id = message.chat.id
+
+    # LLM daily limit gate (separate from whisper limit).
+    llm_limit_raw = app_conf.get("llm_daily_limit", 0) or 0
+    try:
+        llm_limit = int(llm_limit_raw)
+    except (TypeError, ValueError):
+        llm_limit = 0
+    if llm_limit > 0:
+        allowed, counts, _ = await usage_limits.consume(chat_id, [("llm", llm_limit)])
+        if not allowed:
+            used = counts.get("llm", llm_limit)
+            try:
+                await message.reply(
+                    f"🤖 Лимит ответов модели на сегодня исчерпан ({used}/{llm_limit}). Попробуй завтра."
+                )
+            except Exception:
+                logger.exception("Failed to notify about LLM limit chat=%s", chat_id)
+            return False
+
+    base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
+    focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
+    style_prompts = await personas.get_all()
+    system_prompt = build_system_prompt(
+        conf,
+        focus_text,
+        style_prompts=style_prompts,
+        base_prompt=base_prompt,
+        focus_suffix=focus_suffix,
+    )
+
+    personalization_enabled = bool(conf.get("personalization_enabled", True))
+    memory_block = None
+    if personalization_enabled and message.from_user:
+        speaker_name = message.from_user.username or message.from_user.full_name
+        memory_block = await memory.build_user_memory_block(
+            session,
+            chat_id=chat_id,
+            user_id=message.from_user.id,
+            query_text=focus_text,
+            app_conf=app_conf,
+            speaker_name=speaker_name,
+            exclude_message_id=message.message_id,
+        )
+    if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
+        system_prompt += "\n\n" + memory.get_sidecar_system_suffix()
+
+    context_blocks: list[str] = []
+    if memory_block:
+        context_blocks.append(memory_block)
+
+    # Reply-chain: if user replies to an OLD voice (not the current one) of a non-bot,
+    # include that transcript for context.
+    replied = getattr(message, "reply_to_message", None)
+    bot_user = await bot.get_me()
+    if replied is not None and not _is_reply_to_bot(replied, bot_user.id, bot_user.username):
+        try:
+            reply_transcript = await get_reply_voice_transcript(
+                bot=bot,
+                message=message,
+                session=session,
+                max_seconds=int(app_conf.get("voice_max_seconds", 0) or 0),
+            )
+        except Exception:
+            logger.exception(
+                "reply-chain voice transcript failed chat=%s message=%s",
+                chat_id,
+                message.message_id,
+            )
+            reply_transcript = None
+        if reply_transcript:
+            context_blocks.append(f"[Голосовое из треда]: {reply_transcript}")
+
+    max_turns = int(app_conf.get("context_max_turns", 100) or 100)
+    prompt_token_limit = _resolve_prompt_token_limit(app_conf)
+    turns = await context.get_recent_turns(session, chat_id, max_turns)
+    messages_for_llm = build_messages(
+        system_prompt,
+        turns,
+        max_turns,
+        prompt_token_limit,
+        context_blocks=context_blocks or None,
+    )
+
+    provider = resolve_llm_options(app_conf)
+    try:
+        max_length_conf = app_conf.get("max_length")
+        max_tokens: int | None = None
+        if isinstance(max_length_conf, (int, float, str)):
+            try:
+                max_len_value = int(float(max_length_conf))
+            except (TypeError, ValueError):
+                max_len_value = None
+            if max_len_value and max_len_value > 0:
+                max_tokens = max_len_value
+        raw_reply = await generate_with_fallback(
+            messages_for_llm,
+            max_tokens=max_tokens,
+            temperature=resolve_temperature(conf),
+            top_p=float(conf.get("top_p", 0.9) or 0.9),
+            primary=provider,
+        )
+    except LLMRateLimitError as exc:
+        wait_hint = ""
+        if exc.retry_after and exc.retry_after > 0:
+            wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
+        try:
+            await message.reply("🤖 Модель перегружена." + wait_hint)
+        except Exception:
+            logger.exception("Failed to notify about rate limit chat=%s", chat_id)
+        return False
+    except LLMError:
+        try:
+            await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
+        except Exception:
+            logger.exception("Failed to notify about LLM error chat=%s", chat_id)
+        return False
+    except Exception:
+        logger.exception("Unexpected error in voice direct-reply chat=%s", chat_id)
+        try:
+            await message.reply("🤖 Не удалось подготовить ответ.")
+        except Exception:
+            logger.exception("Failed to notify about unexpected error chat=%s", chat_id)
+        return False
+
+    sidecar = None
+    if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
+        sidecar = memory.parse_sidecar_response(raw_reply)
+        reply_text = apply_moderation(memory.clamp_reply_text(sidecar.reply))
+    else:
+        reply_text = apply_moderation(raw_reply)
+    reply_text = reply_text.strip()
+    if not reply_text:
+        return False
+
+    try:
+        sent_reply = await message.reply(reply_text)
+    except Exception:
+        logger.exception("Failed to send voice direct reply chat=%s", chat_id)
+        return False
+
+    try:
+        await store_telegram_message(
+            session,
+            sent_reply,
+            reply_to_message_id=message.message_id,
+        )
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception(
+            "Failed to persist voice direct reply chat=%s source_message=%s",
+            chat_id,
+            message.message_id,
+        )
+
+    if sidecar is not None and message.from_user:
+        try:
+            await memory.apply_sidecar_update(
+                chat_id=chat_id,
+                user_id=message.from_user.id,
+                result=sidecar,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to apply user memory sidecar after voice reply chat=%s user=%s",
+                chat_id,
+                message.from_user.id,
+            )
+
+    return True
+
+
 async def _download_photo_as_data_url(bot: Bot, message: types.Message) -> str | None:
     photo = _pick_photo_size(message)
     if photo is None:
@@ -698,14 +1197,18 @@ def _resolve_prompt_token_limit(conf: dict[str, object]) -> int:
 
 def _unsupported_media_text(message: types.Message) -> str:
     kind = "это"
-    if message.sticker:
+    if getattr(message, "sticker", None):
         kind = "стикеры"
-    elif message.animation:
+    elif getattr(message, "animation", None):
         kind = "гифки"
-    elif message.photo:
+    elif getattr(message, "photo", None):
         kind = "изображения"
-    elif message.video:
+    elif getattr(message, "video", None):
         kind = "видео"
-    elif message.document:
+    elif getattr(message, "document", None):
         kind = "файлы"
+    elif getattr(message, "voice", None):
+        kind = "голосовые"
+    elif getattr(message, "video_note", None):
+        kind = "круглые видео"
     return f"Я пока умею только читать текст. {kind.capitalize()} ещё не понимаю."
