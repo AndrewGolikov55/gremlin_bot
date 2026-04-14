@@ -3,6 +3,12 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - 2026-04-14
+
+### Fixed
+
+- Распознавание голосовых через Whisper: OpenAI отвергал файлы с ошибкой «Invalid file format», потому что мы отправляли их с именем `audio.bin`. Теперь имя берётся из `tg_file.file_path` (например `file_1.oga`) — OpenAI определяет формат по расширению.
+
 ## [0.3.1] - 2026-04-14
 
 ### Changed
