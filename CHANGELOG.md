@@ -3,6 +3,12 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-04-14
+
+### Fixed
+
+- LLM fallback теперь срабатывает и на network errors (connection refused, DNS, timeout, reset), не только на 429/5xx. В v0.4.0 наблюдали как OpenRouter был временно недоступен на TCP-уровне — fallback на OpenAI не активировался, пользователь не получал ответ. Исправлено: если primary-провайдер вообще не отвечает, бот переключается на sibling.
+
 ## [0.4.0] - 2026-04-14
 
 ### Added
