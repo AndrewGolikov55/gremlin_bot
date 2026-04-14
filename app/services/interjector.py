@@ -15,6 +15,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..bot.typing_indicator import keep_typing
+from ..bot.voice_reply import send_chat_maybe_voice, send_reply_maybe_voice
 from ..models.chat import Chat
 from ..models.message import Message as DBMessage
 from ..services.context import (
@@ -128,13 +129,20 @@ class InterjectorService:
             reply_text, sidecar = generated
 
             try:
-                sent_reply = await self.bot.send_message(
-                    message.chat.id,
-                    reply_text,
-                    reply_to_message_id=message.message_id,
+                sent_reply = await send_reply_maybe_voice(
+                    bot=self.bot,
+                    message=message,
+                    text=reply_text,
+                    conf=conf,
+                    app_conf=app_conf,
+                    policy=self.policy,
+                    usage_limits=self.usage_limits,
+                    incoming_is_voice_reply_to_bot=False,
                 )
             except Exception:
                 logger.exception("Failed to send spontaneous reply to chat %s", message.chat.id)
+                return False
+            if sent_reply is None:
                 return False
         try:
             await persist_telegram_message(
@@ -272,7 +280,15 @@ class InterjectorService:
                 return False
 
             try:
-                sent_reply = await self.bot.send_message(chat.id, reply_text.strip())
+                sent_reply = await send_chat_maybe_voice(
+                    bot=self.bot,
+                    chat_id=chat.id,
+                    text=reply_text.strip(),
+                    conf=conf,
+                    app_conf=app_conf,
+                    policy=self.policy,
+                    usage_limits=self.usage_limits,
+                )
             except (TelegramBadRequest, TelegramForbiddenError) as exc:
                 if self._is_missing_chat_error(exc):
                     await self._deactivate_chat(chat.id)
@@ -282,6 +298,8 @@ class InterjectorService:
                 return False
             except Exception:
                 logger.exception("Failed to send idle revival to chat %s", chat.id)
+                return False
+            if sent_reply is None:
                 return False
         try:
             await persist_telegram_message(self.sessionmaker, sent_reply)

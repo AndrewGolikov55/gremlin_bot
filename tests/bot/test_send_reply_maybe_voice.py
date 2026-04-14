@@ -166,3 +166,55 @@ async def test_tts_daily_limit_exhausted_sends_text() -> None:
 
     msg.reply.assert_awaited_once_with("hi")
     mock_tts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_chat_maybe_voice_sends_voice_on_success() -> None:
+    from app.bot.voice_reply import send_chat_maybe_voice
+
+    deps = _build_deps()
+    bot = deps["bot"]
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=99))
+    with patch(
+        "app.bot.voice_reply.synthesize_speech",
+        new=AsyncMock(return_value=b"opus-bytes"),
+    ):
+        await send_chat_maybe_voice(
+            bot=bot, chat_id=-100, text="revive text",
+            conf=deps["conf"], app_conf=deps["app_conf"],
+            policy=deps["policy"], usage_limits=deps["usage_limits"],
+        )
+    bot.send_voice.assert_awaited_once()
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_chat_maybe_voice_falls_back_to_text() -> None:
+    from app.bot.voice_reply import send_chat_maybe_voice
+
+    deps = _build_deps(should_reply_with_voice=False)
+    bot = deps["bot"]
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=99))
+    await send_chat_maybe_voice(
+        bot=bot, chat_id=-100, text="revive text",
+        conf=deps["conf"], app_conf=deps["app_conf"],
+        policy=deps["policy"], usage_limits=deps["usage_limits"],
+    )
+    bot.send_message.assert_awaited_once_with(-100, "revive text")
+    bot.send_voice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_chat_maybe_voice_tts_disabled_uses_send_message() -> None:
+    from app.bot.voice_reply import send_chat_maybe_voice
+
+    deps = _build_deps(tts_enabled=False)
+    bot = deps["bot"]
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=99))
+    await send_chat_maybe_voice(
+        bot=bot, chat_id=-100, text="revive text",
+        conf=deps["conf"], app_conf=deps["app_conf"],
+        policy=deps["policy"], usage_limits=deps["usage_limits"],
+    )
+    bot.send_message.assert_awaited_once_with(-100, "revive text")
+    bot.send_voice.assert_not_awaited()
