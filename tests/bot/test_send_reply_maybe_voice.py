@@ -56,7 +56,7 @@ async def test_tts_disabled_sends_text() -> None:
     msg = _build_msg()
     with patch("app.bot.voice_reply.synthesize_speech", new=AsyncMock()) as mock_tts:
         await send_reply_maybe_voice(
-            bot=deps["bot"], message=msg, text="hi",
+            bot=deps["bot"], message=msg, text="hi",  # type: ignore[arg-type]
             conf=deps["conf"], app_conf=deps["app_conf"],
             policy=deps["policy"], usage_limits=deps["usage_limits"],
             incoming_is_voice_reply_to_bot=False,
@@ -75,7 +75,7 @@ async def test_policy_refuses_sends_text() -> None:
     msg = _build_msg()
     with patch("app.bot.voice_reply.synthesize_speech", new=AsyncMock()) as mock_tts:
         await send_reply_maybe_voice(
-            bot=deps["bot"], message=msg, text="hi",
+            bot=deps["bot"], message=msg, text="hi",  # type: ignore[arg-type]
             conf=deps["conf"], app_conf=deps["app_conf"],
             policy=deps["policy"], usage_limits=deps["usage_limits"],
             incoming_is_voice_reply_to_bot=False,
@@ -96,7 +96,7 @@ async def test_tts_success_sends_voice() -> None:
         new=AsyncMock(return_value=b"opus-audio-bytes"),
     ) as mock_tts:
         await send_reply_maybe_voice(
-            bot=deps["bot"], message=msg, text="hi",
+            bot=deps["bot"], message=msg, text="hi",  # type: ignore[arg-type]
             conf=deps["conf"], app_conf=deps["app_conf"],
             policy=deps["policy"], usage_limits=deps["usage_limits"],
             incoming_is_voice_reply_to_bot=False,
@@ -106,6 +106,7 @@ async def test_tts_success_sends_voice() -> None:
     msg.reply.assert_not_awaited()
     mock_tts.assert_awaited_once()
     tts_args = mock_tts.await_args
+    assert tts_args is not None
     assert tts_args.args[0] == "hi"
     assert tts_args.kwargs["voice"] == "onyx"  # gopnik persona → onyx default
 
@@ -118,7 +119,7 @@ async def test_tts_returns_none_falls_back_to_text() -> None:
     msg = _build_msg()
     with patch("app.bot.voice_reply.synthesize_speech", new=AsyncMock(return_value=None)):
         await send_reply_maybe_voice(
-            bot=deps["bot"], message=msg, text="hi",
+            bot=deps["bot"], message=msg, text="hi",  # type: ignore[arg-type]
             conf=deps["conf"], app_conf=deps["app_conf"],
             policy=deps["policy"], usage_limits=deps["usage_limits"],
             incoming_is_voice_reply_to_bot=False,
@@ -140,7 +141,7 @@ async def test_send_voice_exception_falls_back_to_text() -> None:
         new=AsyncMock(return_value=b"opus"),
     ):
         await send_reply_maybe_voice(
-            bot=deps["bot"], message=msg, text="hi",
+            bot=deps["bot"], message=msg, text="hi",  # type: ignore[arg-type]
             conf=deps["conf"], app_conf=deps["app_conf"],
             policy=deps["policy"], usage_limits=deps["usage_limits"],
             incoming_is_voice_reply_to_bot=False,
@@ -157,7 +158,7 @@ async def test_tts_daily_limit_exhausted_sends_text() -> None:
     msg = _build_msg()
     with patch("app.bot.voice_reply.synthesize_speech", new=AsyncMock()) as mock_tts:
         await send_reply_maybe_voice(
-            bot=deps["bot"], message=msg, text="hi",
+            bot=deps["bot"], message=msg, text="hi",  # type: ignore[arg-type]
             conf=deps["conf"], app_conf=deps["app_conf"],
             policy=deps["policy"], usage_limits=deps["usage_limits"],
             incoming_is_voice_reply_to_bot=False,
