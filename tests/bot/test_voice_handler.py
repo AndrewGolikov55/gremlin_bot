@@ -131,16 +131,34 @@ def _build_deps(
 
 
 @pytest.mark.asyncio
-async def test_voice_disabled_falls_back_to_unsupported_text() -> None:
-    """voice_enabled=False → send _unsupported_media_text."""
+async def test_voice_disabled_and_addressed_falls_back_to_unsupported_text() -> None:
+    """voice_enabled=False + addressed → send _unsupported_media_text."""
     from app.bot.router_triggers import _handle_voice_message
 
     deps = _build_deps(voice_enabled=False)
-    msg = _build_voice_message()
+    reply_to_bot = SimpleNamespace(
+        from_user=SimpleNamespace(id=111, username="testbot", is_bot=True),
+    )
+    msg = _build_voice_message(reply_to_message=reply_to_bot)
 
     await _handle_voice_message(msg, **deps)  # type: ignore[arg-type]
 
     msg.answer.assert_awaited_once()
+    deps["policy"].mark_acted.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_voice_disabled_and_not_addressed_silently_drops() -> None:
+    """voice_enabled=False + not addressed → silent drop, no message to the chat."""
+    from app.bot.router_triggers import _handle_voice_message
+
+    deps = _build_deps(voice_enabled=False)
+    msg = _build_voice_message()  # no reply_to_message, no bot mention
+
+    await _handle_voice_message(msg, **deps)  # type: ignore[arg-type]
+
+    msg.answer.assert_not_awaited()
+    msg.reply.assert_not_awaited()
     deps["policy"].mark_acted.assert_not_called()  # type: ignore[attr-defined]
 
 
