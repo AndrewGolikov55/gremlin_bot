@@ -43,6 +43,7 @@ from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..utils.llm import resolve_temperature
 from .constants import START_PRIVATE_RESPONSE
+from .typing_indicator import keep_typing
 
 
 logger = logging.getLogger(__name__)
@@ -238,60 +239,61 @@ async def collect_messages(
             vision_messages = None
             vision_primary = None
 
-        try:
-            max_length_conf = app_conf.get("max_length")
-            max_tokens = None
-            if isinstance(max_length_conf, (int, float, str)):
-                try:
-                    max_len_value = int(float(max_length_conf))
-                except (TypeError, ValueError):
-                    max_len_value = None
-                if max_len_value and max_len_value > 0:
-                    max_tokens = max_len_value
+        async with keep_typing(bot, message.chat.id):
+            try:
+                max_length_conf = app_conf.get("max_length")
+                max_tokens = None
+                if isinstance(max_length_conf, (int, float, str)):
+                    try:
+                        max_len_value = int(float(max_length_conf))
+                    except (TypeError, ValueError):
+                        max_len_value = None
+                    if max_len_value and max_len_value > 0:
+                        max_tokens = max_len_value
 
-            if vision_messages is not None and vision_primary is not None:
-                raw_reply = await generate_with_fallback(
-                    vision_messages,
-                    max_tokens=max_tokens,
-                    temperature=resolve_temperature(conf),
-                    top_p=float(conf.get("top_p", 0.9) or 0.9),
-                    primary=vision_primary,
+                if vision_messages is not None and vision_primary is not None:
+                    raw_reply = await generate_with_fallback(
+                        vision_messages,
+                        max_tokens=max_tokens,
+                        temperature=resolve_temperature(conf),
+                        top_p=float(conf.get("top_p", 0.9) or 0.9),
+                        primary=vision_primary,
+                    )
+                else:
+                    raw_reply = await generate_with_fallback(
+                        messages_for_llm,
+                        max_tokens=max_tokens,
+                        temperature=resolve_temperature(conf),
+                        top_p=float(conf.get("top_p", 0.9) or 0.9),
+                        primary=provider,
+                    )
+            except LLMRateLimitError as exc:
+                wait_hint = ""
+                if exc.retry_after and exc.retry_after > 0:
+                    wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
+                await message.reply("🤖 Модель перегружена." + wait_hint)
+                return
+            except LLMError:
+                await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
+                return
+            except Exception:
+                logger.exception(
+                    "Unexpected error while generating LLM reply (provider=%s)",
+                    provider,
                 )
+                await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
+                return
+
+            sidecar = None
+            if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
+                sidecar = memory.parse_sidecar_response(raw_reply)
+                reply_text = apply_moderation(memory.clamp_reply_text(sidecar.reply))
             else:
-                raw_reply = await generate_with_fallback(
-                    messages_for_llm,
-                    max_tokens=max_tokens,
-                    temperature=resolve_temperature(conf),
-                    top_p=float(conf.get("top_p", 0.9) or 0.9),
-                    primary=provider,
-                )
-        except LLMRateLimitError as exc:
-            wait_hint = ""
-            if exc.retry_after and exc.retry_after > 0:
-                wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
-            await message.reply("🤖 Модель перегружена." + wait_hint)
-            return
-        except LLMError:
-            await message.reply("🤖 LLM вернула ошибку. Попробуй позже.")
-            return
-        except Exception:
-            logger.exception(
-                "Unexpected error while generating LLM reply (provider=%s)",
-                provider,
-            )
-            await message.reply("🤖 Не удалось подготовить ответ (LLM недоступна).")
-            return
+                reply_text = apply_moderation(raw_reply)
+            if not reply_text.strip():
+                return
 
-        sidecar = None
-        if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
-            sidecar = memory.parse_sidecar_response(raw_reply)
-            reply_text = apply_moderation(memory.clamp_reply_text(sidecar.reply))
-        else:
-            reply_text = apply_moderation(raw_reply)
-        if not reply_text.strip():
-            return
-
-        sent_reply = await message.reply(reply_text.strip())
+            sent_reply = await message.reply(reply_text.strip())
         await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.DIRECT_REPLY)
         try:
             await store_telegram_message(
@@ -517,49 +519,50 @@ async def _handle_photo_reply(
         context_blocks=[memory_block] if memory_block else None,
     )
 
-    try:
-        max_length_conf = app_conf.get("max_length")
-        max_tokens = None
-        if isinstance(max_length_conf, (int, float, str)):
-            try:
-                max_len_value = int(float(max_length_conf))
-            except (TypeError, ValueError):
-                max_len_value = None
-            if max_len_value and max_len_value > 0:
-                max_tokens = max_len_value
+    async with keep_typing(bot, message.chat.id):
+        try:
+            max_length_conf = app_conf.get("max_length")
+            max_tokens = None
+            if isinstance(max_length_conf, (int, float, str)):
+                try:
+                    max_len_value = int(float(max_length_conf))
+                except (TypeError, ValueError):
+                    max_len_value = None
+                if max_len_value and max_len_value > 0:
+                    max_tokens = max_len_value
 
-        raw_reply = await generate_with_fallback(
-            messages_for_llm,
-            max_tokens=max_tokens,
-            temperature=resolve_temperature(conf),
-            top_p=float(conf.get("top_p", 0.9) or 0.9),
-            primary="openai",
-        )
-    except LLMRateLimitError as exc:
-        wait_hint = ""
-        if exc.retry_after and exc.retry_after > 0:
-            wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
-        await message.reply("🤖 Модель перегружена." + wait_hint)
-        return
-    except LLMError as exc:
-        logger.warning("Vision request failed for chat=%s message=%s: %s", message.chat.id, message.message_id, exc)
-        await message.reply("🤖 Не удалось прочитать изображение.")
-        return
-    except Exception:
-        logger.exception("Unexpected error while generating vision reply")
-        await message.reply("🤖 Не удалось прочитать изображение.")
-        return
+            raw_reply = await generate_with_fallback(
+                messages_for_llm,
+                max_tokens=max_tokens,
+                temperature=resolve_temperature(conf),
+                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                primary="openai",
+            )
+        except LLMRateLimitError as exc:
+            wait_hint = ""
+            if exc.retry_after and exc.retry_after > 0:
+                wait_hint = f" Попробуй через ~{int(exc.retry_after)} с."
+            await message.reply("🤖 Модель перегружена." + wait_hint)
+            return
+        except LLMError as exc:
+            logger.warning("Vision request failed for chat=%s message=%s: %s", message.chat.id, message.message_id, exc)
+            await message.reply("🤖 Не удалось прочитать изображение.")
+            return
+        except Exception:
+            logger.exception("Unexpected error while generating vision reply")
+            await message.reply("🤖 Не удалось прочитать изображение.")
+            return
 
-    sidecar = None
-    if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
-        sidecar = memory.parse_sidecar_response(raw_reply)
-        reply_text = apply_moderation(memory.clamp_reply_text(sidecar.reply))
-    else:
-        reply_text = apply_moderation(raw_reply)
-    if not reply_text.strip():
-        return
+        sidecar = None
+        if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
+            sidecar = memory.parse_sidecar_response(raw_reply)
+            reply_text = apply_moderation(memory.clamp_reply_text(sidecar.reply))
+        else:
+            reply_text = apply_moderation(raw_reply)
+        if not reply_text.strip():
+            return
 
-    sent_reply = await message.reply(reply_text.strip())
+        sent_reply = await message.reply(reply_text.strip())
     await policy.mark_acted(chat_id=message.chat.id, action=ActionKind.DIRECT_REPLY)
     try:
         await store_telegram_message(
@@ -647,25 +650,27 @@ async def _handle_voice_message(
             if not allowed:
                 return  # silent on interject path
 
-        result = await transcribe_file_id(
-            bot,
-            file_id,
-            max_seconds=max_seconds,
-            duration_hint=duration_hint,
-            language=whisper_language,
-        )
-        if result is None:
-            return  # silent on interject path
+        sent = None
+        async with keep_typing(bot, message.chat.id):
+            result = await transcribe_file_id(
+                bot,
+                file_id,
+                max_seconds=max_seconds,
+                duration_hint=duration_hint,
+                language=whisper_language,
+            )
+            if result is None:
+                return  # silent on interject path
 
-        await _cache_voice_transcript(session, chat_id, message.message_id, result.text, message)
+            await _cache_voice_transcript(session, chat_id, message.message_id, result.text, message)
 
-        # Refresh turns so the new transcript is visible to the LLM.
-        max_turns = int(app_conf.get("context_max_turns", 100) or 100)
-        turns = await context.get_recent_turns(session, chat_id, max_turns)
+            # Refresh turns so the new transcript is visible to the LLM.
+            max_turns = int(app_conf.get("context_max_turns", 100) or 100)
+            turns = await context.get_recent_turns(session, chat_id, max_turns)
 
-        sent = await interjector.generate_spontaneous_reply(
-            message, conf, turns, focus_text_override=result.text,
-        )
+            sent = await interjector.generate_spontaneous_reply(
+                message, conf, turns, focus_text_override=result.text,
+            )
         if sent:
             await policy.mark_acted(chat_id=chat_id, action=ActionKind.INTERJECT)
         return
@@ -691,15 +696,35 @@ async def _handle_voice_message(
             await policy.mark_acted(chat_id=chat_id, action=ActionKind.DIRECT_REPLY)
             return
 
-    result = await transcribe_file_id(
-        bot,
-        file_id,
-        max_seconds=max_seconds,
-        duration_hint=duration_hint,
-        language=whisper_language,
-    )
+    direct_result = None
+    sent_ok = False
+    async with keep_typing(bot, message.chat.id):
+        direct_result = await transcribe_file_id(
+            bot,
+            file_id,
+            max_seconds=max_seconds,
+            duration_hint=duration_hint,
+            language=whisper_language,
+        )
+        if direct_result is not None:
+            # Success path: cache transcript and reply via LLM.
+            await _cache_voice_transcript(
+                session, chat_id, message.message_id, direct_result.text, message,
+            )
+            sent_ok = await _generate_voice_direct_reply(
+                message=message,
+                focus_text=direct_result.text,
+                bot=bot,
+                session=session,
+                context=context,
+                personas=personas,
+                memory=memory,
+                usage_limits=usage_limits,
+                conf=conf,
+                app_conf=app_conf,
+            )
 
-    if result is None:
+    if direct_result is None:
         if max_seconds > 0 and duration_hint > max_seconds:
             situation = (
                 f"Пользователь прислал голосовое длиной {int(duration_hint)} секунд, "
@@ -711,6 +736,7 @@ async def _handle_voice_message(
                 "Пользователь прислал тебе голосовое, но распознавание не сработало. "
                 "Скажи об этом одной-двумя фразами и попроси продублировать текстом."
             )
+        # _generate_voice_excuse manages its own keep_typing.
         await _generate_voice_excuse(
             bot=bot,
             message=message,
@@ -725,21 +751,6 @@ async def _handle_voice_message(
         await policy.mark_acted(chat_id=chat_id, action=ActionKind.DIRECT_REPLY)
         return
 
-    # Success path: cache transcript and reply via LLM.
-    await _cache_voice_transcript(session, chat_id, message.message_id, result.text, message)
-
-    sent_ok = await _generate_voice_direct_reply(
-        message=message,
-        focus_text=result.text,
-        bot=bot,
-        session=session,
-        context=context,
-        personas=personas,
-        memory=memory,
-        usage_limits=usage_limits,
-        conf=conf,
-        app_conf=app_conf,
-    )
     if sent_ok:
         await policy.mark_acted(chat_id=chat_id, action=ActionKind.DIRECT_REPLY)
 
@@ -827,40 +838,41 @@ async def _generate_voice_excuse(
         context_blocks=context_blocks,
     )
 
-    provider = resolve_llm_options(app_conf)
-    try:
-        max_length_conf = app_conf.get("max_length")
-        max_tokens: int | None = None
-        if isinstance(max_length_conf, (int, float, str)):
-            try:
-                max_len_value = int(float(max_length_conf))
-            except (TypeError, ValueError):
-                max_len_value = None
-            if max_len_value and max_len_value > 0:
-                max_tokens = max_len_value
-        raw_reply = await generate_with_fallback(
-            messages_for_llm,
-            max_tokens=max_tokens,
-            temperature=resolve_temperature(conf),
-            top_p=float(conf.get("top_p", 0.9) or 0.9),
-            primary=provider,
-        )
-    except (LLMError, LLMRateLimitError):
-        logger.warning("Voice excuse LLM call failed chat=%s", message.chat.id)
-        return
-    except Exception:
-        logger.exception("Unexpected error while generating voice excuse chat=%s", message.chat.id)
-        return
+    async with keep_typing(bot, message.chat.id):
+        provider = resolve_llm_options(app_conf)
+        try:
+            max_length_conf = app_conf.get("max_length")
+            max_tokens: int | None = None
+            if isinstance(max_length_conf, (int, float, str)):
+                try:
+                    max_len_value = int(float(max_length_conf))
+                except (TypeError, ValueError):
+                    max_len_value = None
+                if max_len_value and max_len_value > 0:
+                    max_tokens = max_len_value
+            raw_reply = await generate_with_fallback(
+                messages_for_llm,
+                max_tokens=max_tokens,
+                temperature=resolve_temperature(conf),
+                top_p=float(conf.get("top_p", 0.9) or 0.9),
+                primary=provider,
+            )
+        except (LLMError, LLMRateLimitError):
+            logger.warning("Voice excuse LLM call failed chat=%s", message.chat.id)
+            return
+        except Exception:
+            logger.exception("Unexpected error while generating voice excuse chat=%s", message.chat.id)
+            return
 
-    reply_text = apply_moderation(raw_reply or "").strip()
-    if not reply_text:
-        return
+        reply_text = apply_moderation(raw_reply or "").strip()
+        if not reply_text:
+            return
 
-    try:
-        sent_reply = await message.reply(reply_text)
-    except Exception:
-        logger.exception("Failed to send voice excuse chat=%s", message.chat.id)
-        return
+        try:
+            sent_reply = await message.reply(reply_text)
+        except Exception:
+            logger.exception("Failed to send voice excuse chat=%s", message.chat.id)
+            return
 
     try:
         await store_telegram_message(
