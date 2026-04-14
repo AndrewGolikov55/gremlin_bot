@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 
+import sqlalchemy as sa
 from aiogram import Bot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models.chat import Chat
+from ..models.chat import Chat, ChatSetting
 from ..utils.version import get_version, read_release_notes
 from .app_config import AppConfigService
 
@@ -78,6 +79,23 @@ class ReleaseBroadcaster:
         await self._app_config.set(LAST_BROADCASTED_KEY, current_version)
 
     async def _active_chat_ids(self) -> list[int]:
+        """Return IDs of group/channel chats where the bot is active.
+
+        Filters applied:
+        - Chat.id < 0: skip private chats (Telegram private-chat IDs are positive)
+        - Chat.is_active: skip chats the bot was kicked from / can no longer reach
+        - ChatSetting["is_active"] != False: skip chats where the admin disabled the bot
+        """
         async with self._sessionmaker() as session:
-            result = await session.execute(select(Chat.id).where(Chat.is_active.is_(True)))
+            disabled_subq = select(ChatSetting.chat_id).where(
+                ChatSetting.key == "is_active",
+                ChatSetting.value.cast(sa.String) == "false",
+            )
+            result = await session.execute(
+                select(Chat.id).where(
+                    Chat.is_active.is_(True),
+                    Chat.id < 0,
+                    Chat.id.not_in(disabled_subq),
+                )
+            )
             return [row[0] for row in result.all()]
