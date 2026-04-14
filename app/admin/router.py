@@ -311,6 +311,9 @@ def create_admin_router(
         revive_p: int = Form(...),
         interject_cooldown_min: int = Form(...),
         react_cooldown_min: int = Form(...),
+        voice_enabled: bool = Form(False),
+        voice_max_seconds: int = Form(0),
+        whisper_daily_limit: int = Form(0),
         summary_daily_limit: int = Form(...),
         llm_daily_limit: int = Form(...),
         llm_provider: str = Form(...),
@@ -339,6 +342,8 @@ def create_admin_router(
         revive_p = max(0, min(100, revive_p))
         interject_cooldown_min = max(0, min(240, interject_cooldown_min))
         react_cooldown_min = max(0, min(240, react_cooldown_min))
+        voice_max_seconds = max(0, min(3600, voice_max_seconds))
+        whisper_daily_limit = max(0, min(1000, whisper_daily_limit))
         summary_daily_limit = max(0, min(20, summary_daily_limit))
         llm_daily_limit = max(0, min(5000, llm_daily_limit))
         memory_top_k = max(1, min(16, memory_top_k))
@@ -376,6 +381,9 @@ def create_admin_router(
             await app_config.set("revive_p", revive_p)
             await app_config.set("interject_cooldown_min", interject_cooldown_min)
             await app_config.set("react_cooldown_min", react_cooldown_min)
+            await app_config.set("voice_enabled", bool(voice_enabled))
+            await app_config.set("voice_max_seconds", voice_max_seconds)
+            await app_config.set("whisper_daily_limit", whisper_daily_limit)
             await app_config.set("summary_daily_limit", summary_daily_limit)
             await app_config.set("llm_daily_limit", llm_daily_limit)
             if provider_value in {"openrouter", "openai"}:
@@ -682,6 +690,9 @@ def _render_chat_settings_body(
         f"<tr><td>Вмешательства</td><td>{escape(str(app_conf.get('interject_p', 0)))}% шанс, cooldown {escape(str(app_conf.get('interject_cooldown_min', 30)))} мин</td></tr>"
         f"<tr><td>Реакции</td><td>{escape(str(app_conf.get('reaction_p', 5)))}% шанс, cooldown {escape(str(app_conf.get('react_cooldown_min', 10)))} мин</td></tr>"
         f"<tr><td>Revive</td><td>{escape(str(app_conf.get('revive_p', 50)))}% шанс</td></tr>"
+        f"<tr><td>Голосовые</td><td>{('включены' if app_conf.get('voice_enabled', True) else 'выключены')}, "
+        f"длина ≤ {escape(str(app_conf.get('voice_max_seconds', 0)))}с (0 = без лимита), "
+        f"в сутки {escape(str(app_conf.get('whisper_daily_limit', 0)))} (0 = без лимита)</td></tr>"
         f"<tr><td>Память по участникам чата</td><td>{'включена' if app_conf.get('user_memory_enabled', True) else 'выключена'}; top-k {escape(str(app_conf.get('memory_top_k', 6)))}</td></tr>"
         f"<tr><td>Звание рулетки</td><td>{escape(title_label)}</td></tr>"
         f"<tr><td>Режим звания</td><td>{escape(title_mode)}</td></tr>"
@@ -1051,6 +1062,9 @@ def _render_app_config_body(
     revive_p = int(conf.get("revive_p", 50) or 50)
     interject_cooldown_min = int(conf.get("interject_cooldown_min", 30) or 30)
     react_cooldown_min = int(conf.get("react_cooldown_min", 10) or 10)
+    voice_enabled = bool(conf.get("voice_enabled", True))
+    voice_max_seconds = int(conf.get("voice_max_seconds", 0) or 0)
+    whisper_daily_limit = int(conf.get("whisper_daily_limit", 0) or 0)
     summary_daily_limit = int(conf.get("summary_daily_limit", 2) or 0)
     llm_daily_limit = int(conf.get("llm_daily_limit", 200) or 0)
     llm_provider = str(conf.get("llm_provider", "openrouter") or "openrouter")
@@ -1127,6 +1141,24 @@ def _render_app_config_body(
         "<label class='form-label'>Cooldown реакций (минут)</label>"
         f"<input class='form-control' type='number' name='react_cooldown_min' min='0' max='240' value='{react_cooldown_min}'>"
         "<div class='form-text'>Минут после последней реакции, прежде чем бот может поставить ещё одну.</div>"
+        "</div>"
+        "<div class='col-12'><h5 class='mt-4 mb-0'>Голосовые</h5></div>"
+        "<div class='col-md-6 mb-3'>"
+        "<div class='form-check'>"
+        f"<input class='form-check-input' type='checkbox' name='voice_enabled' value='1'{' checked' if voice_enabled else ''}>"
+        "<label class='form-check-label'>Распознавать голосовые и круглые видео</label>"
+        "</div>"
+        "<div class='form-text'>Если выключено, бот не реагирует на голосовые и круглые видео.</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Максимальная длина голосового (сек, 0 = без лимита)</label>"
+        f"<input class='form-control' type='number' name='voice_max_seconds' min='0' max='3600' value='{voice_max_seconds}'>"
+        "<div class='form-text'>Длиннее этого — бот не транскрибирует, в ответ попросит текстом или покороче.</div>"
+        "</div>"
+        "<div class='col-md-6 mb-3'>"
+        "<label class='form-label'>Лимит распознаваний на чат в сутки (0 = без лимита)</label>"
+        f"<input class='form-control' type='number' name='whisper_daily_limit' min='0' max='1000' value='{whisper_daily_limit}'>"
+        "<div class='form-text'>Когда счётчик достигнут — бот в этом чате до полуночи перестаёт распознавать голосовые.</div>"
         "</div>"
         "<div class='col-md-6'>"
         "<label class='form-label'>Сводки в сутки (0 = без ограничения)</label>"
