@@ -3,6 +3,21 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-04-14
+
+### Added
+
+- Бот теперь может отвечать голосовыми сообщениями. По умолчанию редко (~5%), но если пользователь reply-нул боту голосовым — шанс выше (~60%, разговорный обмен голосами). Используется OpenAI TTS (`gpt-4o-mini-tts`) с opus-форматом, родным для Telegram. Применяется к direct-address, спонтанным интерджектам и revive.
+- Маппинг персона → голос: каждая из 6 персон (gopnik, chatmate, standup, boss, zoomer, jarvis) озвучивается своим характерным OpenAI voice. Дефолты подобраны под персону, переопределяются в админке.
+- Админ-раздел «Голосовые ответы»: kill-switch (`tts_enabled`), вероятности (`tts_reply_p` / `tts_voice_reply_p`), дневной лимит (`tts_daily_limit`), per-persona voice dropdown'ы.
+
+### Internal
+
+- Новые сервисы: `app/services/llm/tts.py` (OpenAI `/v1/audio/speech`), `app/bot/voice_reply.py` (`send_reply_maybe_voice` + `send_chat_maybe_voice` для voice-or-text).
+- `SpontaneityPolicy.should_reply_with_voice` — decision-метод с буст-вероятностью на reply-to-bot голосовые.
+- 9 новых дефолтов в `app_config` для TTS-настроек.
+- При TTS-ошибке (5xx, 4xx, network) — silent fallback на текст. Voice excuses (когда Whisper не сработал) остаются текстом по дизайну.
+
 ## [0.3.2] - 2026-04-14
 
 ### Fixed
