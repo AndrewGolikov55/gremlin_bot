@@ -3,6 +3,16 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-04-14
+
+### Changed
+
+- Бот теперь показывает статус «bot is typing...» в Telegram, пока формирует ответ. Работает во всех сценариях: прямой ответ, спонтанный комментарий, оживление молчащего чата, ответ на голосовое. Раньше пользователь видел тишину, пока бот думал.
+
+### Internal
+
+- Новый модуль `app/bot/typing_indicator.py` с async context manager `keep_typing`. Обернуто 6 LLM-формирующих точек: direct-reply (text/photo/voice), voice excuse, interject, revive.
+
 ## [0.3.0] - 2026-04-14
 
 ### Added
