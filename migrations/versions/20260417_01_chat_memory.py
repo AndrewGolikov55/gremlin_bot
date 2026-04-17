@@ -24,19 +24,19 @@ def upgrade() -> None:
             "members",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
-            server_default="[]",
+            server_default=sa.text("'[]'::jsonb"),
         ),
         sa.Column(
             "lore",
             postgresql.JSONB(astext_type=sa.Text()),
             nullable=False,
-            server_default="[]",
+            server_default=sa.text("'[]'::jsonb"),
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(),
             nullable=False,
-            server_default=sa.text("now()"),
+            server_default=sa.func.now(),
         ),
         sa.PrimaryKeyConstraint("chat_id"),
     )
