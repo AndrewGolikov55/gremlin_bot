@@ -44,6 +44,7 @@ class SidecarResult:
     reply: str
     relation: dict[str, Any] | None
     memory: dict[str, Any] | None
+    chat_memory: dict[str, Any] | None
     raw_json: dict[str, Any] | None
 
 
@@ -277,11 +278,11 @@ class UserMemoryService:
     def parse_sidecar_response(self, raw_text: str) -> SidecarResult:
         text = (raw_text or "").strip()
         if not text:
-            return SidecarResult(reply="", relation=None, memory=None, raw_json=None)
+            return SidecarResult(reply="", relation=None, memory=None, chat_memory=None, raw_json=None)
 
         payload = _parse_json_object(text)
         if not isinstance(payload, dict):
-            return SidecarResult(reply=text, relation=None, memory=None, raw_json=None)
+            return SidecarResult(reply=text, relation=None, memory=None, chat_memory=None, raw_json=None)
 
         reply = str(payload.get("reply") or "").strip()
         relation = payload.get("relationship_update")
@@ -290,13 +291,16 @@ class UserMemoryService:
         memory = payload.get("memory_update")
         if not isinstance(memory, dict):
             memory = None
+        chat_memory = payload.get("chat_memory_update")
+        if not isinstance(chat_memory, dict):
+            chat_memory = None
 
         if not reply:
             fallback_reply = payload.get("message") or payload.get("text") or ""
             reply = str(fallback_reply).strip()
         if not reply:
             reply = text
-        return SidecarResult(reply=reply, relation=relation, memory=memory, raw_json=payload)
+        return SidecarResult(reply=reply, relation=relation, memory=memory, chat_memory=chat_memory, raw_json=payload)
 
     async def apply_sidecar_update(
         self,
