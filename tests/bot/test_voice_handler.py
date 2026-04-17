@@ -97,6 +97,7 @@ def _build_deps(
     personas.get_all = AsyncMock(return_value={})
     memory = MagicMock()
     memory.build_user_memory_block = AsyncMock(return_value=None)
+    memory.build_chat_memory_block = AsyncMock(return_value=None)
     memory.sidecar_enabled = MagicMock(return_value=False)
     memory.get_sidecar_system_suffix = MagicMock(return_value="")
     usage_limits = MagicMock()

@@ -205,14 +205,20 @@ async def collect_messages(
                 speaker_name=speaker_name,
                 exclude_message_id=message.message_id,
             )
+        chat_memory_block = await memory.build_chat_memory_block(
+            session,
+            chat_id=message.chat.id,
+            app_conf=app_conf,
+        )
         if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
             system_prompt += "\n\n" + memory.get_sidecar_system_suffix()
+        _ctx = [b for b in [memory_block, chat_memory_block] if b]
         messages_for_llm = build_messages(
             system_prompt,
             turns,
             max_turns,
             prompt_token_limit,
-            context_blocks=[memory_block] if memory_block else None,
+            context_blocks=_ctx or None,
         )
 
         reply_images: list[str] = []
@@ -233,7 +239,7 @@ async def collect_messages(
                 focus_text=focus_text,
                 image_data_urls=reply_images,
                 vision_detail="low",
-                context_blocks=[memory_block] if memory_block else None,
+                context_blocks=_ctx or None,
             )
             vision_primary = "openai"
         else:
@@ -514,8 +520,14 @@ async def _handle_photo_reply(
             speaker_name=speaker_name,
             exclude_message_id=message.message_id,
         )
+    chat_memory_block = await memory.build_chat_memory_block(
+        session,
+        chat_id=message.chat.id,
+        app_conf=app_conf,
+    )
     if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
         system_prompt += "\n\n" + memory.get_sidecar_system_suffix()
+    _ctx = [b for b in [memory_block, chat_memory_block] if b]
 
     max_turns = int(app_conf.get("context_max_turns", 100) or 100)
     prompt_token_limit = _resolve_prompt_token_limit(app_conf)
@@ -528,7 +540,7 @@ async def _handle_photo_reply(
         focus_text=focus_text,
         image_data_urls=[image_data_url],
         vision_detail=_resolve_vision_detail(message),
-        context_blocks=[memory_block] if memory_block else None,
+        context_blocks=_ctx or None,
     )
 
     async with keep_typing(bot, message.chat.id):
@@ -979,6 +991,13 @@ async def _generate_voice_direct_reply(
     context_blocks: list[str] = []
     if memory_block:
         context_blocks.append(memory_block)
+    chat_memory_block = await memory.build_chat_memory_block(
+        session,
+        chat_id=chat_id,
+        app_conf=app_conf,
+    )
+    if chat_memory_block:
+        context_blocks.append(chat_memory_block)
 
     # Reply-chain: if user replies to an OLD voice (not the current one) of a non-bot,
     # include that transcript for context.
