@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Dict
+import re
+from pathlib import Path
+from typing import Dict, Optional
 
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -11,59 +13,54 @@ from ..models.persona import StylePrompt
 
 DEFAULT_STYLE_KEY = "gopnik"
 
-BASE_STYLE_DATA: Dict[str, Dict[str, str]] = {
-    "gopnik": {
-        "display_name": "дворовой пацан",
-        "prompt": (
-            "РОЛЬ: дворовой гопник. Речь прямая, грубая, со сленгом и матом. "
-            "Отвечай коротко, будто стоишь у подъезда. "
-            "Подкалывай, но без прямых угроз и запрещённых тем. "
-            "Обесцени заумь и сразу давай приземлённый совет."
-        ),
-    },
-    "standup": {
-        "display_name": "стендапер",
-        "prompt": (
-            "РОЛЬ: стендапер. Ты остроумный, язвительный, говоришь как на сцене. "
-            "Главное оружие — сарказм, гиперболы и панчлайн в финале. "
-            "Пиши быстро и коротко, максимум пара плотных строк. "
-            "Если есть повод, доводи ситуацию до абсурда и не объясняй шутки."
-        ),
-    },
-    "boss": {
-        "display_name": "начальник",
-        "prompt": (
-            "РОЛЬ: токсичный начальник. Говори приказами и дедлайнами. "
-            "Формат ответа: кто, что, к какому сроку. "
-            "Используй корпоративные клише без стыда. Никаких эмоций, только контроль и уточняющие вопросы."
-        ),
-    },
-    "zoomer": {
-        "display_name": "зумер",
-        "prompt": (
-            "РОЛЬ: энергичный зумер. Стиль разговорный, с сетевым сленгом и мемами. "
-            "Пиши короткими фразами, бросай хайповые сравнения, допускай лёгкий капслок. "
-            "Используй слова типа кринж, бэйзд, вайб и зажигай тему в 1–3 строках."
-        ),
-    },
-    "jarvis": {
-        "display_name": "Jarvis-подобный ИИ",
-        "prompt": (
-            "РОЛЬ: бортовой ИИ в духе Jarvis. Тон вежливый, холодно-ироничный. "
-            "Держи структуру: краткий ответ, разбор по пунктам, следующий шаг. "
-            "Подсвечивай риски и варианты автоматизации. Без морали и извинений, безопасность выше удобства."
-        ),
-    },
-    "chatmate": {
-        "display_name": "обычный участник чата",
-        "prompt": (
-            "РОЛЬ: обычный участник чата. Говори естественно, коротко и по-человечески, "
-            "будто сидишь в том же чате со всеми. Допускай лёгкий сарказм и спокойные подколы, "
-            "но не превращай ответ в стендап и не перегибай с токсичностью. "
-            "Не умничай, не пиши канцеляритом, держись 1–3 живых фраз."
-        ),
-    },
-}
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_DISPLAY_NAME_RE = re.compile(r"^display_name:\s*(.+)$", re.MULTILINE)
+
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_PERSONAS_DIR = _PROJECT_ROOT / "personas"
+
+
+def parse_persona_file(content: str, fallback_display_name: str = "") -> Dict[str, str]:
+    """Parse a persona .md file with optional YAML frontmatter.
+
+    Returns a dict with 'display_name' and 'prompt' keys.
+    """
+    display_name = fallback_display_name
+    prompt = content
+
+    m = _FRONTMATTER_RE.match(content)
+    if m:
+        frontmatter = m.group(1)
+        dn_match = _DISPLAY_NAME_RE.search(frontmatter)
+        if dn_match:
+            display_name = dn_match.group(1).strip()
+        prompt = content[m.end():]
+
+    return {"display_name": display_name, "prompt": prompt.strip()}
+
+
+def load_persona_files(directory: Optional[Path] = None) -> Dict[str, Dict[str, str]]:
+    """Load all *.md persona files from *directory* (default: personas/ at project root).
+
+    Returns {style_key: {"display_name": ..., "prompt": ...}} where style_key is the
+    filename without the .md extension. Returns an empty dict if the directory does not exist.
+    """
+    if directory is None:
+        directory = _PERSONAS_DIR
+
+    directory = Path(directory)
+    if not directory.is_dir():
+        return {}
+
+    result: Dict[str, Dict[str, str]] = {}
+    for md_file in sorted(directory.glob("*.md")):
+        style_key = md_file.stem
+        content = md_file.read_text(encoding="utf-8")
+        result[style_key] = parse_persona_file(content, fallback_display_name=style_key)
+    return result
+
+
+BASE_STYLE_DATA: Dict[str, Dict[str, str]] = load_persona_files()
 
 DEFAULT_STYLE_PROMPTS: Dict[str, str] = {key: value["prompt"] for key, value in BASE_STYLE_DATA.items()}
 
@@ -76,22 +73,8 @@ class StylePromptService:
         self._cache_key = "style_prompts:v1"
 
     async def ensure_defaults(self) -> None:
-        async with self._sessionmaker() as session:
-            updated = False
-            for style, data in self._defaults.items():
-                existing = await session.get(StylePrompt, style)
-                if existing is None:
-                    session.add(
-                        StylePrompt(
-                            style=style,
-                            display_name=data["display_name"],
-                            prompt=data["prompt"],
-                        )
-                    )
-                    updated = True
-            if updated:
-                await session.commit()
-                await self._redis.delete(self._cache_key)
+        # Base personas are now loaded from files and do not go into the DB.
+        pass
 
     async def _fetch_all(self) -> Dict[str, StylePrompt]:
         async with self._sessionmaker() as session:
@@ -106,10 +89,12 @@ class StylePromptService:
         if cached is not None:
             return json.loads(cached)
 
+        # Start with file-based defaults, then overlay only CUSTOM DB personas.
+        prompts: Dict[str, str] = {style: data["prompt"] for style, data in self._defaults.items()}
         records = await self._fetch_all()
-        prompts = {style: obj.prompt for style, obj in records.items()}
-        for style, data in self._defaults.items():
-            prompts.setdefault(style, data["prompt"])
+        for style, obj in records.items():
+            if style not in self._defaults:
+                prompts[style] = obj.prompt
 
         await self._redis.set(self._cache_key, json.dumps(prompts, ensure_ascii=False), ex=300)
         return prompts
@@ -121,10 +106,12 @@ class StylePromptService:
         return prompts.get(style, default_prompt)
 
     async def get_display_map(self) -> Dict[str, str]:
+        # Start with file-based defaults, then overlay only CUSTOM DB personas.
+        display_map: Dict[str, str] = {style: data["display_name"] for style, data in self._defaults.items()}
         records = await self._fetch_all()
-        display_map = {style: obj.display_name for style, obj in records.items()}
-        for style, data in self._defaults.items():
-            display_map.setdefault(style, data["display_name"])
+        for style, obj in records.items():
+            if style not in self._defaults:
+                display_map[style] = obj.display_name
         return display_map
 
     async def list_styles(self) -> list[tuple[str, str]]:
@@ -145,6 +132,8 @@ class StylePromptService:
         style = style.strip().lower()
         if not style:
             raise ValueError("Style identifier cannot be empty")
+        if style in self._defaults:
+            raise ValueError("Нельзя изменить базовую персону")
         if display_name is not None:
             display = display_name.strip()
             if not display:
@@ -156,8 +145,7 @@ class StylePromptService:
             obj = await session.get(StylePrompt, style)
             if obj is None:
                 if display is None:
-                    # fallback to default display name if exists, otherwise use style code
-                    display = self._defaults.get(style, {}).get("display_name", style)
+                    display = style
                 obj = StylePrompt(style=style, display_name=display, prompt=prompt)
                 session.add(obj)
             else:
