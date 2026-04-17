@@ -549,17 +549,17 @@ def _parse_json_object(raw_text: str) -> dict[str, Any] | None:
     return None
 
 
-def _relationship_summary(relation: RelationshipState) -> str | None:
+def _relationship_summary(relation: RelationshipState) -> str:
     rapport = _relationship_rapport(relation)
-    if rapport >= 0.85:
-        return "отношения почти дружеские"
-    if rapport >= 0.35:
+    if rapport >= 0.6:
+        return "отношения дружеские"
+    if rapport >= 0.2:
         return "отношения тёплые"
-    if rapport <= -0.85:
-        return "отношения близки к ненависти"
-    if rapport <= -0.35:
+    if rapport <= -0.6:
+        return "отношения враждебные"
+    if rapport <= -0.2:
         return "отношения напряжённые"
-    return None
+    return "отношения нейтральные"
 
 
 def _message_score(text: str, date: datetime, query_tokens: set[str]) -> float:
