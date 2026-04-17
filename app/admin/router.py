@@ -532,6 +532,8 @@ def create_admin_router(
                 updates.setdefault(slug, {})["prompt"] = value
 
         for slug, data in updates.items():
+            if slug in BASE_STYLE_DATA:
+                continue  # base personas are file-based, skip DB writes
             record = entries.get(slug)
             if record is None:
                 errors.append(f"Стиль {slug} не найден")
@@ -1363,24 +1365,30 @@ def _render_style_prompts_body(
         display = str(item["display_name"])
         prompt = str(item["prompt"])
         is_default = bool(item.get("is_default", False))
+        readonly_attr = " readonly disabled" if is_default else ""
         delete_control = (
             "<div class='form-check form-switch mt-2'>"
             f"<input class='form-check-input' type='checkbox' name='delete__{escape(style)}' value='1'>"
             "<label class='form-check-label'>Удалить эту персону</label>"
             "</div>"
         ) if not is_default else ""
+        source_hint = (
+            "<div class='mt-1'><small class='text-muted'>Редактируется через файл <code>personas/"
+            f"{escape(style)}.md</code></small></div>"
+        ) if is_default else ""
         fields.append(
             "<div class='card mb-4'>"
             "<div class='card-body'>"
             f"<h2 class='h5 card-title'>{escape(display)} <span class='text-muted'>({escape(style)})</span>"
-            f"{' <span class=\'badge bg-secondary ms-2\'>базовая</span>' if is_default else ''}</h2>"
+            f"{' <span class=&apos;badge bg-secondary ms-2&apos;>базовая</span>' if is_default else ''}</h2>"
+            f"{source_hint}"
             "<div class='mb-3'>"
             "<label class='form-label'>Название</label>"
-            f"<input class='form-control' type='text' name='display__{escape(style)}' value='{escape(display)}' maxlength='120'>"
+            f"<input class='form-control' type='text' name='display__{escape(style)}' value='{escape(display)}' maxlength='120'{readonly_attr}>"
             "</div>"
             "<div class='mb-3'>"
             "<label class='form-label'>Промт</label>"
-            f"<textarea class='form-control' name='prompt__{escape(style)}' rows='6'>{escape(prompt)}</textarea>"
+            f"<textarea class='form-control' name='prompt__{escape(style)}' rows='6'{readonly_attr}>{escape(prompt)}</textarea>"
             "</div>"
             f"{delete_control}"
             "</div></div>"
