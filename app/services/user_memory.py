@@ -11,7 +11,7 @@ from typing import Any, Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models.memory import RelationshipState, UserMemoryProfile
+from ..models.memory import ChatMemory, RelationshipState, UserMemoryProfile
 from ..models.message import Message
 
 logger = logging.getLogger(__name__)
@@ -313,7 +313,7 @@ class UserMemoryService:
         user_id: int,
         result: SidecarResult,
     ) -> None:
-        if not result.relation and not result.memory:
+        if not result.relation and not result.memory and not result.chat_memory:
             return
 
         async with self._sessionmaker() as session:
@@ -334,6 +334,13 @@ class UserMemoryService:
                     relation = RelationshipState(chat_id=chat_id, user_id=user_id)
                     session.add(relation)
                 self._apply_relation_update(relation, result.relation)
+
+            if result.chat_memory:
+                chat_mem = await session.get(ChatMemory, chat_id)
+                if chat_mem is None:
+                    chat_mem = ChatMemory(chat_id=chat_id)
+                    session.add(chat_mem)
+                self._apply_chat_memory_update(chat_mem, result.chat_memory)
 
             await session.commit()
 
@@ -529,6 +536,20 @@ class UserMemoryService:
         profile.memory_count = sum(len(getattr(profile, attr) or []) for attr in KIND_TO_ATTR.values())
         profile.updated_at = datetime.utcnow()
         profile.last_message_at = datetime.utcnow()
+
+    def _apply_chat_memory_update(self, chat_mem: ChatMemory, payload: dict[str, Any]) -> None:
+        for bucket in ("members", "lore"):
+            raw = payload.get(bucket)
+            if not isinstance(raw, list):
+                continue
+            fresh = [str(v).strip() for v in raw if isinstance(v, str) and str(v).strip()]
+            if not fresh:
+                continue
+            existing = list(getattr(chat_mem, bucket) or [])
+            # fresh first + reversed existing → FIFO: oldest entry (index 0) is evicted when at limit
+            merged = _merge_unique_strings(fresh + list(reversed(existing)), [], limit=12)
+            setattr(chat_mem, bucket, merged)
+        chat_mem.updated_at = datetime.utcnow()
 
     @staticmethod
     def clamp_reply_text(text: str) -> str:
