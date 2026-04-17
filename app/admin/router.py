@@ -14,7 +14,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models.chat import Chat
-from ..models.memory import RelationshipState, UserMemoryProfile
+from ..models.memory import ChatMemory, RelationshipState, UserMemoryProfile
 from ..models.message import Message
 from ..models.persona import StylePrompt
 from ..models.user import User
@@ -226,7 +226,8 @@ def create_admin_router(
                 .order_by(UserMemoryProfile.updated_at.desc())
             )
         ).all()
-        body = _render_memory_users_body(chat, rows, token)
+        chat_mem = await session.get(ChatMemory, chat_id)
+        body = _render_memory_users_body(chat, rows, chat_mem, token)
         return HTMLResponse(_render_page(f"Память чата {chat.id}", token, "chats", body))
 
     @router.get("/chats/{chat_id}/memory/{user_id}", response_class=HTMLResponse)
@@ -287,6 +288,87 @@ def create_admin_router(
             note="Персональная память пользователя сброшена.",
         )
         return HTMLResponse(_render_page(f"Память пользователя {user_id}", token, "chats", body))
+
+    @router.post("/chats/{chat_id}/chat-memory/clear-members", response_class=HTMLResponse)
+    async def chat_memory_clear_members(
+        chat_id: int,
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        chat_mem = await session.get(ChatMemory, chat_id)
+        if chat_mem is not None:
+            chat_mem.members = []
+            await session.commit()
+        rows = (await session.execute(
+            select(UserMemoryProfile, User, RelationshipState)
+            .outerjoin(User, User.tg_id == UserMemoryProfile.user_id)
+            .outerjoin(RelationshipState, and_(
+                RelationshipState.chat_id == UserMemoryProfile.chat_id,
+                RelationshipState.user_id == UserMemoryProfile.user_id,
+            ))
+            .where(UserMemoryProfile.chat_id == chat_id)
+            .order_by(UserMemoryProfile.updated_at.desc())
+        )).all()
+        chat_mem_fresh = await session.get(ChatMemory, chat_id)
+        body = _render_memory_users_body(chat, rows, chat_mem_fresh, token, note="Участники очищены.")
+        return HTMLResponse(_render_page(f"Память чата {chat.id}", token, "chats", body))
+
+    @router.post("/chats/{chat_id}/chat-memory/clear-lore", response_class=HTMLResponse)
+    async def chat_memory_clear_lore(
+        chat_id: int,
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        chat_mem = await session.get(ChatMemory, chat_id)
+        if chat_mem is not None:
+            chat_mem.lore = []
+            await session.commit()
+        rows = (await session.execute(
+            select(UserMemoryProfile, User, RelationshipState)
+            .outerjoin(User, User.tg_id == UserMemoryProfile.user_id)
+            .outerjoin(RelationshipState, and_(
+                RelationshipState.chat_id == UserMemoryProfile.chat_id,
+                RelationshipState.user_id == UserMemoryProfile.user_id,
+            ))
+            .where(UserMemoryProfile.chat_id == chat_id)
+            .order_by(UserMemoryProfile.updated_at.desc())
+        )).all()
+        chat_mem_fresh = await session.get(ChatMemory, chat_id)
+        body = _render_memory_users_body(chat, rows, chat_mem_fresh, token, note="Лор очищен.")
+        return HTMLResponse(_render_page(f"Память чата {chat.id}", token, "chats", body))
+
+    @router.post("/chats/{chat_id}/chat-memory/clear", response_class=HTMLResponse)
+    async def chat_memory_clear_all(
+        chat_id: int,
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        chat = await session.get(Chat, chat_id)
+        if chat is None:
+            raise HTTPException(status_code=404, detail="Chat not found")
+        chat_mem = await session.get(ChatMemory, chat_id)
+        if chat_mem is not None:
+            chat_mem.members = []
+            chat_mem.lore = []
+            await session.commit()
+        rows = (await session.execute(
+            select(UserMemoryProfile, User, RelationshipState)
+            .outerjoin(User, User.tg_id == UserMemoryProfile.user_id)
+            .outerjoin(RelationshipState, and_(
+                RelationshipState.chat_id == UserMemoryProfile.chat_id,
+                RelationshipState.user_id == UserMemoryProfile.user_id,
+            ))
+            .where(UserMemoryProfile.chat_id == chat_id)
+            .order_by(UserMemoryProfile.updated_at.desc())
+        )).all()
+        body = _render_memory_users_body(chat, rows, None, token, note="Память чата очищена.")
+        return HTMLResponse(_render_page(f"Память чата {chat.id}", token, "chats", body))
 
     @router.get("/styles", response_class=HTMLResponse)
     async def style_prompts_view(token: str = Depends(require_token)) -> str:
@@ -867,10 +949,60 @@ def _render_history_body(
     )
 
 
+def _render_chat_memory_section(chat: Chat, chat_mem: ChatMemory | None, token: str | None) -> str:
+    members = list(chat_mem.members or []) if chat_mem else []
+    lore = list(chat_mem.lore or []) if chat_mem else []
+
+    if not members and not lore:
+        return ""
+
+    clear_members_url = _build_url(f"/admin/chats/{chat.id}/chat-memory/clear-members", token)
+    clear_lore_url = _build_url(f"/admin/chats/{chat.id}/chat-memory/clear-lore", token)
+    clear_all_url = _build_url(f"/admin/chats/{chat.id}/chat-memory/clear", token)
+
+    def _list_items(entries: list[str]) -> str:
+        if not entries:
+            return "<span class='text-muted'>(пусто)</span>"
+        return "".join(f"<li class='mb-1'>{escape(e)}</li>" for e in entries)
+
+    members_count = f"{len(members)}/12"
+    lore_count = f"{len(lore)}/12"
+
+    return (
+        "<div class='card mb-4'>"
+        "<div class='card-header fw-bold'>Память чата</div>"
+        "<div class='card-body'>"
+        "<div class='row'>"
+        "<div class='col-md-6'>"
+        f"<h6>Участники ({escape(members_count)})</h6>"
+        f"<ul class='list-unstyled small'>{_list_items(members)}</ul>"
+        f"<form method='post' action='{escape(clear_members_url)}'>"
+        "<button class='btn btn-sm btn-outline-warning' type='submit'>Очистить участников</button>"
+        "</form>"
+        "</div>"
+        "<div class='col-md-6'>"
+        f"<h6>Лор чата ({escape(lore_count)})</h6>"
+        f"<ul class='list-unstyled small'>{_list_items(lore)}</ul>"
+        f"<form method='post' action='{escape(clear_lore_url)}'>"
+        "<button class='btn btn-sm btn-outline-warning' type='submit'>Очистить лор</button>"
+        "</form>"
+        "</div>"
+        "</div>"
+        f"<form method='post' action='{escape(clear_all_url)}' class='mt-2'>"
+        "<button class='btn btn-sm btn-outline-danger' type='submit'>Очистить всё</button>"
+        "</form>"
+        "</div>"
+        "</div>"
+    )
+
+
 def _render_memory_users_body(
     chat: Chat,
     rows: list[tuple[UserMemoryProfile, User | None, RelationshipState | None]],
+    chat_mem: ChatMemory | None,
     token: str | None,
+    *,
+    note: str | None = None,
 ) -> str:
     settings_url = _build_url(f"/admin/chats/{chat.id}", token)
     items = []
@@ -899,12 +1031,17 @@ def _render_memory_users_body(
         else "<div class='alert alert-info'>Память по участникам ещё не накопилась.</div>"
     )
 
+    chat_mem_section = _render_chat_memory_section(chat, chat_mem, token)
+    note_html = f"<div class='alert alert-success'>{escape(note)}</div>" if note else ""
+
     return (
         "<div class='container py-4'>"
         "<div class='d-flex justify-content-between align-items-center mb-3'>"
         f"<div><h1 class='h3 mb-0'>Память участников</h1><div class='text-muted'>{escape(chat.title)}</div></div>"
         f"<a class='btn btn-outline-secondary' href='{escape(settings_url)}'>← Настройки чата</a>"
         "</div>"
+        f"{note_html}"
+        f"{chat_mem_section}"
         f"{table}"
         "</div>"
     )
