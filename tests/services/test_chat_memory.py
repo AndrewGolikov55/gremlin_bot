@@ -85,10 +85,10 @@ def test_apply_chat_memory_update_deduplicates() -> None:
 
 def test_apply_chat_memory_update_enforces_fifo_limit() -> None:
     svc = _make_svc()
-    # 12 existing entries; "fact 0" is the oldest (index 0)
-    existing = [f"fact {i}" for i in range(12)]
+    # 12 existing entries in newest-first order; "fact 0" is the oldest (index 11)
+    existing = [f"fact {i}" for i in range(11, -1, -1)]  # ["fact 11", "fact 10", ..., "fact 0"]
     cm = _make_chat_mem(members=existing)
     svc._apply_chat_memory_update(cm, {"members": ["brand new fact"], "lore": None})
     assert len(cm.members) == 12
     assert "brand new fact" in cm.members
-    assert "fact 0" not in cm.members  # oldest evicted
+    assert "fact 0" not in cm.members  # oldest (tail) evicted

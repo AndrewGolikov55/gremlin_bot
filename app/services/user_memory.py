@@ -337,10 +337,12 @@ class UserMemoryService:
 
             if result.chat_memory:
                 chat_mem = await session.get(ChatMemory, chat_id)
-                if chat_mem is None:
+                is_new = chat_mem is None
+                if is_new:
                     chat_mem = ChatMemory(chat_id=chat_id)
-                    session.add(chat_mem)
-                self._apply_chat_memory_update(chat_mem, result.chat_memory)
+                if self._apply_chat_memory_update(chat_mem, result.chat_memory):
+                    if is_new:
+                        session.add(chat_mem)
 
             await session.commit()
 
@@ -537,7 +539,8 @@ class UserMemoryService:
         profile.updated_at = datetime.utcnow()
         profile.last_message_at = datetime.utcnow()
 
-    def _apply_chat_memory_update(self, chat_mem: ChatMemory, payload: dict[str, Any]) -> None:
+    def _apply_chat_memory_update(self, chat_mem: ChatMemory, payload: dict[str, Any]) -> bool:
+        wrote_any = False
         for bucket in ("members", "lore"):
             raw = payload.get(bucket)
             if not isinstance(raw, list):
@@ -546,10 +549,13 @@ class UserMemoryService:
             if not fresh:
                 continue
             existing = list(getattr(chat_mem, bucket) or [])
-            # fresh first + reversed existing → FIFO: oldest entry (index 0) is evicted when at limit
-            merged = _merge_unique_strings(fresh + list(reversed(existing)), [], limit=12)
+            # newest-first storage: fresh prepended, oldest (tail) evicted when at limit
+            merged = _merge_unique_strings(fresh + existing, [], limit=12)
             setattr(chat_mem, bucket, merged)
-        chat_mem.updated_at = datetime.utcnow()
+            wrote_any = True
+        if wrote_any:
+            chat_mem.updated_at = datetime.utcnow()
+        return wrote_any
 
     @staticmethod
     def clamp_reply_text(text: str) -> str:
