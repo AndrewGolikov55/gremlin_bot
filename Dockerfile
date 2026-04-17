@@ -53,6 +53,7 @@ COPY RELEASE_NOTES.md ./
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY scripts ./scripts
+COPY personas ./personas
 COPY app ./app
 
 EXPOSE 8080
