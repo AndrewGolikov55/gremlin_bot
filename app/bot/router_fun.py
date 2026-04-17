@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.memory import RelationshipState, UserMemoryProfile
+from ..models.memory import ChatMemory, RelationshipState, UserMemoryProfile
 from ..models.user import User
 from ..services.context import ChatTurn, ContextService, build_messages
 from ..services.llm.client import (
@@ -466,6 +466,20 @@ async def cmd_relationships(
         if facts:
             line += f"; факты: {', '.join(facts)}"
         lines.append(line)
+
+    chat_mem = await session.get(ChatMemory, message.chat.id)
+    if chat_mem:
+        members = list(chat_mem.members or [])
+        lore = list(chat_mem.lore or [])
+        if members or lore:
+            lines.append("")
+            lines.append("📝 Память чата:")
+            if members:
+                for entry in members:
+                    lines.append(f"  • {entry}")
+            if lore:
+                for entry in lore:
+                    lines.append(f"  • {entry}")
 
     text = "\n".join(lines)
     for chunk in _split_message(text):
