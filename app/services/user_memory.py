@@ -260,7 +260,8 @@ class UserMemoryService:
             '{"reply":"...","relationship_update":{"rapport_delta":-1..1,'
             '"tone_hint":"neutral|warm|careful|null"},'
             '"memory_update":{"summary":null|"...",'
-            '"identity":[],"preferences":[],"boundaries":[]}}. '
+            '"identity":[],"preferences":[],"boundaries":[]},'
+            '"chat_memory_update":{"members":[],"lore":[]}}. '
             "Если обновлять нечего, используй 0, null и пустые массивы. "
             "rapport_delta описывает общее отношение к пользователю: минус означает больше дистанции "
             "и раздражения, плюс означает больше расположения и доверия. "
@@ -272,7 +273,11 @@ class UserMemoryService:
             "ВАЖНО: identity, preferences и boundaries — это факты ТОЛЬКО о том, кто пишет сообщение. "
             "Не записывай туда ники, имена и факты о других людях, которых он упоминает. "
             "Если пользователь просит запомнить что-то о третьем лице — игнорируй, это не его профиль. "
-            "Не дублируй уже известные факты другими словами — если факт уже есть, не добавляй его снова."
+            "Не дублируй уже известные факты другими словами — если факт уже есть, не добавляй его снова. "
+            "chat_memory_update.members — факты о конкретных участниках чата (не о тебе, не об отправителе — "
+            "его факты идут в memory_update). "
+            "chat_memory_update.lore — общий контекст чата: внутренние шутки, темы, события. "
+            "Используй null или [] в chat_memory_update когда обновлять нечего."
         )
 
     def parse_sidecar_response(self, raw_text: str) -> SidecarResult:

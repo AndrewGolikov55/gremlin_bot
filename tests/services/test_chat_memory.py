@@ -36,3 +36,18 @@ def test_parse_sidecar_chat_memory_none_when_invalid_type() -> None:
     raw = '{"reply":"ok","chat_memory_update":"invalid"}'
     result = svc.parse_sidecar_response(raw)
     assert result.chat_memory is None
+
+
+# ── get_sidecar_system_suffix ────────────────────────────────────────────────
+
+def test_sidecar_suffix_includes_chat_memory_update_field() -> None:
+    svc = _make_svc()
+    suffix = svc.get_sidecar_system_suffix()
+    assert "chat_memory_update" in suffix
+
+
+def test_sidecar_suffix_includes_members_and_lore() -> None:
+    svc = _make_svc()
+    suffix = svc.get_sidecar_system_suffix()
+    assert "members" in suffix
+    assert "lore" in suffix
