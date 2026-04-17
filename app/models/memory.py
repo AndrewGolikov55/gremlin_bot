@@ -35,3 +35,18 @@ class RelationshipState(Base):
     tone_hint: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_interaction_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChatMemory(Base):
+    __tablename__ = "chat_memories"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    members: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), default=list
+    )
+    lore: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), default=list
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
