@@ -244,6 +244,57 @@ class UserMemoryService:
             used += tokens
         return "\n".join(selected).strip() or None
 
+    async def build_chat_memory_block(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        app_conf: dict[str, object],
+    ) -> str | None:
+        if not self.is_enabled(app_conf):
+            return None
+
+        chat_mem = await session.get(ChatMemory, chat_id)
+        if chat_mem is None:
+            return None
+
+        members = list(chat_mem.members or [])
+        lore = list(chat_mem.lore or [])
+        if not members and not lore:
+            return None
+
+        _FOOTER = (
+            "Это фоновые знания — ты их просто знаешь как участник чата. "
+            "Используй только когда органично вписывается в разговор. Не перечисляй без повода."
+        )
+        _PER_BUCKET_CAP = 55  # tokens per bucket
+
+        def _pick(entries: list[str]) -> str:
+            chosen: list[str] = []
+            used = 0
+            for entry in entries:  # newest first
+                t = _estimate_tokens(entry)
+                if used + t > _PER_BUCKET_CAP:
+                    break
+                chosen.append(entry)
+                used += t
+            return "; ".join(chosen)  # no reversal needed, already newest-first
+
+        lines: list[str] = []
+        if members:
+            packed = _pick(members)
+            if packed:
+                lines.append(f"members: {packed}")
+        if lore:
+            packed = _pick(lore)
+            if packed:
+                lines.append(f"lore: {packed}")
+
+        if not lines:
+            return None
+
+        return "## Факты о чате (фоновые знания)\n" + "\n".join(lines) + "\n\n" + _FOOTER
+
     def sidecar_enabled(self, conf: dict[str, object] | None) -> bool:
         if not conf:
             return False

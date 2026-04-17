@@ -92,3 +92,68 @@ def test_apply_chat_memory_update_enforces_fifo_limit() -> None:
     assert len(cm.members) == 12
     assert "brand new fact" in cm.members
     assert "fact 0" not in cm.members  # oldest (tail) evicted
+
+
+# ── build_chat_memory_block ──────────────────────────────────────────────────
+
+def _make_session(chat_mem: MagicMock | None = None) -> AsyncMock:
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=chat_mem)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_build_chat_memory_block_returns_none_when_no_row() -> None:
+    svc = _make_svc()
+    session = _make_session(chat_mem=None)
+    result = await svc.build_chat_memory_block(session, chat_id=1, app_conf={"user_memory_enabled": True})
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_build_chat_memory_block_returns_none_when_empty() -> None:
+    svc = _make_svc()
+    cm = _make_chat_mem()
+    session = _make_session(chat_mem=cm)
+    result = await svc.build_chat_memory_block(session, chat_id=1, app_conf={"user_memory_enabled": True})
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_build_chat_memory_block_contains_member_fact() -> None:
+    svc = _make_svc()
+    cm = _make_chat_mem(members=["denzel любит CS"])
+    session = _make_session(chat_mem=cm)
+    result = await svc.build_chat_memory_block(session, chat_id=1, app_conf={"user_memory_enabled": True})
+    assert result is not None
+    assert "denzel любит CS" in result
+
+
+@pytest.mark.asyncio
+async def test_build_chat_memory_block_contains_background_instruction() -> None:
+    svc = _make_svc()
+    cm = _make_chat_mem(members=["fact"])
+    session = _make_session(chat_mem=cm)
+    result = await svc.build_chat_memory_block(session, chat_id=1, app_conf={"user_memory_enabled": True})
+    assert result is not None
+    assert "фоновые знания" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_build_chat_memory_block_respects_token_cap() -> None:
+    svc = _make_svc()
+    many = ["x" * 180 for _ in range(12)]
+    cm = _make_chat_mem(members=many, lore=many)
+    session = _make_session(chat_mem=cm)
+    result = await svc.build_chat_memory_block(session, chat_id=1, app_conf={"user_memory_enabled": True})
+    assert result is not None
+    assert _estimate_tokens(result) <= 200
+
+
+@pytest.mark.asyncio
+async def test_build_chat_memory_block_returns_none_when_disabled() -> None:
+    svc = _make_svc()
+    cm = _make_chat_mem(members=["fact"])
+    session = _make_session(chat_mem=cm)
+    result = await svc.build_chat_memory_block(session, chat_id=1, app_conf={"user_memory_enabled": False})
+    assert result is None
