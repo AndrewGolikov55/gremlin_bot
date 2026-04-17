@@ -6,14 +6,13 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models.memory import RelationshipState, UserMemoryProfile
 from ..models.message import Message
-
 
 logger = logging.getLogger(__name__)
 
