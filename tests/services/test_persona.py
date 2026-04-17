@@ -28,7 +28,7 @@ def test_parse_persona_file_without_frontmatter_uses_fallback():
     assert result["prompt"] == "Просто текст без frontmatter."
 
 
-def test_load_persona_files_reads_all_md_files(tmp_path: Path):
+def test_load_persona_files_reads_all_md_files(tmp_path: Path) -> None:
     (tmp_path / "gopnik.md").write_text(
         "---\ndisplay_name: пацан\n---\n\nТы пацан.",
         encoding="utf-8",

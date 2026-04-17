@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from app.services.user_memory import _relationship_summary
 
 
-def _make_relation(affinity: float = 0.0, tension: float = 0.0):
+def _make_relation(affinity: float = 0.0, tension: float = 0.0) -> MagicMock:
     rel = MagicMock()
     rel.affinity = affinity
     rel.tension = tension
