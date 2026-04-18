@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -146,6 +146,52 @@ def test_coerce_int_accepts_bool_int_and_numeric_strings() -> None:
 def test_coerce_float_returns_default_for_unsupported_and_invalid_values() -> None:
     assert _coerce_float(object(), 0.9) == 0.9
     assert _coerce_float("oops", 0.9) == 0.9
+
+
+async def test_announce_roulette_instructions_reach_llm_as_closing_text(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """The roulette focus instructions must arrive as closing_text so the LLM
+    responds to them, not to the last unrelated chat message."""
+    from app.services import context as ctx_module
+    from app.services import roulette as roulette_module
+
+    service = build_service(sessionmaker)
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    service.bot = cast(Any, bot)
+
+    captured_calls: list[dict[str, Any]] = []
+    original_build_messages = ctx_module.build_messages
+
+    def capturing_build_messages(system_prompt: str, turns: Any, **kwargs: Any) -> Any:
+        captured_calls.append(kwargs)
+        return original_build_messages(system_prompt, turns, **kwargs)
+
+    fake_llm_response = "Скоро всё узнаете [[winner]]"
+    with (
+        patch.object(service, "_build_winner_memory_block", new=AsyncMock(return_value=None)),
+        patch.object(service.context, "get_recent_turns", new=AsyncMock(return_value=[])),
+        patch.object(service.personas, "get_all", new=AsyncMock(return_value={})),
+        patch.object(service.settings, "get_all", new=AsyncMock(return_value={})),
+        patch.object(service.app_config, "get_all", new=AsyncMock(return_value={})),
+        patch.object(roulette_module, "llm_generate", new=AsyncMock(return_value=fake_llm_response)),
+        patch(f"{roulette_module.__name__}.build_messages", side_effect=capturing_build_messages),
+    ):
+        await service._announce(chat_id=1, user_id=42, username="testuser", title_display="Стоячий мастер")
+
+    assert len(captured_calls) == 2, f"Expected 2 build_messages calls, got {len(captured_calls)}"
+    intrigue_kwargs = captured_calls[0]
+    winner_kwargs = captured_calls[1]
+
+    assert "closing_text" in intrigue_kwargs, "Intrigue call must use closing_text"
+    assert intrigue_kwargs["closing_text"] is not None
+    assert "Стоячий мастер" in intrigue_kwargs["closing_text"]
+    assert "Подогрей интригу" in intrigue_kwargs["closing_text"]
+
+    assert "closing_text" in winner_kwargs, "Winner call must use closing_text"
+    assert winner_kwargs["closing_text"] is not None
+    assert "Стоячий мастер" in winner_kwargs["closing_text"]
 
 
 def test_coerce_float_accepts_numeric_inputs_and_strings() -> None:

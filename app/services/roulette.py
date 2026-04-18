@@ -21,7 +21,6 @@ from ..models.roulette import RouletteParticipant, RouletteWinner
 from ..services.app_config import AppConfigService
 from ..services.context import (
     DEFAULT_CHAT_PROMPT,
-    DEFAULT_FOCUS_SUFFIX,
     ChatTurn,
     ContextService,
     build_messages,
@@ -400,23 +399,21 @@ class RouletteService:
                 app_conf=app_conf,
             )
 
-        focus_text = f"Скоро объявим обладателя звания '{title_display}'. Подогрей интригу, но не раскрывай имя."
+        intrigue_text = f"Скоро объявим обладателя звания '{title_display}'. Подогрей интригу, но не раскрывай имя."
         base_prompt = str(app_conf.get("prompt_roulette_base") or DEFAULT_ROULETTE_PROMPT).strip()
         if not base_prompt:
             base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
-        focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
         system_prompt = build_system_prompt(
             conf,
-            focus_text=focus_text,
             style_prompts=style_prompts,
             base_prompt=base_prompt,
-            focus_suffix=focus_suffix,
         )
         messages = build_messages(
             system_prompt,
             turns,
             max_turns=max_turns,
             max_tokens=prompt_limit,
+            closing_text=intrigue_text,
         )
 
         try:
@@ -529,13 +526,10 @@ class RouletteService:
         base_prompt = str(app_conf.get("prompt_roulette_base") or DEFAULT_ROULETTE_PROMPT).strip()
         if not base_prompt:
             base_prompt = str(app_conf.get("prompt_chat_base") or DEFAULT_CHAT_PROMPT)
-        focus_suffix = str(app_conf.get("prompt_focus_suffix") or DEFAULT_FOCUS_SUFFIX)
         system_prompt = build_system_prompt(
             conf,
-            focus_text=focus_text,
             style_prompts=style_prompts,
             base_prompt=base_prompt,
-            focus_suffix=focus_suffix,
         )
         messages = build_messages(
             system_prompt,
@@ -543,6 +537,7 @@ class RouletteService:
             max_turns=len(turns),
             max_tokens=prompt_limit,
             context_blocks=[winner_memory_block] if winner_memory_block else None,
+            closing_text=focus_text,
         )
 
         try:
