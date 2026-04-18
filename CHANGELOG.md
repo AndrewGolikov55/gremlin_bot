@@ -3,6 +3,12 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-04-17
+
+### Changed
+
+- Команда `/relationships` теперь показывает раздел «Память чата» (факты об участниках и лор), если он накоплен
+
 ## [0.6.0] - 2026-04-17
 
 ### Added
