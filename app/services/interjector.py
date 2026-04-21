@@ -214,7 +214,7 @@ class InterjectorService:
         hours = int(conf.get("revive_after_hours", 48) or 48)
         threshold = timedelta(hours=max(1, hours))
 
-        last_time = await self._get_last_human_message_time(session, chat.id)
+        last_time = await self._get_last_message_time(session, chat.id)
         if last_time is None:
             last_time = datetime.min
 
@@ -337,10 +337,17 @@ class InterjectorService:
             )
         )
 
-    async def _get_last_human_message_time(self, session: AsyncSession, chat_id: int) -> datetime | None:
+    async def _get_last_message_time(self, session: AsyncSession, chat_id: int) -> datetime | None:
+        """Latest message time of any kind (human or bot).
+
+        Used to decide whether the chat is dead enough to warrant a revive.
+        Including bot messages is intentional: if we already posted a revive
+        into silence, the clock resets — we don't want to keep re-reviving
+        every cooldown period until someone finally speaks.
+        """
         result = await session.execute(
             select(DBMessage.date)
-            .where(DBMessage.chat_id == chat_id, DBMessage.is_bot.is_(False))
+            .where(DBMessage.chat_id == chat_id)
             .order_by(desc(DBMessage.date))
             .limit(1)
         )
