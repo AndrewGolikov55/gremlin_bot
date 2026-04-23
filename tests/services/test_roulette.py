@@ -199,3 +199,67 @@ def test_coerce_float_accepts_numeric_inputs_and_strings() -> None:
     assert _coerce_float(1.5, 0.9) == 1.5
     assert _coerce_float("0.25", 0.9) == 0.25
     assert _coerce_float(b"0.75", 0.9) == 0.75
+
+
+async def test_winner_result_prompt_identifies_winner_and_isolates_their_messages(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Regression: the prompt for the winner-announcement LLM call must
+    identify the winner by username AND only expose the winner's own messages
+    as quotable material. Without this, the LLM hallucinates and attributes
+    other users' messages to the winner (observed: messages from user A were
+    cited as if belonging to the announced winner B)."""
+    from app.services import roulette as roulette_module
+    from app.services.context import ChatTurn
+
+    service = build_service(sessionmaker)
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    service.bot = cast(Any, bot)
+
+    # History contains messages from two non-winners. The winner (user_id=999)
+    # has no recent messages — exactly the scenario that triggered the bug.
+    turns = [
+        ChatTurn(speaker="Углевод", user_id=1, text="Да", is_bot=False),
+        ChatTurn(speaker="Углевод", user_id=1, text="Написал мне он", is_bot=False),
+        ChatTurn(speaker="Углевод", user_id=1, text="9ч на машине", is_bot=False),
+        ChatTurn(speaker="Углевод", user_id=1, text="Другой конец буквально хаха", is_bot=False),
+        ChatTurn(speaker="Andrew", user_id=2, text="А он когда в России жил", is_bot=False),
+    ]
+
+    captured_messages: list[list[dict[str, Any]]] = []
+
+    async def fake_llm(msgs: list[dict[str, Any]], **_: Any) -> str:
+        captured_messages.append(msgs)
+        return "Скоро всё узнаете [[winner]]"
+
+    with (
+        patch.object(service, "_build_winner_memory_block", new=AsyncMock(return_value=None)),
+        patch.object(service.context, "get_recent_turns", new=AsyncMock(return_value=turns)),
+        patch.object(service.personas, "get_all", new=AsyncMock(return_value={})),
+        patch.object(service.settings, "get_all", new=AsyncMock(return_value={})),
+        patch.object(service.app_config, "get_all", new=AsyncMock(return_value={})),
+        patch.object(roulette_module, "llm_generate", new=AsyncMock(side_effect=fake_llm)),
+    ):
+        await service._announce(
+            chat_id=1,
+            user_id=999,
+            username="enter_the_voidd",
+            title_display="Макс Гейда",
+        )
+
+    # Two LLM calls: intrigue and winner announcement.
+    assert len(captured_messages) == 2
+    winner_call = captured_messages[1]
+    joined = "\n".join(str(m.get("content", "")) for m in winner_call)
+
+    # The winner's username must reach the LLM so it can match history rows.
+    assert "enter_the_voidd" in joined, (
+        "Prompt for winner announcement must name the winner; "
+        "otherwise the LLM cannot tell which messages belong to them."
+    )
+
+    # The LLM must be told not to attribute other users' messages to the winner.
+    assert "не приписыв" in joined.lower() or "не цитируй" in joined.lower() or (
+        "чужих" in joined.lower() and "реплик" in joined.lower()
+    ), "Prompt must warn against attributing other users' messages to the winner"

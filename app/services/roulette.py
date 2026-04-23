@@ -513,15 +513,19 @@ class RouletteService:
         winner_memory_block: str | None,
         prompt_limit: int,
     ) -> str:
+        winner_label = username or f"ID {user_id}"
+        winner_messages_block = self._build_winner_messages_block(turns, user_id, winner_label)
         focus_text = (
-            f"Объяви, что звание «{title_display}» получает {WINNER_PLACEHOLDER}. "
+            f"Объяви, что звание «{title_display}» получает участник {winner_label} — он и есть победитель. "
             "Сохрани манеру активной роли и стиль шуточной рулетки. "
-            "Обыграй звание через известные факты о победителе и его недавние сообщения. "
-            "Если данных мало, опирайся только на его последние сообщения и не выдумывай. "
+            f"Обыграй звание через факты о {winner_label} и ЕГО СОБСТВЕННЫЕ недавние сообщения "
+            f"(ищи строки истории, где автор — {winner_label}). "
+            f"Никогда не приписывай {winner_label} реплики других участников чата и не цитируй чужие сообщения как его. "
+            f"Если у {winner_label} нет подходящих сообщений или фактов — сделай короткое общее шуточное объявление без цитат. "
             "Не пересказывай внутреннюю справку напрямую. Не добавляй в объявление оценку ваших "
             "отношений, недоверие, слежку, контроль, настороженность или скрытую угрозу: "
             "победное объявление должно звучать уместно, живо и чуть празднично. "
-            f"Обязательно используй маркер {WINNER_PLACEHOLDER} вместо имени победителя."
+            f"В тексте ответа вместо имени пиши маркер {WINNER_PLACEHOLDER} — он будет заменён на упоминание автоматически."
         )
         base_prompt = str(app_conf.get("prompt_roulette_base") or DEFAULT_ROULETTE_PROMPT).strip()
         if not base_prompt:
@@ -531,12 +535,17 @@ class RouletteService:
             style_prompts=style_prompts,
             base_prompt=base_prompt,
         )
+        context_blocks = [
+            block
+            for block in (winner_memory_block, winner_messages_block)
+            if block
+        ]
         messages = build_messages(
             system_prompt,
             turns,
             max_turns=len(turns),
             max_tokens=prompt_limit,
-            context_blocks=[winner_memory_block] if winner_memory_block else None,
+            context_blocks=context_blocks or None,
             closing_text=focus_text,
         )
 
@@ -553,6 +562,36 @@ class RouletteService:
             return self._format_final_message(title_display, user_id, username)
 
         return self._prepare_winner_message(raw_result, title_display, user_id, username)
+
+    def _build_winner_messages_block(
+        self,
+        turns: list[ChatTurn],
+        winner_user_id: int,
+        winner_label: str,
+        max_messages: int = 12,
+    ) -> str | None:
+        lines: list[str] = []
+        for turn in reversed(turns):
+            if turn.is_bot:
+                continue
+            if turn.user_id != winner_user_id:
+                continue
+            text = " ".join((turn.text or "").replace("\n", " ").split()).strip()
+            if not text or text.startswith("/"):
+                continue
+            lines.append(f"- {text[:200]}")
+            if len(lines) >= max_messages:
+                break
+        if not lines:
+            return (
+                f"У победителя ({winner_label}) нет недавних сообщений в истории выше. "
+                "Не цитируй никого из других участников как его слова."
+            )
+        lines.reverse()
+        return (
+            f"Недавние сообщения победителя ({winner_label}). "
+            "Обыгрывать и цитировать можно только их:\n" + "\n".join(lines)
+        )
 
     def _prepare_intrigue_text(self, text: str, title_display: str) -> str:
         cleaned = " ".join((text or "").split())
