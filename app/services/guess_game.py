@@ -12,7 +12,9 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..models.guess_round import GuessRound
 from ..models.message import Message
+from ..models.roulette import RouletteScoreAdjustment
 
 logger = logging.getLogger("bot.guess_game")
 
@@ -297,3 +299,63 @@ class GuessGameService:
             correct_option_id=correct_idx,
             selection_mode=selection_mode,
         )
+
+    async def can_start_today(self, *, chat_id: int, now: datetime) -> bool:
+        midnight = _moscow_midnight(now)
+        async with self.sessionmaker() as session:
+            existing = (await session.execute(
+                select(GuessRound.id)
+                .where(GuessRound.chat_id == chat_id, GuessRound.started_at >= midnight)
+                .limit(1)
+            )).scalar_one_or_none()
+        return existing is None
+
+    async def persist_round(
+        self,
+        prepared: PreparedRound,
+        *,
+        poll_id: str,
+        chat_message_id: int,
+    ) -> int:
+        async with self.sessionmaker() as session:
+            row = GuessRound(
+                chat_id=prepared.chat_id,
+                poll_id=poll_id,
+                chat_message_id=chat_message_id,
+                source_chat_id=prepared.chat_id,
+                source_message_id=prepared.source_message_id,
+                author_user_id=prepared.author_user_id,
+                correct_option_id=prepared.correct_option_id,
+                option_user_ids=list(prepared.option_user_ids),
+                started_at=datetime.utcnow(),
+                selection_mode=prepared.selection_mode,
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def find_round_by_poll(self, poll_id: str) -> GuessRound | None:
+        async with self.sessionmaker() as session:
+            return (await session.execute(
+                select(GuessRound).where(GuessRound.poll_id == poll_id)
+            )).scalar_one_or_none()
+
+    async def record_first_winner(self, *, round_id: int, user_id: int, now: datetime) -> bool:
+        """Atomically claim the first-winner slot for a round. Returns True iff this user was the first."""
+        async with self.sessionmaker() as session:
+            async with session.begin():
+                row = (await session.execute(
+                    select(GuessRound).where(GuessRound.id == round_id).with_for_update()
+                )).scalar_one_or_none()
+                if row is None or row.first_winner_user_id is not None:
+                    return False
+                row.first_winner_user_id = user_id
+                row.first_winner_at = now
+                session.add(RouletteScoreAdjustment(
+                    chat_id=row.chat_id,
+                    user_id=user_id,
+                    delta=-1,
+                    reason="guess_first_winner",
+                    source_id=round_id,
+                ))
+            return True

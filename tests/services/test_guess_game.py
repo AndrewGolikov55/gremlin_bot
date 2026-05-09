@@ -6,8 +6,10 @@ from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models import GuessRound, RouletteScoreAdjustment
 from app.models.message import Message
 from app.services.guess_game import (
     GuessGameService,
@@ -297,3 +299,135 @@ async def test_prepare_round_post_filter_falls_back_to_random(sessionmaker: asyn
     svc = _svc(sessionmaker, llm_pick_fn=fake_llm_pick, display_name_fn=fake_display_name)
     round_ = await svc.prepare_round(chat_id=chat_id, now=datetime.utcnow())
     assert round_.selection_mode == "random_fallback"
+
+
+def _make_round_row(chat_id: int, *, started_at: datetime | None = None, poll_id: str = "p1", first_winner: int | None = None) -> GuessRound:
+    return GuessRound(
+        chat_id=chat_id,
+        poll_id=poll_id,
+        chat_message_id=1,
+        source_chat_id=chat_id,
+        source_message_id=1,
+        author_user_id=1,
+        correct_option_id=0,
+        option_user_ids=[1, 2, 3, 4],
+        started_at=started_at or datetime.utcnow(),
+        first_winner_user_id=first_winner,
+        selection_mode="llm",
+    )
+
+
+@pytest.mark.asyncio
+async def test_can_start_today_blocks_when_round_today(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -300
+    async with sessionmaker() as session:
+        session.add(_make_round_row(chat_id, started_at=datetime.utcnow(), poll_id="p-cs1"))
+        await session.commit()
+
+    svc = _svc(sessionmaker)
+    assert (await svc.can_start_today(chat_id=chat_id, now=datetime.utcnow())) is False
+
+
+@pytest.mark.asyncio
+async def test_can_start_today_allows_when_round_yesterday(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -301
+    async with sessionmaker() as session:
+        session.add(_make_round_row(
+            chat_id,
+            started_at=datetime.utcnow() - timedelta(days=1, hours=12),
+            poll_id="p-cs2",
+        ))
+        await session.commit()
+
+    svc = _svc(sessionmaker)
+    assert (await svc.can_start_today(chat_id=chat_id, now=datetime.utcnow())) is True
+
+
+@pytest.mark.asyncio
+async def test_record_first_winner_inserts_adjustment(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -302
+    async with sessionmaker() as session:
+        row = _make_round_row(chat_id, poll_id="p-record-1")
+        session.add(row)
+        await session.commit()
+        round_id = row.id
+
+    svc = _svc(sessionmaker)
+    result = await svc.record_first_winner(round_id=round_id, user_id=42, now=datetime.utcnow())
+    assert result is True
+
+    async with sessionmaker() as session:
+        adj = (await session.execute(
+            select(RouletteScoreAdjustment).where(RouletteScoreAdjustment.user_id == 42)
+        )).scalar_one()
+        assert adj.delta == -1
+        assert adj.reason == "guess_first_winner"
+        assert adj.source_id == round_id
+        assert adj.chat_id == chat_id
+
+
+@pytest.mark.asyncio
+async def test_record_first_winner_is_idempotent(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -303
+    async with sessionmaker() as session:
+        row = _make_round_row(chat_id, poll_id="p-record-2")
+        session.add(row)
+        await session.commit()
+        round_id = row.id
+
+    svc = _svc(sessionmaker)
+    first = await svc.record_first_winner(round_id=round_id, user_id=42, now=datetime.utcnow())
+    second = await svc.record_first_winner(round_id=round_id, user_id=99, now=datetime.utcnow())
+
+    assert first is True
+    assert second is False
+
+    async with sessionmaker() as session:
+        adjs = (await session.execute(
+            select(RouletteScoreAdjustment).where(RouletteScoreAdjustment.source_id == round_id)
+        )).scalars().all()
+        assert len(adjs) == 1
+        assert adjs[0].user_id == 42
+
+
+@pytest.mark.asyncio
+async def test_persist_round_writes_row(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = _svc(sessionmaker)
+    prepared = PreparedRound(
+        chat_id=-304,
+        author_user_id=7,
+        source_message_id=123,
+        text="some text",
+        option_user_ids=[1, 2, 7, 9],
+        option_labels=["A", "B", "C", "D"],
+        correct_option_id=2,
+        selection_mode="llm",
+    )
+    rid = await svc.persist_round(prepared, poll_id="poll-A", chat_message_id=999)
+
+    async with sessionmaker() as session:
+        row = (await session.execute(select(GuessRound).where(GuessRound.id == rid))).scalar_one()
+        assert row.poll_id == "poll-A"
+        assert row.chat_message_id == 999
+        assert row.author_user_id == 7
+        assert row.option_user_ids == [1, 2, 7, 9]
+        assert row.correct_option_id == 2
+        assert row.selection_mode == "llm"
+
+
+@pytest.mark.asyncio
+async def test_find_round_by_poll(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -305
+    async with sessionmaker() as session:
+        row = _make_round_row(chat_id, poll_id="p-find-1")
+        session.add(row)
+        await session.commit()
+        expected_id = row.id
+
+    svc = _svc(sessionmaker)
+    found = await svc.find_round_by_poll("p-find-1")
+    assert found is not None
+    assert found.id == expected_id
+
+    missing = await svc.find_round_by_poll("does-not-exist")
+    assert missing is None
