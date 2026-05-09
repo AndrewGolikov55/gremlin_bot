@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
@@ -207,7 +208,6 @@ def _svc(
     svc.app_config.get_all = AsyncMock(return_value={})
     svc._display_name = display_name_fn or AsyncMock(side_effect=lambda chat_id, user_id: f"user{user_id}")
     svc._llm_pick = llm_pick_fn or AsyncMock(return_value=None)
-    import random
     svc._rng = random.Random(42)
     return svc
 

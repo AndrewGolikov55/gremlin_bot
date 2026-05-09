@@ -6,7 +6,7 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -191,7 +191,7 @@ class PreparedRound:
     option_user_ids: list[int]
     option_labels: list[str]
     correct_option_id: int
-    selection_mode: str  # "llm" | "random_fallback"
+    selection_mode: Literal["llm", "random_fallback"]
 
 
 MAX_OPTIONS = 4
@@ -254,7 +254,7 @@ class GuessGameService:
         valid_authors = set(author_messages.keys())
 
         llm_choice = await self._llm_pick(author_messages, chat_id=chat_id)
-        selection_mode = "llm"
+        selection_mode: Literal["llm", "random_fallback"] = "random_fallback"
         chosen_author: int | None = None
         chosen_message: Message | None = None
 
@@ -265,16 +265,17 @@ class GuessGameService:
                     if not text_contains_author_identity(m.text, username=None, first_name=name):
                         chosen_author = llm_choice.author_user_id
                         chosen_message = m
+                        selection_mode = "llm"
                     break
 
         if chosen_message is None:
-            selection_mode = "random_fallback"
             shuffled = list(author_messages.keys())
             self._rng.shuffle(shuffled)
             chosen_author = shuffled[0]
             chosen_message = self._rng.choice(author_messages[chosen_author])
 
-        assert chosen_author is not None and chosen_message is not None
+        if chosen_author is None or chosen_message is None:
+            raise RuntimeError("guess_game.prepare_round invariant violated: no message chosen")
 
         # Build options
         other_authors = [uid for uid in author_messages.keys() if uid != chosen_author]
