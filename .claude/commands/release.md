@@ -172,25 +172,59 @@ make check
 
 Жди подтверждения. **Не коммить сам до одобрения.** Если пользователь попросит правки — применяй.
 
-### 10. После подтверждения — коммит и пуш
+### 11. После подтверждения — коммит и пуш
 
 ```bash
 git add pyproject.toml CHANGELOG.md RELEASE_NOTES.md
 git commit -m "chore(release): vX.Y.Z"
-git tag vX.Y.Z
+git tag vX.Y.Z -m "vX.Y.Z"
 git push --follow-tags
 ```
 
 - Автор коммита — настройки git пользователя (не добавляй Co-Authored-By для Claude)
 - Если в процессе были другие коммиты в этом же запуске — используй их авторство и conventional-формат (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `ci:`), но **без** Co-Authored-By
+- **GPG signing caveat:** в репо `tag.gpgsign=true`, но pinentry не работает без TTY (агент Claude). Прошлые теги (`v0.6.4` и раньше) тоже без подписи. Если `git tag` падает с ошибкой подписания — спроси пользователя и при согласии используй `git -c tag.gpgsign=false tag vX.Y.Z -m "vX.Y.Z"`. Не отключай подпись молча
 
-### 11. Сообщи о завершении
+### 12. Дождись CI-пайплайна
+
+CD у проекта — два workflow подряд: **Quality** (lint/mypy/pytest, ~1 мин) и **Deploy Production** (SSH-деплой, 3-5 мин). Релиз не считается успешным пока оба не зелёные.
+
+Найди свежие run'ы и дождись успеха через `gh run watch`:
+
+```bash
+# Найди ID запущенных workflow по своему commit SHA
+gh run list --branch main --limit 5 --json databaseId,name,status,conclusion,headSha
+```
+
+Возьми `databaseId` для `Quality` (SHA == твой релизный коммит, status `in_progress` или `queued`) и watch:
+
+```bash
+gh run watch <quality_run_id> --exit-status --interval 15
+```
+
+После успеха `Quality` GitHub автоматически триггерит `Deploy Production` (через `workflow_run`). Подожди 5-10 секунд, найди его ID и watch:
+
+```bash
+gh run list --branch main --limit 3 --json databaseId,name,status,headSha
+gh run watch <deploy_run_id> --exit-status --interval 20
+```
+
+Используй Bash с `timeout: 600000` (10 мин), чтобы tool не убил процесс.
+
+**Если упал:**
+
+- `Quality` упал — посмотри логи: `gh run view <id> --log-failed`. Проверь, не разъехались ли локальные и CI-окружения (например, тест требует переменную окружения, недоступную в CI). Сообщи пользователю, не пытайся «по-быстрому» откатить релиз
+- `Deploy Production` упал — проблема с инфрой (SSH, docker, миграция). Логи: `gh run view <id> --log-failed`. Чаще всего нужен ручной разбор на сервере. Сообщи пользователю и не делай ничего автоматически
+
+### 13. Сообщи о завершении
 
 Выведи:
 
 - Новый тег
-- Ссылку на GitHub Actions workflow run (если знаешь URL репозитория)
-- Будет ли рассылка (да/нет) и во сколько чатов приблизительно (не критично)
+- Время прохождения Quality и Deploy Production
+- URL запуска (`gh run view <deploy_run_id> --json url -q .url` или собери вручную: `https://github.com/<owner>/<repo>/actions/runs/<id>`)
+- Будет ли рассылка (да/нет)
+- Если есть уже задеплоено — финальное «релиз в проде»
 
 ## Не делай
 
