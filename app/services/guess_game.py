@@ -283,7 +283,7 @@ class GuessGameService:
             ensure_ascii=False,
         )
 
-        conf = await self.app_config.get_all(chat_id)
+        conf = await self.app_config.get_all()
         provider = resolve_llm_options(conf)
 
         try:

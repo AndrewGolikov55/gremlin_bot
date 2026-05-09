@@ -3,6 +3,17 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - 2026-05-09
+
+### Fixed
+
+- `/guess` и кнопка «Угадай кто сказал» падали с `TypeError` в LLM-вызове:
+  `_llm_pick_real` передавал `chat_id` в `AppConfigService.get_all()`,
+  который параметров не принимает (в отличие от `SettingsService.get_all`).
+  Тесты пропустили баг, потому что `MagicMock` без `spec` молча принимает
+  любые аргументы — переведены на `create_autospec(AppConfigService)`,
+  который ловит несоответствие сигнатуры
+
 ## [0.7.1] - 2026-05-09
 
 ### Fixed

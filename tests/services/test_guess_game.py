@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
 from pytest import MonkeyPatch
@@ -447,6 +447,7 @@ async def test_llm_pick_real_calls_generate_with_compact_payload(monkeypatch: Mo
         return '{"author_user_id": 1, "message_id": 100, "reason": "ok"}'
 
     from app.services import guess_game as gg
+    from app.services.app_config import AppConfigService
     monkeypatch.setattr(gg, "llm_generate", fake_generate)
 
     author_messages = {
@@ -455,8 +456,8 @@ async def test_llm_pick_real_calls_generate_with_compact_payload(monkeypatch: Mo
     }
 
     svc = GuessGameService.__new__(GuessGameService)
-    svc.app_config = MagicMock()
-    svc.app_config.get_all = AsyncMock(return_value={"llm_provider": "openrouter"})
+    svc.app_config = create_autospec(AppConfigService, instance=True)
+    svc.app_config.get_all.return_value = {"llm_provider": "openrouter"}
     pick = await svc._llm_pick_real(author_messages, chat_id=-100)
     assert pick == LLMPick(author_user_id=1, message_id=100, reason="ok")
 
@@ -465,11 +466,15 @@ async def test_llm_pick_real_calls_generate_with_compact_payload(monkeypatch: Mo
     payload_str: str = msgs[-1]["content"]
     assert "100" in payload_str
     assert "candidates" in payload_str
+    # Regression: AppConfigService.get_all() takes no chat_id. v0.7.1 crashed in prod
+    # because we passed chat_id. Verify the call was parameterless.
+    svc.app_config.get_all.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
 async def test_llm_pick_real_returns_none_on_llm_error(monkeypatch: MonkeyPatch) -> None:
     from app.services import guess_game as gg
+    from app.services.app_config import AppConfigService
 
     async def boom(*args: Any, **kwargs: Any) -> str:
         raise gg.LLMError("nope")
@@ -477,8 +482,8 @@ async def test_llm_pick_real_returns_none_on_llm_error(monkeypatch: MonkeyPatch)
     monkeypatch.setattr(gg, "llm_generate", boom)
 
     svc = GuessGameService.__new__(GuessGameService)
-    svc.app_config = MagicMock()
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config = create_autospec(AppConfigService, instance=True)
+    svc.app_config.get_all.return_value = {}
     pick = await svc._llm_pick_real(
         {1: [_msg(-100, 1, 1, "x" * 60)]}, chat_id=-100,
     )
@@ -487,8 +492,10 @@ async def test_llm_pick_real_returns_none_on_llm_error(monkeypatch: MonkeyPatch)
 
 @pytest.mark.asyncio
 async def test_llm_pick_real_returns_none_on_empty_candidates() -> None:
+    from app.services.app_config import AppConfigService
+
     svc = GuessGameService.__new__(GuessGameService)
-    svc.app_config = MagicMock()
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config = create_autospec(AppConfigService, instance=True)
+    svc.app_config.get_all.return_value = {}
     pick = await svc._llm_pick_real({}, chat_id=-100)
     assert pick is None
