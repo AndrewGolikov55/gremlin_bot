@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.message import Message
 from app.services.guess_game import (
+    GuessGameService,
     LLMPick,
+    NoCandidatesError,
+    PreparedRound,
     _moscow_midnight,
     parse_llm_pick,
     pick_candidate_authors,
@@ -187,3 +192,108 @@ def test_text_contains_author_identity_no_match() -> None:
         username="andryuha",
         first_name="Андрей",
     )
+
+
+def _svc(
+    sessionmaker_: async_sessionmaker[AsyncSession],
+    *,
+    llm_pick_fn: Callable[..., Awaitable[Any]] | None = None,
+    display_name_fn: Callable[[int, int], Awaitable[str]] | None = None,
+) -> GuessGameService:
+    svc = GuessGameService.__new__(GuessGameService)
+    svc.sessionmaker = sessionmaker_
+    svc.bot = None
+    svc.app_config = MagicMock()
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc._display_name = display_name_fn or AsyncMock(side_effect=lambda chat_id, user_id: f"user{user_id}")
+    svc._llm_pick = llm_pick_fn or AsyncMock(return_value=None)
+    import random
+    svc._rng = random.Random(42)
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_raises_when_no_authors(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = _svc(sessionmaker)
+    with pytest.raises(NoCandidatesError):
+        await svc.prepare_round(chat_id=-200, now=datetime.utcnow())
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_degrades_to_2_options_when_only_2_authors(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -201
+    base = "a" * 60
+    async with sessionmaker() as session:
+        for uid in (1, 2):
+            for i in range(5):
+                session.add(_msg(chat_id, uid * 100 + i, uid, base + f" {uid}-{i}"))
+        await session.commit()
+
+    svc = _svc(sessionmaker)
+    round_ = await svc.prepare_round(chat_id=chat_id, now=datetime.utcnow())
+    assert isinstance(round_, PreparedRound)
+    assert len(round_.option_user_ids) == 2
+    assert round_.author_user_id in round_.option_user_ids
+    assert round_.correct_option_id == round_.option_user_ids.index(round_.author_user_id)
+    assert round_.selection_mode == "random_fallback"
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_uses_4_options_when_enough_authors(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -202
+    base = "a" * 60
+    async with sessionmaker() as session:
+        for uid in (1, 2, 3, 4, 5):
+            for i in range(5):
+                session.add(_msg(chat_id, uid * 100 + i, uid, base + f" {uid}-{i}"))
+        await session.commit()
+
+    svc = _svc(sessionmaker)
+    round_ = await svc.prepare_round(chat_id=chat_id, now=datetime.utcnow())
+    assert len(round_.option_user_ids) == 4
+    assert len(set(round_.option_user_ids)) == 4
+    assert round_.author_user_id in round_.option_user_ids
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_uses_llm_pick_when_returned(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -203
+    base = "a" * 60
+    async with sessionmaker() as session:
+        for uid in (1, 2):
+            for i in range(5):
+                session.add(_msg(chat_id, uid * 100 + i, uid, base + f" {uid}-{i}"))
+        await session.commit()
+
+    async def fake_llm_pick(*args: object, **kwargs: object) -> LLMPick:
+        return LLMPick(author_user_id=2, message_id=200, reason="cringe")
+
+    svc = _svc(sessionmaker, llm_pick_fn=fake_llm_pick)
+    round_ = await svc.prepare_round(chat_id=chat_id, now=datetime.utcnow())
+    assert round_.author_user_id == 2
+    assert round_.source_message_id == 200
+    assert round_.selection_mode == "llm"
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_post_filter_falls_back_to_random(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    chat_id = -204
+    base = "a" * 60
+    async with sessionmaker() as session:
+        # User 1: message_id=100 contains "Андрей" (their first name)
+        session.add(_msg(chat_id, 100, 1, "Я Андрей и сегодня всё было ужасно как всегда"))
+        for i in range(1, 5):
+            session.add(_msg(chat_id, 100 + i, 1, base + f" 1-{i}"))
+        for i in range(5):
+            session.add(_msg(chat_id, 200 + i, 2, base + f" 2-{i}"))
+        await session.commit()
+
+    async def fake_llm_pick(*args: object, **kwargs: object) -> LLMPick:
+        return LLMPick(author_user_id=1, message_id=100, reason="cringe")
+
+    async def fake_display_name(chat_id_: int, user_id_: int) -> str:
+        return {1: "Андрей", 2: "Bob"}[user_id_]
+
+    svc = _svc(sessionmaker, llm_pick_fn=fake_llm_pick, display_name_fn=fake_display_name)
+    round_ = await svc.prepare_round(chat_id=chat_id, now=datetime.utcnow())
+    assert round_.selection_mode == "random_fallback"
