@@ -1,17 +1,29 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from html import escape
+from typing import Dict
 
 from aiogram import Bot, F, Router, types
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 
 from ..services.guess_game import GuessGameService, NoCandidatesError, PreparedRound
 
 router = Router(name="games")
 logger = logging.getLogger("bot.games")
+
+_GUESS_LOCKS: Dict[int, asyncio.Lock] = {}
+
+
+def _get_guess_lock(chat_id: int) -> asyncio.Lock:
+    lock = _GUESS_LOCKS.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _GUESS_LOCKS[chat_id] = lock
+    return lock
 
 QUESTION_LIMIT = 300
 
@@ -45,45 +57,58 @@ async def _start_round(
         await bot.send_message(chat.id, "Игра доступна только в групповых чатах.")
         return
 
-    now = datetime.utcnow()
-    if not await guess_game.can_start_today(chat_id=chat.id, now=now):
-        await bot.send_message(chat.id, "На сегодня уже играли, приходите завтра.")
-        return
+    async with _get_guess_lock(chat.id):
+        now = datetime.utcnow()
+        if not await guess_game.can_start_today(chat_id=chat.id, now=now):
+            await bot.send_message(chat.id, "На сегодня уже играли, приходите завтра.")
+            return
 
-    try:
-        prepared: PreparedRound = await guess_game.prepare_round(chat_id=chat.id, now=now)
-    except NoCandidatesError:
-        await bot.send_message(chat.id, "Слишком тихо у вас, не из кого выбирать.")
-        return
+        try:
+            prepared: PreparedRound = await guess_game.prepare_round(chat_id=chat.id, now=now)
+        except NoCandidatesError:
+            await bot.send_message(chat.id, "Слишком тихо у вас, не из кого выбирать.")
+            return
 
-    try:
-        poll_msg = await bot.send_poll(
-            chat_id=chat.id,
-            question=_build_poll_question(prepared.text),
-            options=prepared.option_labels,
-            type="quiz",
-            correct_option_id=prepared.correct_option_id,
-            is_anonymous=False,
-            allows_multiple_answers=False,
+        try:
+            poll_msg = await bot.send_poll(
+                chat_id=chat.id,
+                question=_build_poll_question(prepared.text),
+                options=prepared.option_labels,
+                type="quiz",
+                correct_option_id=prepared.correct_option_id,
+                is_anonymous=False,
+                allows_multiple_answers=False,
+            )
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            logger.warning("guess.send_poll permission failed chat=%s: %s", chat.id, exc)
+            await bot.send_message(chat.id, "Не могу запустить опрос — нужны права в чате.")
+            return
+        except TelegramAPIError:
+            logger.exception("guess.send_poll TG API error chat=%s", chat.id)
+            return
+
+        if poll_msg.poll is None:
+            logger.warning("guess.send_poll returned no poll for chat=%s", chat.id)
+            return
+
+        try:
+            await guess_game.persist_round(
+                prepared,
+                poll_id=poll_msg.poll.id,
+                chat_message_id=poll_msg.message_id,
+            )
+        except Exception:
+            logger.exception("guess.persist_round failed after successful poll chat=%s poll=%s", chat.id, poll_msg.poll.id)
+            await bot.send_message(
+                chat.id,
+                "Не смог сохранить раунд — голоса считаться не будут.",
+            )
+            return
+
+        logger.info(
+            "guess.round.started chat=%s mode=%s n_options=%s",
+            chat.id, prepared.selection_mode, len(prepared.option_user_ids),
         )
-    except TelegramBadRequest as exc:
-        logger.warning("guess.send_poll failed chat=%s: %s", chat.id, exc)
-        await bot.send_message(chat.id, "Не могу запустить опрос — нужны права в чате.")
-        return
-
-    if poll_msg.poll is None:
-        logger.warning("guess.send_poll returned no poll for chat=%s", chat.id)
-        return
-
-    await guess_game.persist_round(
-        prepared,
-        poll_id=poll_msg.poll.id,
-        chat_message_id=poll_msg.message_id,
-    )
-    logger.info(
-        "guess.round.started chat=%s mode=%s n_options=%s",
-        chat.id, prepared.selection_mode, len(prepared.option_user_ids),
-    )
 
 
 @router.message(Command("games"))
