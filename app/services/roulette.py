@@ -6,7 +6,7 @@ import random
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
@@ -995,7 +995,7 @@ class RouletteService:
         )
         if start is not None:
             adj_stmt = adj_stmt.where(
-                RouletteScoreAdjustment.created_at >= datetime.combine(start, datetime.min.time())
+                RouletteScoreAdjustment.created_at >= datetime.combine(start, time.min)
             )
 
         wins_rows = (await session.execute(wins_stmt)).all()

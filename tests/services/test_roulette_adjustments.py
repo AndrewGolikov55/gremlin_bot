@@ -6,13 +6,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import RouletteScoreAdjustment, RouletteWinner
-from app.services.roulette import RouletteService
-
-
-def _make_service(sm: async_sessionmaker[AsyncSession]) -> RouletteService:
-    svc = RouletteService.__new__(RouletteService)
-    svc.sessionmaker = sm
-    return svc
+from tests.services.test_roulette import build_service
 
 
 @pytest.mark.asyncio
@@ -34,7 +28,7 @@ async def test_monthly_aggregate_subtracts_adjustments(sessionmaker: async_sessi
         ))
         await session.commit()
 
-    svc = _make_service(sessionmaker)
+    svc = build_service(sessionmaker)
     async with sessionmaker() as session:
         results = await svc._aggregate(session, chat_id, start=month_start)
 
@@ -53,7 +47,7 @@ async def test_aggregate_hides_users_with_nonpositive_score(sessionmaker: async_
         ))
         await session.commit()
 
-    svc = _make_service(sessionmaker)
+    svc = build_service(sessionmaker)
     async with sessionmaker() as session:
         results = await svc._aggregate(session, chat_id, start=None)
 
@@ -79,7 +73,7 @@ async def test_monthly_aggregate_ignores_old_adjustments(sessionmaker: async_ses
         ))
         await session.commit()
 
-    svc = _make_service(sessionmaker)
+    svc = build_service(sessionmaker)
     async with sessionmaker() as session:
         results = await svc._aggregate(session, chat_id, start=month_start)
 
