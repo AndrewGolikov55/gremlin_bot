@@ -203,6 +203,7 @@ def _svc(
     *,
     llm_pick_fn: Callable[..., Awaitable[Any]] | None = None,
     display_name_fn: Callable[[int, int], Awaitable[str]] | None = None,
+    display_user_fn: Callable[[int, int], Awaitable[tuple[str | None, str | None]]] | None = None,
 ) -> GuessGameService:
     svc = GuessGameService.__new__(GuessGameService)
     svc.sessionmaker = sessionmaker_
@@ -210,6 +211,7 @@ def _svc(
     svc.app_config = MagicMock()
     svc.app_config.get_all = AsyncMock(return_value={})
     svc._display_name = display_name_fn or AsyncMock(side_effect=lambda chat_id, user_id: f"user{user_id}")
+    svc._display_user = display_user_fn or AsyncMock(return_value=(None, None))
     svc._llm_pick = llm_pick_fn or AsyncMock(return_value=None)
     svc._rng = random.Random(42)
     return svc
@@ -294,10 +296,11 @@ async def test_prepare_round_post_filter_falls_back_to_random(sessionmaker: asyn
     async def fake_llm_pick(*args: object, **kwargs: object) -> LLMPick:
         return LLMPick(author_user_id=1, message_id=100, reason="cringe")
 
-    async def fake_display_name(chat_id_: int, user_id_: int) -> str:
-        return {1: "Андрей", 2: "Bob"}[user_id_]
-
-    svc = _svc(sessionmaker, llm_pick_fn=fake_llm_pick, display_name_fn=fake_display_name)
+    svc = _svc(
+        sessionmaker,
+        llm_pick_fn=fake_llm_pick,
+        display_user_fn=AsyncMock(return_value=("andryuha", "Андрей")),
+    )
     round_ = await svc.prepare_round(chat_id=chat_id, now=datetime.utcnow())
     assert round_.selection_mode == "random_fallback"
 

@@ -224,6 +224,7 @@ class GuessGameService:
         *,
         bot: Any = None,
         display_name: Callable[[int, int], Awaitable[str]] | None = None,
+        display_user: Callable[[int, int], Awaitable[tuple[str | None, str | None]]] | None = None,
         llm_pick: Callable[..., Awaitable[LLMPick | None]] | None = None,
         rng: random.Random | None = None,
     ) -> None:
@@ -231,6 +232,7 @@ class GuessGameService:
         self.app_config = app_config
         self.bot = bot
         self._display_name = display_name or self._default_display_name
+        self._display_user = display_user or self._default_display_user
         self._llm_pick = llm_pick or self._llm_pick_real
         self._rng = rng or random.Random()
 
@@ -247,6 +249,16 @@ class GuessGameService:
         if user.username:
             return f"@{user.username}"
         return f"user{user_id}"
+
+    async def _default_display_user(self, chat_id: int, user_id: int) -> tuple[str | None, str | None]:
+        """Return (username, first_name) for the post-filter. Falls back to (None, None)."""
+        if self.bot is None:
+            return None, None
+        try:
+            member = await self.bot.get_chat_member(chat_id, user_id)
+        except Exception:  # noqa: BLE001
+            return None, None
+        return member.user.username, member.user.first_name
 
     async def _llm_pick_real(
         self,
@@ -310,6 +322,16 @@ class GuessGameService:
 
         valid_authors = set(author_messages.keys())
 
+        display_cache: dict[int, str] = {}
+
+        async def _named(uid: int) -> str:
+            cached = display_cache.get(uid)
+            if cached is not None:
+                return cached
+            name = await self._display_name(chat_id, uid)
+            display_cache[uid] = name
+            return name
+
         llm_choice = await self._llm_pick(author_messages, chat_id=chat_id)
         selection_mode: Literal["llm", "random_fallback"] = "random_fallback"
         chosen_author: int | None = None
@@ -318,8 +340,8 @@ class GuessGameService:
         if llm_choice is not None and llm_choice.author_user_id in valid_authors:
             for m in author_messages[llm_choice.author_user_id]:
                 if m.message_id == llm_choice.message_id:
-                    name = await self._display_name(chat_id, llm_choice.author_user_id)
-                    if not text_contains_author_identity(m.text, username=None, first_name=name):
+                    username, first_name = await self._display_user(chat_id, llm_choice.author_user_id)
+                    if not text_contains_author_identity(m.text, username=username, first_name=first_name):
                         chosen_author = llm_choice.author_user_id
                         chosen_message = m
                         selection_mode = "llm"
@@ -341,7 +363,7 @@ class GuessGameService:
         decoys = other_authors[:n_decoys]
         options = decoys + [chosen_author]
         self._rng.shuffle(options)
-        labels = [await self._display_name(chat_id, uid) for uid in options]
+        labels = [await _named(uid) for uid in options]
         correct_idx = options.index(chosen_author)
 
         return PreparedRound(
