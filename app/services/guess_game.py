@@ -27,8 +27,11 @@ MoscowTZ = ZoneInfo("Europe/Moscow")
 
 
 def _moscow_midnight(now: datetime) -> datetime:
-    """Return today's Moscow midnight as a naive UTC datetime suitable for comparison with stored Message.date."""
-    aware = now if now.tzinfo else now.replace(tzinfo=MoscowTZ)
+    """Return today's Moscow midnight as a naive UTC datetime suitable for comparison with stored Message.date.
+
+    Naive `now` is interpreted as UTC (matching `datetime.utcnow()`).
+    """
+    aware = now if now.tzinfo else now.replace(tzinfo=ZoneInfo("UTC"))
     msk = aware.astimezone(MoscowTZ)
     midnight_msk = msk.replace(hour=0, minute=0, second=0, microsecond=0)
     # Stored Message.date is naive UTC; convert Moscow midnight to UTC and drop tz.

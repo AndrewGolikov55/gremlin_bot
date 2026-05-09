@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.message import Message
-from app.services.guess_game import pick_candidate_authors, pick_messages_for_author
+from app.services.guess_game import (
+    _moscow_midnight,
+    pick_candidate_authors,
+    pick_messages_for_author,
+)
 
 
 def _msg(chat_id: int, message_id: int, user_id: int, text: str, *, days_ago: int = 1, is_bot: bool = False, tg_file_id: str | None = None) -> Message:
@@ -21,6 +25,20 @@ def _msg(chat_id: int, message_id: int, user_id: int, text: str, *, days_ago: in
         tg_file_id=tg_file_id,
         media_group_id=None,
     )
+
+
+def test_moscow_midnight_treats_naive_as_utc() -> None:
+    # 22:00 UTC on May 8 = 01:00 MSK on May 9.
+    # The Moscow midnight for that moment is May 9, 00:00 MSK = May 8, 21:00 UTC.
+    naive_utc = datetime(2026, 5, 8, 22, 0, 0)
+    midnight = _moscow_midnight(naive_utc)
+    assert midnight == datetime(2026, 5, 8, 21, 0, 0)
+
+
+def test_moscow_midnight_handles_aware_utc() -> None:
+    aware = datetime(2026, 5, 8, 22, 0, 0, tzinfo=timezone.utc)
+    midnight = _moscow_midnight(aware)
+    assert midnight == datetime(2026, 5, 8, 21, 0, 0)
 
 
 @pytest.mark.asyncio
