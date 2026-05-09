@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pytest import MonkeyPatch
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -431,3 +432,60 @@ async def test_find_round_by_poll(sessionmaker: async_sessionmaker[AsyncSession]
 
     missing = await svc.find_round_by_poll("does-not-exist")
     assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_llm_pick_real_calls_generate_with_compact_payload(monkeypatch: MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_generate(messages: Any, **kwargs: Any) -> str:
+        captured["messages"] = list(messages)
+        captured["kwargs"] = kwargs
+        return '{"author_user_id": 1, "message_id": 100, "reason": "ok"}'
+
+    from app.services import guess_game as gg
+    monkeypatch.setattr(gg, "llm_generate", fake_generate)
+
+    author_messages = {
+        1: [_msg(-100, 100, 1, "x" * 60), _msg(-100, 101, 1, "y" * 60)],
+        2: [_msg(-100, 200, 2, "z" * 60)],
+    }
+
+    svc = GuessGameService.__new__(GuessGameService)
+    svc.app_config = MagicMock()
+    svc.app_config.get_all = AsyncMock(return_value={"llm_provider": "openrouter"})
+    pick = await svc._llm_pick_real(author_messages, chat_id=-100)
+    assert pick == LLMPick(author_user_id=1, message_id=100, reason="ok")
+
+    msgs: list[Any] = captured["messages"]
+    assert msgs[0]["role"] == "system"
+    payload_str: str = msgs[-1]["content"]
+    assert "100" in payload_str
+    assert "candidates" in payload_str
+
+
+@pytest.mark.asyncio
+async def test_llm_pick_real_returns_none_on_llm_error(monkeypatch: MonkeyPatch) -> None:
+    from app.services import guess_game as gg
+
+    async def boom(*args: Any, **kwargs: Any) -> str:
+        raise gg.LLMError("nope")
+
+    monkeypatch.setattr(gg, "llm_generate", boom)
+
+    svc = GuessGameService.__new__(GuessGameService)
+    svc.app_config = MagicMock()
+    svc.app_config.get_all = AsyncMock(return_value={})
+    pick = await svc._llm_pick_real(
+        {1: [_msg(-100, 1, 1, "x" * 60)]}, chat_id=-100,
+    )
+    assert pick is None
+
+
+@pytest.mark.asyncio
+async def test_llm_pick_real_returns_none_on_empty_candidates() -> None:
+    svc = GuessGameService.__new__(GuessGameService)
+    svc.app_config = MagicMock()
+    svc.app_config.get_all = AsyncMock(return_value={})
+    pick = await svc._llm_pick_real({}, chat_id=-100)
+    assert pick is None

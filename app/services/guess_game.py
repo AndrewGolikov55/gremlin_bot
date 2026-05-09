@@ -6,7 +6,7 @@ import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ..models.guess_round import GuessRound
 from ..models.message import Message
 from ..models.roulette import RouletteScoreAdjustment
+from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
+from .llm.client import generate as llm_generate
 
 logger = logging.getLogger("bot.guess_game")
 
@@ -30,6 +32,13 @@ _FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 MoscowTZ = ZoneInfo("Europe/Moscow")
+
+LLM_SYSTEM = (
+    "Ты — помощник для игры «Угадай кто сказал». На вход дают список авторов и"
+    " их сообщений. Выбери ОДНО самое характерное/смешное/кринжовое сообщение,"
+    " по которому игроки легко узнают автора. Ответ строго JSON, без markdown,"
+    " формат: {\"author_user_id\": <int>, \"message_id\": <int>, \"reason\": \"...\"}."
+)
 
 
 def _moscow_midnight(now: datetime) -> datetime:
@@ -211,7 +220,7 @@ class GuessGameService:
     def __init__(
         self,
         sessionmaker: async_sessionmaker[AsyncSession],
-        app_config: object,
+        app_config: Any,
         *,
         bot: object = None,
         display_name: Callable[[int, int], Awaitable[str]] | None = None,
@@ -222,21 +231,57 @@ class GuessGameService:
         self.app_config = app_config
         self.bot = bot
         self._display_name = display_name or self._default_display_name
-        self._llm_pick = llm_pick or self._llm_pick_default
+        self._llm_pick = llm_pick or self._llm_pick_real
         self._rng = rng or random.Random()
 
     async def _default_display_name(self, chat_id: int, user_id: int) -> str:
         # Real impl in Task 10 hits TG via self.bot. For unit tests, replace via ctor.
         return f"user{user_id}"
 
-    async def _llm_pick_default(
+    async def _llm_pick_real(
         self,
         author_messages: dict[int, list[Message]],
         *,
         chat_id: int,
     ) -> LLMPick | None:
-        # Real impl in Task 8 calls llm_generate. Default falls through to random.
-        return None
+        valid_authors = set(author_messages.keys())
+        valid_message_ids = {m.message_id for msgs in author_messages.values() for m in msgs}
+        if not valid_authors:
+            return None
+
+        candidates_payload = [
+            {
+                "user_id": uid,
+                "messages": [{"id": m.message_id, "text": m.text} for m in msgs],
+            }
+            for uid, msgs in author_messages.items()
+        ]
+        user_payload = json.dumps(
+            {"task": "Выбери самое характерное сообщение", "candidates": candidates_payload},
+            ensure_ascii=False,
+        )
+
+        conf = await self.app_config.get_all(chat_id)
+        provider = resolve_llm_options(conf)
+
+        try:
+            raw = await llm_generate(
+                [
+                    {"role": "system", "content": LLM_SYSTEM},
+                    {"role": "user", "content": user_payload},
+                ],
+                temperature=0.7,
+                max_tokens=200,
+                provider=provider,
+            )
+        except (LLMError, LLMRateLimitError):
+            logger.exception("guess.llm_pick failed for chat=%s", chat_id)
+            return None
+        except Exception:
+            logger.exception("guess.llm_pick unexpected error for chat=%s", chat_id)
+            return None
+
+        return parse_llm_pick(raw, valid_authors=valid_authors, valid_message_ids=valid_message_ids)
 
     async def prepare_round(self, chat_id: int, *, now: datetime) -> PreparedRound:
         async with self.sessionmaker() as session:
