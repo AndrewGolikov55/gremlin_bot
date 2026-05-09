@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models.chat import Chat
-from ..models.roulette import RouletteParticipant, RouletteWinner
+from ..models.roulette import RouletteParticipant, RouletteScoreAdjustment, RouletteWinner
 from ..services.app_config import AppConfigService
 from ..services.context import (
     DEFAULT_CHAT_PROMPT,
@@ -973,24 +973,51 @@ class RouletteService:
         *,
         start: date | None = None,
     ) -> list[StatsEntry]:
-        count_col = func.count().label("cnt")
-        stmt = (
+        wins_stmt = (
             select(
                 RouletteWinner.user_id,
+                func.count().label("cnt"),
                 func.max(RouletteWinner.username).label("username"),
-                count_col,
             )
             .where(RouletteWinner.chat_id == chat_id)
+            .group_by(RouletteWinner.user_id)
         )
-        if start:
-            stmt = stmt.where(RouletteWinner.won_at >= start)
-        stmt = (
-            stmt.group_by(RouletteWinner.user_id)
-            .order_by(count_col.desc(), RouletteWinner.user_id)
-        )
+        if start is not None:
+            wins_stmt = wins_stmt.where(RouletteWinner.won_at >= start)
 
-        rows = await session.execute(stmt)
-        return [StatsEntry(user_id=row.user_id, username=row.username, wins=row.cnt) for row in rows]
+        adj_stmt = (
+            select(
+                RouletteScoreAdjustment.user_id,
+                func.coalesce(func.sum(RouletteScoreAdjustment.delta), 0).label("delta_sum"),
+            )
+            .where(RouletteScoreAdjustment.chat_id == chat_id)
+            .group_by(RouletteScoreAdjustment.user_id)
+        )
+        if start is not None:
+            adj_stmt = adj_stmt.where(
+                RouletteScoreAdjustment.created_at >= datetime.combine(start, datetime.min.time())
+            )
+
+        wins_rows = (await session.execute(wins_stmt)).all()
+        adj_rows = (await session.execute(adj_stmt)).all()
+
+        by_user_count: dict[int, int] = {}
+        by_user_name: dict[int, str | None] = {}
+        for user_id, cnt, username in wins_rows:
+            by_user_count[user_id] = int(cnt)
+            by_user_name[user_id] = username
+        for user_id, delta_sum in adj_rows:
+            by_user_count[user_id] = by_user_count.get(user_id, 0) + int(delta_sum)
+            by_user_name.setdefault(user_id, None)
+
+        results: list[StatsEntry] = []
+        for user_id, score in by_user_count.items():
+            if score <= 0:
+                continue
+            results.append(StatsEntry(user_id=user_id, username=by_user_name.get(user_id), wins=score))
+
+        results.sort(key=lambda e: e.wins, reverse=True)
+        return results
 
     def _format_stats(
         self,
