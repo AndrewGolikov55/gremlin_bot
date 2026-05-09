@@ -222,7 +222,7 @@ class GuessGameService:
         sessionmaker: async_sessionmaker[AsyncSession],
         app_config: Any,
         *,
-        bot: object = None,
+        bot: Any = None,
         display_name: Callable[[int, int], Awaitable[str]] | None = None,
         llm_pick: Callable[..., Awaitable[LLMPick | None]] | None = None,
         rng: random.Random | None = None,
@@ -235,7 +235,17 @@ class GuessGameService:
         self._rng = rng or random.Random()
 
     async def _default_display_name(self, chat_id: int, user_id: int) -> str:
-        # Real impl in Task 10 hits TG via self.bot. For unit tests, replace via ctor.
+        if self.bot is None:
+            return f"user{user_id}"
+        try:
+            member = await self.bot.get_chat_member(chat_id, user_id)
+        except Exception:  # noqa: BLE001 — TG API failure → harmless display fallback
+            return f"user{user_id}"
+        user = member.user
+        if user.full_name:
+            return user.full_name
+        if user.username:
+            return f"@{user.username}"
         return f"user{user_id}"
 
     async def _llm_pick_real(

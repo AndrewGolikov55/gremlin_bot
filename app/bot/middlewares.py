@@ -14,6 +14,7 @@ from ..services.roulette import RouletteService
 from ..services.spontaneity import SpontaneityPolicy
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
+from ..services.guess_game import GuessGameService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -44,6 +45,7 @@ class ServicesMiddleware(BaseMiddleware):
         usage_limits: UsageLimiter,
         memory: UserMemoryService,
         policy: SpontaneityPolicy,
+        guess_game: GuessGameService,
     ):
         self.settings = settings
         self.context = context
@@ -55,6 +57,7 @@ class ServicesMiddleware(BaseMiddleware):
         self.usage_limits = usage_limits
         self.memory = memory
         self.policy = policy
+        self.guess_game = guess_game
 
     async def __call__(
         self,
@@ -72,4 +75,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["usage_limits"] = self.usage_limits
         data["memory"] = self.memory
         data["policy"] = self.policy
+        data["guess_game"] = self.guess_game
         return await handler(event, data)

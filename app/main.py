@@ -24,6 +24,7 @@ from .bot.router_admin import router as admin_router
 from .bot.router_triggers import router as triggers_router
 from .bot.router_fun import router as fun_router
 from .bot.router_interjector import router as interjector_router
+from .bot.router_games import router as games_router
 from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
 from .admin import create_admin_router
 
@@ -40,6 +41,7 @@ from .services.roulette import RouletteService
 from .services.spontaneity import SpontaneityPolicy
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
+from .services.guess_game import GuessGameService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
 from .services.release_broadcast import ReleaseBroadcaster
 from .utils.version import get_version
@@ -127,12 +129,18 @@ roulette_service = RouletteService(
     personas=persona_service,
     memory=user_memory_service,
 )
+guess_game_service = GuessGameService(
+    sessionmaker=async_sessionmaker,
+    app_config=app_config_service,
+    bot=bot,
+)
 
 # Routers
 dp.include_router(admin_router)
 dp.include_router(fun_router)
 dp.include_router(triggers_router)
 dp.include_router(interjector_router)
+dp.include_router(games_router)
 
 # Middlewares
 dp.message.middleware(DbSessionMiddleware(async_sessionmaker))
@@ -163,6 +171,7 @@ dp.update.middleware(
         usage_limits_service,
         user_memory_service,
         spontaneity_policy,
+        guess_game_service,
     )
 )
 scheduler = get_scheduler()
