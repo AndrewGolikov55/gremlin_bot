@@ -129,13 +129,14 @@ def parse_llm_pick(
     valid_authors: set[int],
     valid_message_ids: set[int],
 ) -> LLMPick | None:
+    """Tolerantly parse a JSON object from LLM output (handles plain JSON or fenced code blocks)."""
     if not raw:
         return None
     text = raw.strip()
     if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].lstrip()
+        # Strip leading fence with optional language tag, then trailing fence
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = text.rstrip().removesuffix("```").rstrip()
     try:
         obj = json.loads(text)
     except (ValueError, TypeError):

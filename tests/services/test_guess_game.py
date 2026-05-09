@@ -151,6 +151,20 @@ def test_parse_llm_pick_extracts_from_codeblock() -> None:
     assert pick.author_user_id == 1
 
 
+def test_parse_llm_pick_extracts_from_codeblock_no_lang_tag() -> None:
+    raw = "```\n{\"author_user_id\": 1, \"message_id\": 42}\n```"
+    pick = parse_llm_pick(raw, valid_authors={1}, valid_message_ids={42})
+    assert pick is not None
+    assert pick.author_user_id == 1
+
+
+def test_parse_llm_pick_extracts_from_codeblock_other_lang_tag() -> None:
+    raw = "```python\n{\"author_user_id\": 1, \"message_id\": 42}\n```"
+    pick = parse_llm_pick(raw, valid_authors={1}, valid_message_ids={42})
+    assert pick is not None
+    assert pick.author_user_id == 1
+
+
 def test_text_contains_author_identity_username_match() -> None:
     assert text_contains_author_identity(
         "как сказал andryuha, всё пропало",
