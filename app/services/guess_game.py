@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -112,3 +114,62 @@ async def pick_candidate_authors(
     authors = [uid for uid, n in counts.items() if n >= MIN_ELIGIBLE_PER_AUTHOR]
     authors.sort(key=lambda uid: counts[uid], reverse=True)
     return authors[:limit]
+
+
+@dataclass(frozen=True)
+class LLMPick:
+    author_user_id: int
+    message_id: int
+    reason: str | None = None
+
+
+def parse_llm_pick(
+    raw: str,
+    *,
+    valid_authors: set[int],
+    valid_message_ids: set[int],
+) -> LLMPick | None:
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].lstrip()
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    try:
+        author_id = int(obj["author_user_id"])
+        message_id = int(obj["message_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if author_id not in valid_authors or message_id not in valid_message_ids:
+        return None
+    reason = obj.get("reason")
+    if not isinstance(reason, str):
+        reason = None
+    return LLMPick(author_user_id=author_id, message_id=message_id, reason=reason)
+
+
+def text_contains_author_identity(
+    text: str,
+    *,
+    username: str | None,
+    first_name: str | None,
+) -> bool:
+    """Detect whether the message text leaks the author's identity (case-insensitive substring)."""
+    haystack = text.lower()
+    needles: list[str] = []
+    if username:
+        needles.append(username.lower())
+    if first_name:
+        chunks = first_name.strip().split()
+        if chunks:
+            chunk = chunks[0].lower()
+            if len(chunk) >= 3:
+                needles.append(chunk)
+    return any(n in haystack for n in needles if n)

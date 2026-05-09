@@ -7,9 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.message import Message
 from app.services.guess_game import (
+    LLMPick,
     _moscow_midnight,
+    parse_llm_pick,
     pick_candidate_authors,
     pick_messages_for_author,
+    text_contains_author_identity,
 )
 
 
@@ -117,3 +120,56 @@ async def test_pick_authors_requires_min_5_eligible_messages(sessionmaker: async
     async with sessionmaker() as session:
         authors = await pick_candidate_authors(session, chat_id, now=datetime.utcnow())
     assert authors == [1]
+
+
+def test_parse_llm_pick_valid() -> None:
+    raw = '{"author_user_id": 5, "message_id": 42, "reason": "very cringe"}'
+    valid_authors = {5, 9}
+    valid_message_ids = {42, 43}
+    pick = parse_llm_pick(raw, valid_authors=valid_authors, valid_message_ids=valid_message_ids)
+    assert pick == LLMPick(author_user_id=5, message_id=42, reason="very cringe")
+
+
+def test_parse_llm_pick_invalid_json_returns_none() -> None:
+    assert parse_llm_pick("not json", valid_authors={1}, valid_message_ids={1}) is None
+
+
+def test_parse_llm_pick_unknown_author_returns_none() -> None:
+    raw = '{"author_user_id": 999, "message_id": 42}'
+    assert parse_llm_pick(raw, valid_authors={1, 2}, valid_message_ids={42}) is None
+
+
+def test_parse_llm_pick_unknown_message_returns_none() -> None:
+    raw = '{"author_user_id": 1, "message_id": 999}'
+    assert parse_llm_pick(raw, valid_authors={1}, valid_message_ids={42}) is None
+
+
+def test_parse_llm_pick_extracts_from_codeblock() -> None:
+    raw = "```json\n{\"author_user_id\": 1, \"message_id\": 42}\n```"
+    pick = parse_llm_pick(raw, valid_authors={1}, valid_message_ids={42})
+    assert pick is not None
+    assert pick.author_user_id == 1
+
+
+def test_text_contains_author_identity_username_match() -> None:
+    assert text_contains_author_identity(
+        "как сказал andryuha, всё пропало",
+        username="andryuha",
+        first_name="Андрей",
+    )
+
+
+def test_text_contains_author_identity_first_name_match() -> None:
+    assert text_contains_author_identity(
+        "ну а Андрей опять опоздал",
+        username=None,
+        first_name="Андрей",
+    )
+
+
+def test_text_contains_author_identity_no_match() -> None:
+    assert not text_contains_author_identity(
+        "обычное сообщение без идентификации автора",
+        username="andryuha",
+        first_name="Андрей",
+    )
