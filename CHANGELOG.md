@@ -3,16 +3,24 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] - 2026-05-09
 
 ### Added
 
 - Меню игр `/games` и первая игра «Угадай кто сказал» (`/guess`):
   quiz-опрос с автором сообщения и тремя случайными деками,
   выбор сообщения через LLM («кринж-режим») с фолбеком на random.
-  Первый угадавший получает −1 в месячной статистике рулетки.
-  Лимит — 1 раунд в сутки на чат.
-- Таблицы `guess_rounds`, `roulette_score_adjustments` (миграция 20260509_01).
+  Первый угадавший получает −1 в месячной статистике рулетки
+  (`/rollstats_montly`). Лимит — 1 раунд в сутки на чат
+- Таблицы `guess_rounds`, `roulette_score_adjustments` (миграция `20260509_01`)
+
+### Internal
+
+- Per-chat asyncio-лок против гонки одновременных `/guess`, atomic первый-победитель через `SELECT ... FOR UPDATE`
+- Кэш `display_name` в рамках раунда, расширенная обработка ошибок Telegram API при `send_poll`/`persist_round`
+- ~40 новых тестов: фильтры кандидатов, парсер LLM, post-filter,
+  daily-limit, polll_answer flow, агрегатор рулетки с adjustments,
+  TZ-конверсия `_moscow_midnight`
 
 ## [0.6.4] - 2026-04-23
 
