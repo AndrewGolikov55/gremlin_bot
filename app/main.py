@@ -135,12 +135,13 @@ guess_game_service = GuessGameService(
     bot=bot,
 )
 
-# Routers
+# Routers — order matters: command routers MUST be registered before triggers_router,
+# which has a catch-all @router.message(F.text) that consumes any text message.
 dp.include_router(admin_router)
 dp.include_router(fun_router)
+dp.include_router(games_router)
 dp.include_router(triggers_router)
 dp.include_router(interjector_router)
-dp.include_router(games_router)
 
 # Middlewares
 dp.message.middleware(DbSessionMiddleware(async_sessionmaker))

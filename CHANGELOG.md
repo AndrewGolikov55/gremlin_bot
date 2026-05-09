@@ -3,6 +3,15 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-05-09
+
+### Fixed
+
+- Команды `/guess` и `/games` не работали в проде из-за порядка
+  регистрации роутеров: `triggers_router` с `@router.message(F.text)`
+  перехватывал текст и не пропускал к `games_router`. `games_router`
+  переставлен ДО `triggers_router`, как `fun_router`
+
 ## [0.7.0] - 2026-05-09
 
 ### Added
