@@ -47,6 +47,9 @@ class ChatMemory(Base):
     lore: Mapped[list[str]] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"), default=list
     )
+    monthly_champion: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True, default=None
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
