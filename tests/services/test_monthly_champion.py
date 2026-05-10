@@ -495,3 +495,133 @@ async def test_process_chat_telegram_forbidden_does_not_raise(sessionmaker):
 
     # Сообщение пытались отправить (и упало)
     bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_monthly_summary_iterates_active_chats(sessionmaker, monkeypatch):
+    async with sessionmaker() as session:
+        session.add(Chat(id=1, title="A", is_active=True))
+        session.add(Chat(id=2, title="B", is_active=True))
+        session.add(Chat(id=3, title="C", is_active=False))  # inactive
+        await session.commit()
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+
+    processed: list[int] = []
+
+    async def fake_process(*, chat_id, period_start, period_end_excl):
+        processed.append(chat_id)
+
+    monkeypatch.setattr(svc, "process_chat", fake_process)
+    monkeypatch.setattr("app.services.monthly_champion.PER_CHAT_SLEEP_SEC", 0)
+
+    fixed_now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+    import datetime as _real_datetime
+
+    class _DT:
+        now = staticmethod(lambda tz=None: fixed_now if tz else fixed_now.replace(tzinfo=None))
+        combine = staticmethod(_real_datetime.datetime.combine)
+        utcnow = staticmethod(_real_datetime.datetime.utcnow)
+
+    monkeypatch.setattr("app.services.monthly_champion.datetime", _DT)
+
+    await svc.run_monthly_summary()
+
+    # Только активные чаты (Chat.is_active=True)
+    assert sorted(processed) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_run_monthly_summary_continues_on_chat_failure(sessionmaker, monkeypatch):
+    async with sessionmaker() as session:
+        session.add(Chat(id=1, title="A", is_active=True))
+        session.add(Chat(id=2, title="B", is_active=True))
+        await session.commit()
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+
+    processed: list[int] = []
+
+    async def fake_process(*, chat_id, period_start, period_end_excl):
+        processed.append(chat_id)
+        if chat_id == 1:
+            raise RuntimeError("simulated chat 1 failure")
+
+    monkeypatch.setattr(svc, "process_chat", fake_process)
+    monkeypatch.setattr("app.services.monthly_champion.PER_CHAT_SLEEP_SEC", 0)
+
+    fixed_now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+    import datetime as _real_datetime
+
+    class _DT:
+        now = staticmethod(lambda tz=None: fixed_now if tz else fixed_now.replace(tzinfo=None))
+        combine = staticmethod(_real_datetime.datetime.combine)
+        utcnow = staticmethod(_real_datetime.datetime.utcnow)
+
+    monkeypatch.setattr("app.services.monthly_champion.datetime", _DT)
+
+    # Не должно выбросить
+    await svc.run_monthly_summary()
+
+    # Оба чата были попытаны
+    assert sorted(processed) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_catch_up_skips_after_day_seven(sessionmaker, monkeypatch):
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+
+    called = False
+
+    async def fake_run():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(svc, "run_monthly_summary", fake_run)
+
+    fixed_now = datetime(2026, 5, 10, 12, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+    import datetime as _real_datetime
+
+    class _DT:
+        now = staticmethod(lambda tz=None: fixed_now if tz else fixed_now.replace(tzinfo=None))
+        combine = staticmethod(_real_datetime.datetime.combine)
+        utcnow = staticmethod(_real_datetime.datetime.utcnow)
+
+    monkeypatch.setattr("app.services.monthly_champion.datetime", _DT)
+
+    await svc.catch_up_if_needed()
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_catch_up_runs_within_day_seven(sessionmaker, monkeypatch):
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+
+    called = False
+
+    async def fake_run():
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(svc, "run_monthly_summary", fake_run)
+
+    fixed_now = datetime(2026, 5, 5, 12, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+    import datetime as _real_datetime
+
+    class _DT:
+        now = staticmethod(lambda tz=None: fixed_now if tz else fixed_now.replace(tzinfo=None))
+        combine = staticmethod(_real_datetime.datetime.combine)
+        utcnow = staticmethod(_real_datetime.datetime.utcnow)
+
+    monkeypatch.setattr("app.services.monthly_champion.datetime", _DT)
+
+    await svc.catch_up_if_needed()
+    assert called is True

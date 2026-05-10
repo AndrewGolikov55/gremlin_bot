@@ -382,3 +382,35 @@ class MonthlyChampionService:
                 logger.exception(
                     "monthly_champion: TelegramAPIError for chat=%s", chat_id
                 )
+
+    async def _list_candidate_chats(self) -> list[int]:
+        async with self.sessionmaker() as session:
+            stmt = select(Chat.id).where(Chat.is_active.is_(True))
+            return [row[0] for row in (await session.execute(stmt)).all()]
+
+    async def run_monthly_summary(self) -> None:
+        now = datetime.now(MoscowTZ)
+        period_start, period_end_excl = _previous_period(now)
+        chat_ids = await self._list_candidate_chats()
+        for chat_id in chat_ids:
+            try:
+                await self.process_chat(
+                    chat_id=chat_id,
+                    period_start=period_start,
+                    period_end_excl=period_end_excl,
+                )
+            except Exception:
+                logger.exception(
+                    "monthly_champion: process_chat failed chat=%s", chat_id
+                )
+            await asyncio.sleep(PER_CHAT_SLEEP_SEC)
+
+    async def catch_up_if_needed(self) -> None:
+        now = datetime.now(MoscowTZ)
+        if now.day > CATCH_UP_DAY_LIMIT:
+            logger.info(
+                "monthly_champion: catch-up skipped (day=%s > %s)",
+                now.day, CATCH_UP_DAY_LIMIT,
+            )
+            return
+        await self.run_monthly_summary()
