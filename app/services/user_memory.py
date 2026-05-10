@@ -305,6 +305,8 @@ class UserMemoryService:
         if chat_mem is None or not chat_mem.monthly_champion:
             return None
         data = chat_mem.monthly_champion
+        if not isinstance(data, dict):
+            return None
         title = data.get("title") or "Чемпион"
         name = data.get("display_name") or "—"
         period = data.get("period_start") or ""

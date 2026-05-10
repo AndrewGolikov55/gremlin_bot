@@ -292,6 +292,10 @@ class MonthlyChampionService:
         period_start: date,
         period_end_excl: date,
     ) -> None:
+        # Single-process deployment assumed: per-chat asyncio.Lock guards cron+manual
+        # races inside one process. UNIQUE(chat_id, period_start) on monthly_champions
+        # is a last-line defence — if two processes ever collide on send, only one will
+        # win the row, but both Telegram messages will already have been sent.
         async with self._get_lock(chat_id):
             if not await self._is_chat_targetable(chat_id):
                 return
