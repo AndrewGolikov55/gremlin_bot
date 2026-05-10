@@ -327,10 +327,10 @@ class MonthlyChampionService:
 
                 tied = [e for e in top if e.wins == top[0].wins]
                 tied_with: list[int] = []
+                tied_names: list[str] = []
                 if len(tied) == 1:
                     champion = tied[0]
                 else:
-                    tied_names: list[str] = []
                     for e in tied:
                         tied_names.append(
                             await self._resolve_display_name(chat_id=chat_id, user_id=e.user_id)
@@ -352,13 +352,8 @@ class MonthlyChampionService:
                 )
 
                 if tied_with:
-                    tied_names_for_prompt: list[str] = []
-                    for e in tied:
-                        tied_names_for_prompt.append(
-                            await self._resolve_display_name(chat_id=chat_id, user_id=e.user_id)
-                        )
                     text = await self._render_runoff_winner(
-                        tied_names=tied_names_for_prompt,
+                        tied_names=tied_names,
                         winner_name=champion_name,
                         daily_title=daily_title,
                     )
