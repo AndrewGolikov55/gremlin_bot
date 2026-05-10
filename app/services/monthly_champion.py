@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models import RouletteWinner
+from ..models import Chat, ChatMemory, MonthlyChampion, RouletteWinner
 from .app_config import AppConfigService
 from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
 from .llm.client import generate as llm_generate
@@ -198,3 +200,190 @@ class MonthlyChampionService:
         if not text:
             return f"🏅 В этом месяце короля «{daily_title}» не нашлось — никто не рискнул."
         return text.strip()
+
+    @staticmethod
+    def _month_label_ru(period_start: date) -> str:
+        months = [
+            "январь", "февраль", "март", "апрель", "май", "июнь",
+            "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+        ]
+        return f"{months[period_start.month - 1]} {period_start.year}"
+
+    async def _is_chat_targetable(self, chat_id: int) -> bool:
+        async with self.sessionmaker() as session:
+            chat = await session.get(Chat, chat_id)
+            if chat is None or not chat.is_active:
+                return False
+        conf = await self.settings.get_all(chat_id)
+        return bool(conf.get("is_active", True))
+
+    async def _already_announced(self, *, chat_id: int, period_start: date) -> bool:
+        async with self.sessionmaker() as session:
+            stmt = select(MonthlyChampion.id).where(
+                MonthlyChampion.chat_id == chat_id,
+                MonthlyChampion.period_start == period_start,
+            )
+            return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def _resolve_daily_title(self, chat_id: int) -> str:
+        conf = await self.settings.get_all(chat_id)
+        custom = str(conf.get("roulette_custom_title") or "").strip()
+        return custom or "Мудак дня"
+
+    async def _persist_announcement(
+        self,
+        *,
+        chat_id: int,
+        period_start: date,
+        champion: StatsEntry | None,
+        display_name: str | None,
+        tied_with: list[int],
+        daily_title: str,
+    ) -> None:
+        async with self.sessionmaker() as session:
+            row = MonthlyChampion(
+                chat_id=chat_id,
+                period_start=period_start,
+                user_id=champion.user_id if champion else None,
+                display_name=display_name,
+                score=champion.wins if champion else 0,
+                tied_with=tied_with,
+                daily_title_snapshot=daily_title,
+                announced_at=datetime.utcnow(),
+            )
+            session.add(row)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                logger.info(
+                    "monthly_champion: integrity race for chat=%s period=%s",
+                    chat_id, period_start,
+                )
+                return
+
+            if champion is not None:
+                mem = await session.get(ChatMemory, chat_id)
+                payload = {
+                    "user_id": champion.user_id,
+                    "display_name": display_name,
+                    "title": daily_title,
+                    "period_start": period_start.isoformat(),
+                }
+                if mem is None:
+                    mem = ChatMemory(
+                        chat_id=chat_id,
+                        members=[],
+                        lore=[],
+                        monthly_champion=payload,
+                    )
+                    session.add(mem)
+                else:
+                    mem.monthly_champion = payload
+                await session.commit()
+
+    async def _send_text(self, chat_id: int, text: str) -> None:
+        await self.bot.send_message(chat_id=chat_id, text=text)
+
+    async def process_chat(
+        self,
+        *,
+        chat_id: int,
+        period_start: date,
+        period_end_excl: date,
+    ) -> None:
+        async with self._get_lock(chat_id):
+            if not await self._is_chat_targetable(chat_id):
+                return
+            if await self._already_announced(chat_id=chat_id, period_start=period_start):
+                return
+
+            daily_title = await self._resolve_daily_title(chat_id)
+            month_label = self._month_label_ru(period_start)
+
+            async with self.sessionmaker() as session:
+                top = await self.roulette._aggregate(
+                    session,
+                    chat_id,
+                    start=period_start,
+                    end=period_end_excl,
+                )
+
+            try:
+                if not top:
+                    text = await self._render_empty(
+                        daily_title=daily_title, month_label=month_label
+                    )
+                    await self._send_text(chat_id, text)
+                    await self._persist_announcement(
+                        chat_id=chat_id,
+                        period_start=period_start,
+                        champion=None,
+                        display_name=None,
+                        tied_with=[],
+                        daily_title=daily_title,
+                    )
+                    return
+
+                tied = [e for e in top if e.wins == top[0].wins]
+                tied_with: list[int] = []
+                if len(tied) == 1:
+                    champion = tied[0]
+                else:
+                    tied_names: list[str] = []
+                    for e in tied:
+                        tied_names.append(
+                            await self._resolve_display_name(chat_id=chat_id, user_id=e.user_id)
+                        )
+                    await self._send_text(
+                        chat_id,
+                        "🏆 Итоги месяца. Ничья на вершине: "
+                        f"{', '.join(tied_names)} — по {tied[0].wins} очков.\n"
+                        "Решает рандом.",
+                    )
+                    await asyncio.sleep(DRAMA_PAUSE_SEC)
+                    await self._send_text(chat_id, "🎲 Бросаем кости...")
+                    await asyncio.sleep(DRAMA_PAUSE_SEC)
+                    champion = random.choice(tied)
+                    tied_with = [e.user_id for e in tied]
+
+                champion_name = await self._resolve_display_name(
+                    chat_id=chat_id, user_id=champion.user_id
+                )
+
+                if tied_with:
+                    tied_names_for_prompt: list[str] = []
+                    for e in tied:
+                        tied_names_for_prompt.append(
+                            await self._resolve_display_name(chat_id=chat_id, user_id=e.user_id)
+                        )
+                    text = await self._render_runoff_winner(
+                        tied_names=tied_names_for_prompt,
+                        winner_name=champion_name,
+                        daily_title=daily_title,
+                    )
+                else:
+                    text = await self._render_winner(
+                        top=top,
+                        champion_name=champion_name,
+                        daily_title=daily_title,
+                        month_label=month_label,
+                    )
+
+                await self._send_text(chat_id, text)
+                await self._persist_announcement(
+                    chat_id=chat_id,
+                    period_start=period_start,
+                    champion=champion,
+                    display_name=champion_name,
+                    tied_with=tied_with,
+                    daily_title=daily_title,
+                )
+            except (TelegramForbiddenError, TelegramBadRequest) as exc:
+                logger.warning(
+                    "monthly_champion: telegram error for chat=%s: %s", chat_id, exc
+                )
+            except TelegramAPIError:
+                logger.exception(
+                    "monthly_champion: TelegramAPIError for chat=%s", chat_id
+                )

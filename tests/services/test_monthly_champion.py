@@ -8,8 +8,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import select
 
-from app.models import RouletteWinner
+from app.models import Chat, ChatMemory, MonthlyChampion, RouletteWinner
 from app.services.app_config import AppConfigService
 from app.services.llm.client import LLMError
 from app.services.monthly_champion import MonthlyChampionService, _previous_period  # noqa: F401
@@ -255,3 +256,242 @@ async def test_render_empty_falls_back(sessionmaker):
     with um.patch("app.services.monthly_champion.llm_generate", fake_generate):
         text = await svc._render_empty(daily_title="Мудак дня", month_label="апрель 2026")
     assert "Мудак" in text
+
+
+@pytest.mark.asyncio
+async def test_process_chat_single_winner(sessionmaker):
+    from app.services.roulette import StatsEntry
+
+    chat_id = 42
+    period_start = date(2026, 4, 1)
+    period_end = date(2026, 5, 1)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="Test", is_active=True))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.get_chat_member = AsyncMock(return_value=_make_member("Андрей", username="andrew"))
+    bot.send_message = AsyncMock()
+
+    svc = _make_service(sessionmaker, bot)
+    svc.roulette._aggregate = AsyncMock(return_value=[
+        StatsEntry(user_id=100, username="andrew", wins=7),
+        StatsEntry(user_id=101, username="semen", wins=4),
+    ])
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True, "roulette_custom_title": "Мудак дня"})
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    async def fake_gen(messages, **kw):
+        return "🏆 Король Мудаков месяца — Андрей!"
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_gen):
+        await svc.process_chat(chat_id=chat_id, period_start=period_start, period_end_excl=period_end)
+
+    assert bot.send_message.await_count == 1
+
+    async with sessionmaker() as session:
+        row = (await session.execute(select(MonthlyChampion))).scalar_one()
+        assert row.user_id == 100
+        assert row.display_name == "Андрей"
+        assert row.score == 7
+        assert row.tied_with == []
+        assert row.daily_title_snapshot == "Мудак дня"
+
+        mem = await session.get(ChatMemory, chat_id)
+        assert mem is not None
+        assert mem.monthly_champion["user_id"] == 100
+        assert mem.monthly_champion["title"] == "Мудак дня"
+        assert mem.monthly_champion["display_name"] == "Андрей"
+        assert mem.monthly_champion["period_start"] == "2026-04-01"
+
+
+@pytest.mark.asyncio
+async def test_process_chat_idempotent(sessionmaker):
+    chat_id = 42
+    period_start = date(2026, 4, 1)
+    period_end = date(2026, 5, 1)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="Test", is_active=True))
+        session.add(MonthlyChampion(
+            chat_id=chat_id, period_start=period_start,
+            user_id=100, display_name="Андрей", score=7,
+            tied_with=[], daily_title_snapshot="Мудак дня",
+            announced_at=datetime(2026, 5, 1, 12, 0, 0),
+        ))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.roulette._aggregate = AsyncMock()
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    await svc.process_chat(chat_id=chat_id, period_start=period_start, period_end_excl=period_end)
+
+    bot.send_message.assert_not_awaited()
+    svc.roulette._aggregate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_chat_skips_inactive_chat(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="Test", is_active=False))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    await svc.process_chat(
+        chat_id=chat_id, period_start=date(2026, 4, 1), period_end_excl=date(2026, 5, 1),
+    )
+
+    bot.send_message.assert_not_awaited()
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(MonthlyChampion))).all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_process_chat_skips_when_settings_disabled(sessionmaker):
+    """ChatSetting['is_active']=False → skip even though Chat.is_active=True"""
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="Test", is_active=True))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.settings.get_all = AsyncMock(return_value={"is_active": False})
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    await svc.process_chat(
+        chat_id=chat_id, period_start=date(2026, 4, 1), period_end_excl=date(2026, 5, 1),
+    )
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_chat_runoff(sessionmaker, monkeypatch):
+    from app.services.roulette import StatsEntry
+
+    chat_id = 42
+    period_start = date(2026, 4, 1)
+    period_end = date(2026, 5, 1)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="Test", is_active=True))
+        await session.commit()
+
+    members_by_id = {
+        100: _make_member("Андрей", username="andrew"),
+        101: _make_member("Семён", username="semen"),
+    }
+
+    async def get_member(chat_id, user_id):
+        return members_by_id[user_id]
+
+    bot = AsyncMock()
+    bot.get_chat_member = AsyncMock(side_effect=get_member)
+    bot.send_message = AsyncMock()
+
+    svc = _make_service(sessionmaker, bot)
+    svc.roulette._aggregate = AsyncMock(return_value=[
+        StatsEntry(user_id=100, username="andrew", wins=5),
+        StatsEntry(user_id=101, username="semen", wins=5),
+    ])
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True, "roulette_custom_title": "Мудак дня"})
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    monkeypatch.setattr(
+        "app.services.monthly_champion.random.choice",
+        lambda seq: next(x for x in seq if x.user_id == 100),
+    )
+    monkeypatch.setattr("app.services.monthly_champion.DRAMA_PAUSE_SEC", 0)
+
+    async def fake_gen(messages, **kw):
+        return "Король Мудаков — Андрей!"
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_gen):
+        await svc.process_chat(chat_id=chat_id, period_start=period_start, period_end_excl=period_end)
+
+    # 3 сообщения: ничья, кости, оглашение
+    assert bot.send_message.await_count == 3
+
+    async with sessionmaker() as session:
+        row = (await session.execute(select(MonthlyChampion))).scalar_one()
+        assert row.user_id == 100
+        assert sorted(row.tied_with) == [100, 101]
+
+
+@pytest.mark.asyncio
+async def test_process_chat_empty_month(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="Test", is_active=True))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    bot.get_chat_member = AsyncMock()
+
+    svc = _make_service(sessionmaker, bot)
+    svc.roulette._aggregate = AsyncMock(return_value=[])
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    async def fake_gen(messages, **kw):
+        return "Никто не отличился."
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_gen):
+        await svc.process_chat(
+            chat_id=chat_id, period_start=date(2026, 4, 1), period_end_excl=date(2026, 5, 1),
+        )
+
+    assert bot.send_message.await_count == 1
+    async with sessionmaker() as session:
+        row = (await session.execute(select(MonthlyChampion))).scalar_one()
+        assert row.user_id is None
+        assert row.score == 0
+        mem = await session.get(ChatMemory, chat_id)
+        assert mem is None or mem.monthly_champion is None
+
+
+@pytest.mark.asyncio
+async def test_process_chat_telegram_forbidden_does_not_raise(sessionmaker):
+    from aiogram.exceptions import TelegramForbiddenError  # noqa: PLC0415
+
+    from app.services.roulette import StatsEntry  # noqa: PLC0415
+
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="Test", is_active=True))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.get_chat_member = AsyncMock(return_value=_make_member("Андрей", username="andrew"))
+    bot.send_message = AsyncMock(side_effect=TelegramForbiddenError(method=None, message="bot was kicked"))  # type: ignore[arg-type]
+
+    svc = _make_service(sessionmaker, bot)
+    svc.roulette._aggregate = AsyncMock(return_value=[StatsEntry(user_id=100, username="andrew", wins=3)])
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    async def fake_gen(messages, **kw):
+        return "x"
+
+    # Не должно бросить
+    with um.patch("app.services.monthly_champion.llm_generate", fake_gen):
+        await svc.process_chat(
+            chat_id=chat_id, period_start=date(2026, 4, 1), period_end_excl=date(2026, 5, 1),
+        )
+
+    # Сообщение пытались отправить (и упало)
+    bot.send_message.assert_awaited()
