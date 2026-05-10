@@ -295,6 +295,33 @@ class UserMemoryService:
 
         return "## Факты о чате (фоновые знания)\n" + "\n".join(lines) + "\n\n" + _FOOTER
 
+    async def build_monthly_champion_block(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+    ) -> str | None:
+        chat_mem = await session.get(ChatMemory, chat_id)
+        if chat_mem is None or not chat_mem.monthly_champion:
+            return None
+        data = chat_mem.monthly_champion
+        title = data.get("title") or "Чемпион"
+        name = data.get("display_name") or "—"
+        period = data.get("period_start") or ""
+        period_label = ""
+        if period:
+            try:
+                from datetime import date as _date
+                d = _date.fromisoformat(period)
+                months = [
+                    "января", "февраля", "марта", "апреля", "мая", "июня",
+                    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+                ]
+                period_label = f" (с {months[d.month - 1]} {d.year})"
+            except (ValueError, IndexError):
+                period_label = ""
+        return f"Текущий чемпион месяца «{title}»: {name}{period_label}."
+
     def sidecar_enabled(self, conf: dict[str, object] | None) -> bool:
         if not conf:
             return False

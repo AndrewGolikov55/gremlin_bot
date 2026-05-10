@@ -210,9 +210,12 @@ async def collect_messages(
             chat_id=message.chat.id,
             app_conf=app_conf,
         )
+        champion_block = await memory.build_monthly_champion_block(
+            session, chat_id=message.chat.id
+        )
         if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
             system_prompt += "\n\n" + memory.get_sidecar_system_suffix()
-        _ctx = [b for b in [memory_block, chat_memory_block] if b]
+        _ctx = [b for b in [memory_block, chat_memory_block, champion_block] if b]
         messages_for_llm = build_messages(
             system_prompt,
             turns,
@@ -525,9 +528,12 @@ async def _handle_photo_reply(
         chat_id=message.chat.id,
         app_conf=app_conf,
     )
+    champion_block = await memory.build_monthly_champion_block(
+        session, chat_id=message.chat.id
+    )
     if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
         system_prompt += "\n\n" + memory.get_sidecar_system_suffix()
-    _ctx = [b for b in [memory_block, chat_memory_block] if b]
+    _ctx = [b for b in [memory_block, chat_memory_block, champion_block] if b]
 
     max_turns = int(app_conf.get("context_max_turns", 100) or 100)
     prompt_token_limit = _resolve_prompt_token_limit(app_conf)
@@ -998,6 +1004,11 @@ async def _generate_voice_direct_reply(
     )
     if chat_memory_block:
         context_blocks.append(chat_memory_block)
+    champion_block = await memory.build_monthly_champion_block(
+        session, chat_id=chat_id
+    )
+    if champion_block:
+        context_blocks.append(champion_block)
 
     # Reply-chain: if user replies to an OLD voice (not the current one) of a non-bot,
     # include that transcript for context.
