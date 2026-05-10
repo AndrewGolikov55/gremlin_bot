@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unittest.mock as um
 from datetime import date, datetime
 from unittest.mock import AsyncMock, create_autospec
 from zoneinfo import ZoneInfo
@@ -10,6 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from app.models import RouletteWinner
 from app.services.app_config import AppConfigService
+from app.services.llm.client import LLMError
 from app.services.monthly_champion import MonthlyChampionService, _previous_period  # noqa: F401
 from app.services.roulette import RouletteService
 from app.services.settings import SettingsService
@@ -134,3 +136,122 @@ async def test_resolve_display_name_no_snapshot_returns_id_string(sessionmaker):
     svc = _make_service(sessionmaker, bot)
     name = await svc._resolve_display_name(chat_id=42, user_id=100)
     assert name == "id100"
+
+
+@pytest.mark.asyncio
+async def test_render_winner_calls_llm_with_top(sessionmaker):
+    from app.services.roulette import StatsEntry
+
+    captured: dict = {}
+
+    async def fake_generate(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "🏆 Король Мудаков месяца — Андрей! Ёбана."
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.app_config.get_all = AsyncMock(return_value={"llm_provider": "openrouter"})
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_generate):
+        text = await svc._render_winner(
+            top=[
+                StatsEntry(user_id=1, username="Андрей", wins=7),
+                StatsEntry(user_id=2, username="Семён", wins=4),
+            ],
+            champion_name="Андрей",
+            daily_title="Мудак дня",
+            month_label="апрель 2026",
+        )
+
+    assert "Король" in text or "Андрей" in text
+    assert any("Мудак дня" in m["content"] for m in captured["messages"])
+    assert any("Андрей" in m["content"] for m in captured["messages"])
+
+
+@pytest.mark.asyncio
+async def test_render_winner_falls_back_when_llm_fails(sessionmaker):
+    from app.services.roulette import StatsEntry
+
+    async def fake_generate(messages, **kwargs):
+        raise LLMError("provider down")
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_generate):
+        text = await svc._render_winner(
+            top=[StatsEntry(user_id=1, username="Андрей", wins=7)],
+            champion_name="Андрей",
+            daily_title="Мудак дня",
+            month_label="апрель 2026",
+        )
+
+    assert "Андрей" in text
+    assert "Мудак" in text
+
+
+@pytest.mark.asyncio
+async def test_render_runoff_winner(sessionmaker):
+    async def fake_generate(messages, **kwargs):
+        return "Победил Андрей! Король Мудаков месяца, ёбана."
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_generate):
+        text = await svc._render_runoff_winner(
+            tied_names=["Андрей", "Семён"],
+            winner_name="Андрей",
+            daily_title="Мудак дня",
+        )
+    assert "Андрей" in text
+
+
+@pytest.mark.asyncio
+async def test_render_runoff_falls_back_to_text_when_llm_fails(sessionmaker):
+    async def fake_generate(messages, **kwargs):
+        raise LLMError("down")
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_generate):
+        text = await svc._render_runoff_winner(
+            tied_names=["Андрей", "Семён"],
+            winner_name="Андрей",
+            daily_title="Мудак дня",
+        )
+    assert "Андрей" in text
+    assert "Мудак" in text
+
+
+@pytest.mark.asyncio
+async def test_render_empty_month(sessionmaker):
+    async def fake_generate(messages, **kwargs):
+        return "В этом месяце короля не нашлось."
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_generate):
+        text = await svc._render_empty(daily_title="Мудак дня", month_label="апрель 2026")
+    assert text
+
+
+@pytest.mark.asyncio
+async def test_render_empty_falls_back(sessionmaker):
+    async def fake_generate(messages, **kwargs):
+        raise LLMError("down")
+
+    bot = AsyncMock()
+    svc = _make_service(sessionmaker, bot)
+    svc.app_config.get_all = AsyncMock(return_value={})
+
+    with um.patch("app.services.monthly_champion.llm_generate", fake_generate):
+        text = await svc._render_empty(daily_title="Мудак дня", month_label="апрель 2026")
+    assert "Мудак" in text

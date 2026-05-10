@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models import RouletteWinner
 from .app_config import AppConfigService
-from .roulette import RouletteService
+from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
+from .llm.client import generate as llm_generate
+from .roulette import RouletteService, StatsEntry
 from .settings import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -102,3 +104,97 @@ class MonthlyChampionService:
                 return str(row)
 
         return f"id{user_id}"
+
+    @staticmethod
+    def _format_top_lines(top: list[StatsEntry]) -> str:
+        lines: list[str] = []
+        for i, entry in enumerate(top[:5], start=1):
+            name = entry.username or f"id{entry.user_id}"
+            lines.append(f"{i}. {name} — {entry.wins} побед")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _fallback_winner_text(daily_title: str, champion_name: str) -> str:
+        return f"🏆 Король «{daily_title}» месяца — {champion_name}."
+
+    async def _llm_call(self, user_prompt: str, *, system: str = "") -> str | None:
+        conf = await self.app_config.get_all()
+        provider = resolve_llm_options(conf)
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user_prompt})
+        try:
+            return await llm_generate(
+                messages,
+                temperature=0.8,
+                max_tokens=LLM_MAX_TOKENS,
+                provider=provider,
+            )
+        except (LLMError, LLMRateLimitError):
+            logger.exception("monthly_champion: LLM provider failed")
+            return None
+        except Exception:
+            logger.exception("monthly_champion: unexpected LLM error")
+            return None
+
+    async def _render_winner(
+        self,
+        *,
+        top: list[StatsEntry],
+        champion_name: str,
+        daily_title: str,
+        month_label: str,
+    ) -> str:
+        top_block = self._format_top_lines(top)
+        prompt = (
+            f"Подведи итог месяца по рулетке. Звание дня в чате: «{daily_title}».\n"
+            f"\n"
+            f"Топ за {month_label}:\n"
+            f"{top_block}\n"
+            f"\n"
+            f"Победитель месяца: {champion_name}.\n"
+            f"\n"
+            f"Сформулируй короткое (3-5 строк) поздравительное оглашение.\n"
+            f"Обязательно используй титул в форме «Король X месяца», "
+            f"где X — слово из «{daily_title}» во множественном родительном падеже "
+            f"(пример: «Мудак дня» → «Король Мудаков месяца»).\n"
+            f"Не сухой список — это шоу. В стиле своей персоны.\n"
+            f"Не упоминай других участников по именам, только победителя.\n"
+            f"Plain text, без HTML и Markdown."
+        )
+        text = await self._llm_call(prompt)
+        if not text:
+            return self._fallback_winner_text(daily_title, champion_name)
+        return text.strip()
+
+    async def _render_runoff_winner(
+        self,
+        *,
+        tied_names: list[str],
+        winner_name: str,
+        daily_title: str,
+    ) -> str:
+        tied_str = ", ".join(tied_names)
+        prompt = (
+            f"Только что был runoff между {tied_str}, выпал {winner_name}.\n"
+            f"Объяви его «Королём X месяца» (X из «{daily_title}», "
+            f"во мн. родительном падеже).\n"
+            f"3-5 строк, в стиле своей персоны. Plain text."
+        )
+        text = await self._llm_call(prompt)
+        if not text:
+            return self._fallback_winner_text(daily_title, winner_name)
+        return text.strip()
+
+    async def _render_empty(self, *, daily_title: str, month_label: str) -> str:
+        prompt = (
+            f"В этом месяце ({month_label}) в чате не было ни одного розыгрыша рулетки "
+            f"на звание «{daily_title}».\n"
+            f"Прокомментируй иронично, 2-3 строки.\n"
+            f"Не объявляй никого королём — короля нет. Plain text."
+        )
+        text = await self._llm_call(prompt)
+        if not text:
+            return f"🏅 В этом месяце короля «{daily_title}» не нашлось — никто не рискнул."
+        return text.strip()
