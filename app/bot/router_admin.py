@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router, types
 from aiogram.enums import ChatMemberStatus
@@ -13,6 +14,7 @@ from aiogram.exceptions import TelegramBadRequest
 from ..services.settings import SettingsService
 from ..services.persona import StylePromptService, BASE_STYLE_DATA, DEFAULT_STYLE_KEY
 from ..services.app_config import AppConfigService
+from ..services.monthly_champion import MonthlyChampionService, _previous_period
 
 
 router = Router(name="admin")
@@ -82,6 +84,31 @@ async def cmd_settings(
     conf = await settings.get_all(message.chat.id)
     app_conf = await app_config.get_all()
     await _send_settings(message, conf, app_conf, personas)
+
+
+@router.message(Command("roulette_force_summary"))
+async def cmd_roulette_force_summary(
+    message: types.Message,
+    bot: Bot,
+    monthly_champion: MonthlyChampionService,
+):
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.reply("Эта команда доступна только в групповых чатах.")
+        return
+    if not message.from_user or not await _is_group_admin(bot, message.chat.id, message.from_user.id):
+        await message.reply("Команда только для админов чата.")
+        return
+
+    now_msk = datetime.now(ZoneInfo("Europe/Moscow"))
+    period_start, period_end_excl = _previous_period(now_msk)
+    await message.reply(
+        f"Запускаю подведение итогов за {period_start.strftime('%Y-%m')}..."
+    )
+    await monthly_champion.process_chat(
+        chat_id=message.chat.id,
+        period_start=period_start,
+        period_end_excl=period_end_excl,
+    )
 
 
 @router.message(Command("trigger"))

@@ -42,6 +42,7 @@ from .services.spontaneity import SpontaneityPolicy
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
 from .services.guess_game import GuessGameService
+from .services.monthly_champion import MonthlyChampionService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
 from .services.release_broadcast import ReleaseBroadcaster
 from .utils.version import get_version
@@ -134,6 +135,13 @@ guess_game_service = GuessGameService(
     app_config=app_config_service,
     bot=bot,
 )
+monthly_champion_service = MonthlyChampionService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    roulette=roulette_service,
+    settings=settings_service,
+    app_config=app_config_service,
+)
 
 # Routers — order matters: command routers MUST be registered before triggers_router,
 # which has a catch-all @router.message(F.text) that consumes any text message.
@@ -173,6 +181,7 @@ dp.update.middleware(
         user_memory_service,
         spontaneity_policy,
         guess_game_service,
+        monthly_champion_service,
     )
 )
 scheduler = get_scheduler()
@@ -282,11 +291,26 @@ async def on_startup():
         replace_existing=True,
         max_instances=1,
     )
+    scheduler.add_job(
+        monthly_champion_service.run_monthly_summary,
+        "cron",
+        day=1,
+        hour=12,
+        minute=0,
+        timezone=ZoneInfo("Europe/Moscow"),
+        id="monthly_champion_tick",
+        replace_existing=True,
+        max_instances=1,
+    )
     app.state.scheduler = scheduler
     _track_background_task(asyncio.create_task(network_monitor_service.probe_once()), label="Initial network probe")
     _track_background_task(
         asyncio.create_task(release_broadcaster.broadcast_if_new_version()),
         label="Release broadcast",
+    )
+    _track_background_task(
+        asyncio.create_task(monthly_champion_service.catch_up_if_needed()),
+        label="Monthly champion catch-up",
     )
 
 
