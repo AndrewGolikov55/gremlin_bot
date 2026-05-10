@@ -972,6 +972,7 @@ class RouletteService:
         chat_id: int,
         *,
         start: date | None = None,
+        end: date | None = None,
     ) -> list[StatsEntry]:
         wins_stmt = (
             select(
@@ -984,6 +985,8 @@ class RouletteService:
         )
         if start is not None:
             wins_stmt = wins_stmt.where(RouletteWinner.won_at >= start)
+        if end is not None:
+            wins_stmt = wins_stmt.where(RouletteWinner.won_at < end)
 
         adj_stmt = (
             select(
@@ -996,6 +999,10 @@ class RouletteService:
         if start is not None:
             adj_stmt = adj_stmt.where(
                 RouletteScoreAdjustment.created_at >= datetime.combine(start, time.min)
+            )
+        if end is not None:
+            adj_stmt = adj_stmt.where(
+                RouletteScoreAdjustment.created_at < datetime.combine(end, time.min)
             )
 
         wins_rows = (await session.execute(wins_stmt)).all()
