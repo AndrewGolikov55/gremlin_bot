@@ -48,7 +48,7 @@ def test_previous_period_requires_aware_datetime():
         _previous_period(naive)
 
 
-def _make_member(name: str | None, *, username: str | None = None, status=ChatMemberStatus.MEMBER):
+def _make_member(name: str | None, *, username: str | None = None, status: ChatMemberStatus = ChatMemberStatus.MEMBER) -> object:
     m = type("M", (), {})()
     m.status = status
     m.user = type("U", (), {})()

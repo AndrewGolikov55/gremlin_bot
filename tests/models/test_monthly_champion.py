@@ -4,14 +4,13 @@ from datetime import date, datetime
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChatMemory, MonthlyChampion
 
 
 @pytest.mark.asyncio
 async def test_monthly_champion_round_trip(sessionmaker):
-    async with sessionmaker() as session:  # type: AsyncSession
+    async with sessionmaker() as session:
         row = MonthlyChampion(
             chat_id=42,
             period_start=date(2026, 4, 1),
