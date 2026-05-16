@@ -286,3 +286,97 @@ async def test_resolve_explicit_username_self_refused(sessionmaker):
     assert uid is None
     assert refusal is not None
     assert "сам" in refusal.lower()
+
+
+@pytest.mark.asyncio
+async def test_collect_target_context_pulls_last_30_text_messages(sessionmaker):
+    chat_id = 42
+    target = 100
+    async with sessionmaker() as session:
+        for i in range(35):
+            session.add(Message(
+                chat_id=chat_id, message_id=i + 1, user_id=target,
+                text=f"msg{i}", reply_to_id=None,
+                date=datetime(2026, 5, 16, 0, 0, 0) + timedelta(minutes=i),
+                is_bot=False,
+            ))
+        # Empty-text and bot messages — ignored
+        session.add(Message(
+            chat_id=chat_id, message_id=999, user_id=target, text="",
+            reply_to_id=None, date=datetime(2026, 5, 17, 0, 0, 0), is_bot=False,
+        ))
+        await session.commit()
+
+    bot = AsyncMock()
+    member = type("M", (), {})()
+    member.status = ChatMemberStatus.MEMBER
+    member.user = type("U", (), {})()
+    member.user.first_name = "Андрей"
+    member.user.username = "andrew"
+    member.user.is_bot = False
+    bot.get_chat_member = AsyncMock(return_value=member)
+
+    svc = _make_svc(sessionmaker, bot=bot)
+    ctx = await svc._collect_target_context(chat_id=chat_id, user_id=target)
+    assert len(ctx.messages) == 30
+    # Oldest-to-newest order, slice = last 30 of 35 → msg5..msg34
+    assert ctx.messages[0] == "msg5"
+    assert ctx.messages[-1] == "msg34"
+    assert ctx.display_name == "Андрей"
+    assert ctx.username == "andrew"
+
+
+@pytest.mark.asyncio
+async def test_collect_target_context_includes_user_memory_profile(sessionmaker):
+    chat_id = 42
+    target = 100
+    async with sessionmaker() as session:
+        session.add(UserMemoryProfile(
+            chat_id=chat_id, user_id=target,
+            summary="ходячая ирония",
+            identity=["разработчик", "котейничает"],
+            preferences=["любит rust"],
+            projects=["gremlin_bot"],
+            boundaries=["не упоминать развод"],
+        ))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.get_chat_member = AsyncMock(side_effect=TelegramBadRequest(method="x", message="not found"))
+
+    svc = _make_svc(sessionmaker, bot=bot)
+    ctx = await svc._collect_target_context(chat_id=chat_id, user_id=target)
+    assert ctx.summary == "ходячая ирония"
+    assert ctx.identity == ["разработчик", "котейничает"]
+    assert ctx.preferences == ["любит rust"]
+    assert ctx.projects == ["gremlin_bot"]
+    assert ctx.boundaries == ["не упоминать развод"]
+    assert ctx.messages == []
+    # Fallback display name
+    assert ctx.display_name == "id100"
+    assert ctx.username is None
+
+
+@pytest.mark.asyncio
+async def test_collect_target_context_no_profile_returns_empty_lists(sessionmaker):
+    chat_id = 42
+    target = 100
+
+    bot = AsyncMock()
+    member = type("M", (), {})()
+    member.status = ChatMemberStatus.MEMBER
+    member.user = type("U", (), {})()
+    member.user.first_name = "Семён"
+    member.user.username = None
+    member.user.is_bot = False
+    bot.get_chat_member = AsyncMock(return_value=member)
+
+    svc = _make_svc(sessionmaker, bot=bot)
+    ctx = await svc._collect_target_context(chat_id=chat_id, user_id=target)
+    assert ctx.summary is None
+    assert ctx.identity == []
+    assert ctx.preferences == []
+    assert ctx.projects == []
+    assert ctx.boundaries == []
+    assert ctx.display_name == "Семён"
+    assert ctx.username is None

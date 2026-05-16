@@ -181,3 +181,63 @@ class RoastService:
             return None, f"У @{raw} нет следов за неделю, нечего разбирать."
 
         return target_uid, None
+
+    async def _resolve_display(
+        self, *, chat_id: int, user_id: int
+    ) -> tuple[str, str | None]:
+        """Return (display_name, username). Falls back to ("id{user_id}", None) on failure."""
+        active_statuses = {
+            ChatMemberStatus.CREATOR,
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.RESTRICTED,
+        }
+        try:
+            member = await self.bot.get_chat_member(chat_id, user_id)
+            if member.status in active_statuses:
+                user = getattr(member, "user", None)
+                if user is not None:
+                    name = user.first_name or user.username or f"id{user_id}"
+                    return str(name), (user.username or None)
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            logger.exception("roast: get_chat_member failed chat=%s user=%s", chat_id, user_id)
+        return f"id{user_id}", None
+
+    async def _collect_target_context(
+        self, *, chat_id: int, user_id: int
+    ) -> _TargetContext:
+        async with self.sessionmaker() as session:
+            stmt = (
+                select(Message.text, Message.date)
+                .where(
+                    Message.chat_id == chat_id,
+                    Message.user_id == user_id,
+                    Message.is_bot.is_(False),
+                    func.length(Message.text) > 0,
+                )
+                .order_by(desc(Message.date))
+                .limit(MAX_MESSAGES)
+            )
+            rows = (await session.execute(stmt)).all()
+            profile = await session.get(UserMemoryProfile, (chat_id, user_id))
+
+        # Oldest-to-newest for the LLM
+        messages = [str(row[0]) for row in reversed(rows)]
+
+        display_name, username = await self._resolve_display(
+            chat_id=chat_id, user_id=user_id
+        )
+
+        return _TargetContext(
+            user_id=user_id,
+            display_name=display_name,
+            username=username,
+            messages=messages,
+            identity=list(profile.identity or []) if profile else [],
+            preferences=list(profile.preferences or []) if profile else [],
+            projects=list(profile.projects or []) if profile else [],
+            boundaries=list(profile.boundaries or []) if profile else [],
+            summary=(profile.summary if profile and profile.summary else None),
+        )
