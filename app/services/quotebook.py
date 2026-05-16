@@ -116,3 +116,66 @@ class QuotebookService:
             lock = asyncio.Lock()
             self._chat_locks[chat_id] = lock
         return lock
+
+    async def _get_bot_username(self) -> str | None:
+        try:
+            me = await self.bot.get_me()
+        except Exception:  # noqa: BLE001 — display-side fallback; never raises out
+            logger.exception("quotebook: bot.get_me failed")
+            return None
+        return getattr(me, "username", None)
+
+    async def collect_candidates(
+        self,
+        *,
+        chat_id: int,
+        now: datetime,
+    ) -> list[Candidate]:
+        """Return Message-derived candidates from the last 7 days.
+
+        Filters: is_bot=False, len(text) in [20, 300], text does not start with
+        '/' nor with '@<bot_username>'. `now` is naive (treated as UTC) and the
+        7-day window is `[now - 7d, now)` to match how Message.date is stored.
+        """
+        window_start = now - timedelta(days=WINDOW_DAYS)
+        bot_username = await self._get_bot_username()
+        bot_mention_prefix = f"@{bot_username.lower()}" if bot_username else None
+
+        async with self.sessionmaker() as session:
+            stmt = (
+                select(Message)
+                .where(
+                    Message.chat_id == chat_id,
+                    Message.is_bot.is_(False),
+                    Message.date >= window_start,
+                    Message.date < now,
+                )
+                .order_by(Message.date.asc())
+            )
+            rows = (await session.execute(stmt)).scalars().all()
+
+            # reply_count: count other in-window messages whose reply_to_id matches
+            # each candidate's message_id. Done in-memory over the same window
+            # to keep the implementation simple and dialect-agnostic.
+            reply_counts: dict[int, int] = {}
+            for m in rows:
+                if m.reply_to_id is not None:
+                    reply_counts[m.reply_to_id] = reply_counts.get(m.reply_to_id, 0) + 1
+
+            candidates: list[Candidate] = []
+            for m in rows:
+                text = (m.text or "").strip()
+                if len(text) < MSG_MIN_LEN or len(text) > MSG_MAX_LEN:
+                    continue
+                if text.startswith("/"):
+                    continue
+                if bot_mention_prefix and text.lower().startswith(bot_mention_prefix):
+                    continue
+                candidates.append(Candidate(
+                    message_id=m.message_id,
+                    user_id=m.user_id,
+                    text=text,
+                    reply_count=reply_counts.get(m.message_id, 0),
+                    date=m.date,
+                ))
+            return candidates
