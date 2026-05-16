@@ -248,25 +248,48 @@ class TestBuildDiceKeyboard:
 
 
 class TestFormatDiceResult:
-    def test_win_single_pick(self) -> None:
+    def test_win_single_pick_says_jackpot(self) -> None:
         msg = format_dice_result(picks=[5], dice_value=5, delta=-2, mention="@andrey")
         assert "@andrey" in msg
         assert "5" in msg
-        assert "2 очка" in msg or "минус 2" in msg.lower()
+        assert "джекпот" in msg.lower()
+        assert "минус 2" in msg.lower() or "2 очка" in msg
 
     def test_win_double_pick(self) -> None:
         msg = format_dice_result(picks=[3, 5], dice_value=5, delta=-1, mention="@andrey")
         assert "@andrey" in msg
         assert "3" in msg and "5" in msg
-        assert "1 очко" in msg or "минус 1" in msg.lower()
+        assert "минус 1" in msg.lower() or "1 очко" in msg
+        assert "✨" in msg
 
-    def test_loss(self) -> None:
-        msg = format_dice_result(picks=[3], dice_value=4, delta=0, mention="@andrey")
+    def test_loss_single_pick_says_greed_punished(self) -> None:
+        msg = format_dice_result(picks=[5], dice_value=3, delta=2, mention="@andrey")
         assert "@andrey" in msg
-        assert "Мимо" in msg or "мимо" in msg
+        assert "5" in msg and "3" in msg
+        assert "жадность" in msg.lower()
+        assert "плюс 2" in msg.lower() or "+2" in msg
+        assert "💀" in msg
+
+    def test_loss_double_pick(self) -> None:
+        msg = format_dice_result(picks=[3, 5], dice_value=2, delta=1, mention="@andrey")
+        assert "@andrey" in msg
+        assert "мимо" in msg.lower()
+        assert "плюс 1" in msg.lower() or "+1" in msg
+        assert "😬" in msg
 
 
 from app.bot.router_games import _open_dice, format_dice_intro_text
+
+
+class TestFormatDiceIntroText:
+    def test_mentions_dice_emoji_and_payout_table(self) -> None:
+        text = format_dice_intro_text()
+        assert "🎲" in text
+        # payout summary
+        assert "−2" in text or "-2" in text
+        assert "+2" in text
+        assert "−1" in text or "-1" in text
+        assert "+1" in text
 from app.services.dice_game import DiceGameService
 
 
@@ -500,15 +523,17 @@ async def test_dice_roll_happy_path_loss(
     cb, msg, answer = _fake_callback(data="dice:roll:10:3", from_user_id=10)
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
+    # 1-pick loss now writes RouletteScoreAdjustment with delta=+2
     from app.models import DiceRound, RouletteScoreAdjustment
     async with sessionmaker() as session:
         rnd = (await session.execute(select(DiceRound))).scalar_one()
         assert rnd.won is False
-        assert rnd.delta == 0
-        adjs = (await session.execute(select(RouletteScoreAdjustment))).scalars().all()
-        assert adjs == []
+        assert rnd.delta == 2
+        adj = (await session.execute(select(RouletteScoreAdjustment))).scalar_one()
+        assert adj.delta == 2
+        assert adj.reason == "dice_loss"
     text = bot.send_message.call_args.kwargs.get("text") or ""
-    assert "мимо" in text.lower()
+    assert "жадность" in text.lower() or "+2" in text or "плюс 2" in text.lower()
 
 
 @pytest.mark.asyncio

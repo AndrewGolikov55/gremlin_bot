@@ -16,16 +16,18 @@ def _utc(year: int, month: int, day: int, hour: int = 12) -> datetime:
 
 class TestComputeDelta:
     @pytest.mark.parametrize("picks,dice_value,expected", [
-        # 1 number — win: -2, lose: 0
+        # win 1-pick → -2
         ([3], 3, -2),
-        ([3], 4, 0),
         ([6], 6, -2),
-        ([1], 2, 0),
-        # 2 numbers — win: -1, lose: 0
+        # loss 1-pick → +2 (NEW)
+        ([3], 4, 2),
+        ([1], 2, 2),
+        # win 2-pick → -1
         ([1, 4], 1, -1),
         ([1, 4], 4, -1),
-        ([1, 4], 5, 0),
-        ([2, 5], 3, 0),
+        # loss 2-pick → +1 (NEW)
+        ([1, 4], 5, 1),
+        ([2, 5], 3, 1),
     ])
     def test_table(self, picks: list[int], dice_value: int, expected: int) -> None:
         assert compute_delta(picks, dice_value) == expected
@@ -115,7 +117,7 @@ async def test_record_roll_win_double_pick_writes_adjustment_minus_one(
 
 
 @pytest.mark.asyncio
-async def test_record_roll_loss_does_not_write_adjustment(
+async def test_record_roll_loss_single_pick_writes_adjustment_plus_two(
     sessionmaker: async_sessionmaker[AsyncSession],
 ) -> None:
     svc = DiceGameService(sessionmaker)
@@ -123,14 +125,33 @@ async def test_record_roll_loss_does_not_write_adjustment(
         chat_id=-1, user_id=10, picks=[3], dice_value=4,
         dice_message_id=100, now=_utc(2026, 5, 16),
     )
-    assert delta == 0
+    assert delta == 2
     assert round_.won is False
     async with sessionmaker() as session:
-        adjs = (await session.execute(select(RouletteScoreAdjustment))).scalars().all()
-        assert adjs == []
+        adj = (await session.execute(select(RouletteScoreAdjustment))).scalar_one()
+        assert adj.delta == 2
+        assert adj.reason == "dice_loss"
+        assert adj.source_id == round_.id
         rounds = (await session.execute(select(DiceRound))).scalars().all()
         assert len(rounds) == 1
-        assert rounds[0].delta == 0
+        assert rounds[0].delta == 2
+
+
+@pytest.mark.asyncio
+async def test_record_roll_loss_double_pick_writes_adjustment_plus_one(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = DiceGameService(sessionmaker)
+    round_, delta = await svc.record_roll(
+        chat_id=-1, user_id=10, picks=[1, 4], dice_value=5,
+        dice_message_id=100, now=_utc(2026, 5, 16),
+    )
+    assert delta == 1
+    assert round_.won is False
+    async with sessionmaker() as session:
+        adj = (await session.execute(select(RouletteScoreAdjustment))).scalar_one()
+        assert adj.delta == 1
+        assert adj.reason == "dice_loss"
 
 
 @pytest.mark.asyncio
