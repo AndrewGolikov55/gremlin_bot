@@ -242,9 +242,16 @@ async def on_startup():
     await configure_bot_commands(bot)
 
     if PUBLIC_BASE_URL and not USE_POLLING:
-        # Configure webhook with secret header
+        # Configure webhook with secret header. allowed_updates must be passed explicitly:
+        # if omitted, Telegram reuses the previous setting — which historically excluded
+        # poll_answer and silently broke /guess winner detection.
         webhook_url = f"{PUBLIC_BASE_URL.rstrip('/')}/webhook/telegram"
-        await bot.set_webhook(url=webhook_url, secret_token=TELEGRAM_SECRET_TOKEN or None, drop_pending_updates=True)
+        await bot.set_webhook(
+            url=webhook_url,
+            secret_token=TELEGRAM_SECRET_TOKEN or None,
+            drop_pending_updates=True,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
         logger.info("Webhook set to %s", webhook_url)
     else:
         # Run polling in background for development
