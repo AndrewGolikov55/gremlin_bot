@@ -147,3 +147,41 @@ async def test_compute_mention_rate_zero_when_no_usernames_known(sessionmaker):
         count, denom = await svc._mention_stats(session, chat_id=chat_id, a=a, b=b)
     assert count == 0
     assert denom == 1  # A_total=1, B_total=0
+
+
+@pytest.mark.asyncio
+async def test_co_activity_counts_overlapping_days(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        # day 1: both wrote
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=1, days_ago=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=2, days_ago=1)
+        # day 3: only A
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=3, days_ago=3)
+        # day 5: both
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=4, days_ago=5)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=5, days_ago=5)
+        # day 7: only B
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=6, days_ago=7)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        days = await svc._co_active_days(session, chat_id=chat_id, a=a, b=b)
+    assert days == 2
+
+
+@pytest.mark.asyncio
+async def test_co_activity_zero_when_no_overlap(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=1, days_ago=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=2, days_ago=2)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        days = await svc._co_active_days(session, chat_id=chat_id, a=a, b=b)
+    assert days == 0

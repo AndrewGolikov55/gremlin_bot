@@ -221,3 +221,40 @@ class ShipService:
             count += int((await session.execute(stmt)).scalar() or 0)
 
         return count, denom
+
+    async def _co_active_days(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        a: int,
+        b: int,
+    ) -> int:
+        """Return number of distinct calendar days within the 30d window where BOTH a and b posted."""
+        from sqlalchemy import func, select
+
+        from ..models import Message
+
+        cutoff = datetime.utcnow() - timedelta(days=WINDOW_DAYS)
+        day = func.date(Message.date)
+
+        stmt = (
+            select(day.label("day"), Message.user_id)
+            .where(
+                Message.chat_id == chat_id,
+                Message.is_bot.is_(False),
+                Message.date >= cutoff,
+                Message.user_id.in_([a, b]),
+            )
+            .group_by(day, Message.user_id)
+        )
+        rows = (await session.execute(stmt)).all()
+        days_a: set[str] = set()
+        days_b: set[str] = set()
+        for row in rows:
+            key = str(row.day)
+            if row.user_id == a:
+                days_a.add(key)
+            elif row.user_id == b:
+                days_b.add(key)
+        return len(days_a & days_b)
