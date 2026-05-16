@@ -20,11 +20,12 @@ import logging
 import random
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import InputPollOption
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -350,7 +351,10 @@ class QuotebookService:
             return False
 
         question = "Афоризм недели?"
-        poll_option_texts = [self._truncate_option(opt.text) for opt in options]
+        # Use a list of mixed-type elements so mypy accepts list[InputPollOption | str].
+        poll_option_texts: list[str | InputPollOption] = [
+            self._truncate_option(opt.text) for opt in options
+        ]
 
         try:
             poll_msg = await self.bot.send_poll(

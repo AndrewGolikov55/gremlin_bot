@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.services.quotebook import QuotebookService, _week_start_for
+from app.services.quotebook import Candidate, QuotebookService, _week_start_for
 
 
 def test_week_start_for_sunday_evening_returns_previous_monday():
@@ -64,7 +65,7 @@ from app.services.app_config import AppConfigService
 from app.services.settings import SettingsService
 
 
-def _make_svc(sessionmaker, *, bot_username: str = "gremlin_bot"):
+def _make_svc(sessionmaker: Any, *, bot_username: str = "gremlin_bot") -> QuotebookService:
     bot = AsyncMock()
     me = type("Me", (), {})()
     me.username = bot_username
@@ -227,8 +228,14 @@ def test_score_handles_zero_max_reply():
     assert 0.0 <= s <= 1.0
 
 
-def _cand(i: int, *, replies: int = 0, length: int = 50, age_days: float = 1.0, now: datetime | None = None):
-    from app.services.quotebook import Candidate
+def _cand(
+    i: int,
+    *,
+    replies: int = 0,
+    length: int = 50,
+    age_days: float = 1.0,
+    now: datetime | None = None,
+) -> Candidate:
     base = now or datetime(2026, 5, 17, 20, 0, 0)
     return Candidate(
         message_id=i, user_id=100 + i, text="а" * length,
@@ -273,7 +280,7 @@ import json as _json
 @pytest.mark.asyncio
 async def test_select_options_more_than_six_calls_llm_with_top_fifty(sessionmaker, monkeypatch):
     svc = _make_svc(sessionmaker)
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
     now = datetime(2026, 5, 17, 20, 0, 0)
     # 60 кандидатов
     candidates = [_cand(i, now=now, replies=i) for i in range(1, 61)]
@@ -301,7 +308,7 @@ async def test_select_options_more_than_six_calls_llm_with_top_fifty(sessionmake
 @pytest.mark.asyncio
 async def test_select_options_falls_back_on_bad_json(sessionmaker, monkeypatch):
     svc = _make_svc(sessionmaker)
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
     now = datetime(2026, 5, 17, 20, 0, 0)
     candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]  # 10 кандидатов
 
@@ -321,7 +328,7 @@ async def test_select_options_falls_back_on_llm_error(sessionmaker, monkeypatch)
     from app.services.llm.client import LLMError
 
     svc = _make_svc(sessionmaker)
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
     now = datetime(2026, 5, 17, 20, 0, 0)
     candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]
 
@@ -336,7 +343,7 @@ async def test_select_options_falls_back_on_llm_error(sessionmaker, monkeypatch)
 @pytest.mark.asyncio
 async def test_select_options_drops_out_of_range_indices(sessionmaker, monkeypatch):
     svc = _make_svc(sessionmaker)
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
     now = datetime(2026, 5, 17, 20, 0, 0)
     candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]
 
@@ -352,7 +359,7 @@ async def test_select_options_drops_out_of_range_indices(sessionmaker, monkeypat
 @pytest.mark.asyncio
 async def test_select_options_caps_at_six_even_if_llm_returns_more(sessionmaker, monkeypatch):
     svc = _make_svc(sessionmaker)
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
     now = datetime(2026, 5, 17, 20, 0, 0)
     candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]
 
@@ -388,7 +395,7 @@ async def test_open_new_round_publishes_poll_and_persists(sessionmaker):
     poll_msg.message_id = 999
     poll_msg.poll = type("P", (), {})()
     poll_msg.poll.id = "poll-abc"
-    svc.bot.send_poll = AsyncMock(return_value=poll_msg)
+    svc.bot.send_poll = AsyncMock(return_value=poll_msg)  # type: ignore[method-assign]
 
     opened = await svc.open_new_round(chat_id=chat_id, now=now)
     assert opened is True
@@ -428,7 +435,7 @@ async def test_open_new_round_skips_when_under_three(sessionmaker):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.bot.send_poll = AsyncMock()
+    svc.bot.send_poll = AsyncMock()  # type: ignore[method-assign]
 
     opened = await svc.open_new_round(chat_id=chat_id, now=now)
     assert opened is False
@@ -460,7 +467,7 @@ async def test_open_new_round_truncates_long_options(sessionmaker):
     poll_msg.message_id = 1
     poll_msg.poll = type("P", (), {})()
     poll_msg.poll.id = "p"
-    svc.bot.send_poll = AsyncMock(return_value=poll_msg)
+    svc.bot.send_poll = AsyncMock(return_value=poll_msg)  # type: ignore[method-assign]
 
     opened = await svc.open_new_round(chat_id=chat_id, now=now)
     assert opened is True
@@ -505,8 +512,8 @@ async def test_open_new_round_idempotent_on_integrity_race(sessionmaker):
     poll_msg.message_id = 2
     poll_msg.poll = type("P", (), {})()
     poll_msg.poll.id = "new-poll"
-    svc.bot.send_poll = AsyncMock(return_value=poll_msg)
-    svc.bot.stop_poll = AsyncMock()
+    svc.bot.send_poll = AsyncMock(return_value=poll_msg)  # type: ignore[method-assign]
+    svc.bot.stop_poll = AsyncMock()  # type: ignore[method-assign]
 
     opened = await svc.open_new_round(chat_id=chat_id, now=now)
     assert opened is False  # racing insert lost
@@ -528,7 +535,7 @@ async def test_open_new_round_handles_forbidden(sessionmaker):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.bot.send_poll = AsyncMock(
+    svc.bot.send_poll = AsyncMock(  # type: ignore[method-assign]
         side_effect=TelegramForbiddenError(method=None, message="bot was kicked")  # type: ignore[arg-type]
     )
 
@@ -541,7 +548,7 @@ async def test_open_new_round_handles_forbidden(sessionmaker):
         assert rows == []
 
 
-def _stub_stop_poll_result(voter_counts: list[int]):
+def _stub_stop_poll_result(voter_counts: list[int]) -> object:
     """Return a fake Poll object compatible with bot.stop_poll return value."""
     poll = type("P", (), {})()
     poll.total_voter_count = sum(voter_counts)
@@ -563,8 +570,8 @@ async def test_close_previous_no_open_round_is_noop(sessionmaker):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.bot.stop_poll = AsyncMock()
-    svc.bot.send_message = AsyncMock()
+    svc.bot.stop_poll = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
 
     await svc.close_previous_round_if_any(chat_id=chat_id, now=now)
 
@@ -590,8 +597,8 @@ async def test_close_previous_zero_votes_no_adjustment(sessionmaker):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([0, 0]))
-    svc.bot.send_message = AsyncMock()
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([0, 0]))  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
 
     await svc.close_previous_round_if_any(chat_id=chat_id, now=now)
 
@@ -627,10 +634,10 @@ async def test_close_previous_single_winner_adds_plus_one(sessionmaker, monkeypa
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.app_config.get_all = AsyncMock(return_value={})
-    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([1, 3]))
-    svc.bot.send_message = AsyncMock()
-    svc.bot.get_chat_member = AsyncMock(
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([1, 3]))  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.get_chat_member = AsyncMock(  # type: ignore[method-assign]
         side_effect=TelegramBadRequest(method=None, message="not found")  # type: ignore[arg-type]
     )
 
@@ -679,11 +686,11 @@ async def test_close_previous_runoff_on_tie(sessionmaker, monkeypatch):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
     # Ничья на местах 0 и 2: counts = [3, 1, 3]
-    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([3, 1, 3]))
-    svc.bot.send_message = AsyncMock()
-    svc.bot.get_chat_member = AsyncMock(
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([3, 1, 3]))  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.get_chat_member = AsyncMock(  # type: ignore[method-assign]
         side_effect=TelegramBadRequest(method=None, message="x")  # type: ignore[arg-type]
     )
 
@@ -740,11 +747,11 @@ async def test_process_chat_closes_then_opens(sessionmaker, monkeypatch):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
-    svc.app_config.get_all = AsyncMock(return_value={})
-    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([0, 1]))
-    svc.bot.send_message = AsyncMock()
-    svc.bot.get_chat_member = AsyncMock(
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})  # type: ignore[method-assign]
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([0, 1]))  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.get_chat_member = AsyncMock(  # type: ignore[method-assign]
         side_effect=TelegramBadRequest(method=None, message="x")  # type: ignore[arg-type]
     )
 
@@ -752,7 +759,7 @@ async def test_process_chat_closes_then_opens(sessionmaker, monkeypatch):
     new_poll.message_id = 555
     new_poll.poll = type("P", (), {})()
     new_poll.poll.id = "new-poll"
-    svc.bot.send_poll = AsyncMock(return_value=new_poll)
+    svc.bot.send_poll = AsyncMock(return_value=new_poll)  # type: ignore[method-assign]
 
     async def fake_gen(messages, **kw):
         return "🏆 Объявление"
@@ -786,10 +793,10 @@ async def test_process_chat_skips_inactive_chat(sessionmaker):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
-    svc.bot.stop_poll = AsyncMock()
-    svc.bot.send_poll = AsyncMock()
-    svc.bot.send_message = AsyncMock()
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})  # type: ignore[method-assign]
+    svc.bot.stop_poll = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.send_poll = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
 
     await svc.process_chat(chat_id=chat_id, now=datetime(2026, 5, 17, 20, 0, 0))
 
@@ -806,9 +813,9 @@ async def test_process_chat_skips_when_settings_disabled(sessionmaker):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.settings.get_all = AsyncMock(return_value={"is_active": False})
-    svc.bot.send_poll = AsyncMock()
-    svc.bot.send_message = AsyncMock()
+    svc.settings.get_all = AsyncMock(return_value={"is_active": False})  # type: ignore[method-assign]
+    svc.bot.send_poll = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
 
     await svc.process_chat(chat_id=chat_id, now=datetime(2026, 5, 17, 20, 0, 0))
 
@@ -869,12 +876,12 @@ async def test_catch_up_closes_stale_open_round_without_opening_new(sessionmaker
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
-    svc.app_config.get_all = AsyncMock(return_value={})
-    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([2, 1]))
-    svc.bot.send_message = AsyncMock()
-    svc.bot.send_poll = AsyncMock()  # MUST NOT be called
-    svc.bot.get_chat_member = AsyncMock(
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})  # type: ignore[method-assign]
+    svc.app_config.get_all = AsyncMock(return_value={})  # type: ignore[method-assign]
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([2, 1]))  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.send_poll = AsyncMock()  # type: ignore[method-assign]  # MUST NOT be called
+    svc.bot.get_chat_member = AsyncMock(  # type: ignore[method-assign]
         side_effect=TelegramBadRequest(method=None, message="x")  # type: ignore[arg-type]
     )
 
@@ -916,10 +923,10 @@ async def test_catch_up_skips_fresh_open_round(sessionmaker, monkeypatch):
         await session.commit()
 
     svc = _make_svc(sessionmaker)
-    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
-    svc.bot.stop_poll = AsyncMock()
-    svc.bot.send_poll = AsyncMock()
-    svc.bot.send_message = AsyncMock()
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})  # type: ignore[method-assign]
+    svc.bot.stop_poll = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.send_poll = AsyncMock()  # type: ignore[method-assign]
+    svc.bot.send_message = AsyncMock()  # type: ignore[method-assign]
 
     fixed_now = fresh_now.replace(tzinfo=ZoneInfo("Europe/Moscow"))
     import datetime as _real

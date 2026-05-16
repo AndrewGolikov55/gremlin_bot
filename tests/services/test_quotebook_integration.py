@@ -13,7 +13,7 @@ from app.services.quotebook import QuotebookService
 from app.services.settings import SettingsService
 
 
-def _make_bot(*, send_poll_returns):
+def _make_bot(*, send_poll_returns: object) -> AsyncMock:
     bot = AsyncMock()
     me = type("Me", (), {})()
     me.username = "gremlin_bot"
@@ -26,7 +26,7 @@ def _make_bot(*, send_poll_returns):
     return bot
 
 
-def _poll_msg(*, message_id: int, poll_id: str):
+def _poll_msg(*, message_id: int, poll_id: str) -> object:
     pm = type("PM", (), {})()
     pm.message_id = message_id
     pm.poll = type("P", (), {})()
@@ -34,7 +34,7 @@ def _poll_msg(*, message_id: int, poll_id: str):
     return pm
 
 
-def _stub_close(voter_counts: list[int]):
+def _stub_close(voter_counts: list[int]) -> object:
     poll = type("P", (), {})()
     poll.total_voter_count = sum(voter_counts)
     opts = []
