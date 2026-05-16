@@ -300,3 +300,24 @@ class RoastService:
             f"Жарь."
         )
         return system, user
+
+    async def _llm_call(self, *, system: str, user: str) -> str | None:
+        conf = await self.app_config.get_all()
+        provider = resolve_llm_options(conf)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            return await llm_generate(
+                messages,
+                temperature=LLM_TEMPERATURE,
+                max_tokens=LLM_MAX_TOKENS,
+                provider=provider,
+            )
+        except (LLMError, LLMRateLimitError):
+            logger.exception("roast: LLM provider failed")
+            return None
+        except Exception:
+            logger.exception("roast: unexpected LLM error")
+            return None

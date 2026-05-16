@@ -444,3 +444,61 @@ async def test_build_prompts_empty_profile_and_messages(sessionmaker):
     assert "—" in user
     # No-text fallback marker
     assert "нет текстовых сообщений" in user.lower()
+
+
+@pytest.mark.asyncio
+async def test_llm_call_returns_text_on_success(sessionmaker):
+    app_config = create_autospec(AppConfigService, instance=True)
+    app_config.get_all = AsyncMock(return_value={"llm_provider": "openrouter"})
+    svc = _make_svc(sessionmaker, app_config=app_config)
+
+    import unittest.mock as um
+    captured: dict = {}
+
+    async def fake_generate(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "  Жёсткий текст.  "
+
+    with um.patch("app.services.roast.llm_generate", fake_generate):
+        text = await svc._llm_call(system="SYS", user="USR")
+
+    assert text == "  Жёсткий текст.  "
+    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][0]["content"] == "SYS"
+    assert captured["messages"][1]["role"] == "user"
+    assert captured["messages"][1]["content"] == "USR"
+    assert captured["kwargs"]["max_tokens"] == 280
+    assert captured["kwargs"]["temperature"] == 0.95
+
+
+@pytest.mark.asyncio
+async def test_llm_call_returns_none_on_llm_error(sessionmaker):
+    from app.services.llm.client import LLMError
+
+    app_config = create_autospec(AppConfigService, instance=True)
+    app_config.get_all = AsyncMock(return_value={})
+    svc = _make_svc(sessionmaker, app_config=app_config)
+
+    async def fake_generate(messages, **kwargs):
+        raise LLMError("all providers down")
+
+    import unittest.mock as um
+    with um.patch("app.services.roast.llm_generate", fake_generate):
+        text = await svc._llm_call(system="SYS", user="USR")
+    assert text is None
+
+
+@pytest.mark.asyncio
+async def test_llm_call_returns_none_on_unexpected_error(sessionmaker):
+    app_config = create_autospec(AppConfigService, instance=True)
+    app_config.get_all = AsyncMock(return_value={})
+    svc = _make_svc(sessionmaker, app_config=app_config)
+
+    async def fake_generate(messages, **kwargs):
+        raise RuntimeError("boom")
+
+    import unittest.mock as um
+    with um.patch("app.services.roast.llm_generate", fake_generate):
+        text = await svc._llm_call(system="SYS", user="USR")
+    assert text is None
