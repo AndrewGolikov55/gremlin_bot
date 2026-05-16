@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
-from typing import Dict
+from typing import Dict, Literal
 
 from aiogram import Bot, F, Router, types
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 
+from ..services.dice_game import AlreadyPlayedTodayError, DiceGameService
 from ..services.guess_game import GuessGameService, NoCandidatesError, PreparedRound
 
 router = Router(name="games")
@@ -32,7 +34,116 @@ def build_games_menu_markup() -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
+            [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
         ]
+    )
+
+
+# --- Dice game --------------------------------------------------------------
+
+DICE_MAX_PICKS = 2
+DICE_FACES = (1, 2, 3, 4, 5, 6)
+
+
+@dataclass(frozen=True)
+class DiceCallback:
+    action: Literal["pick", "roll", "cancel"]
+    owner_id: int
+    picks: list[int]
+    number: int | None
+
+
+def _parse_picks_csv(raw: str) -> list[int] | None:
+    if not raw:
+        return []
+    try:
+        out = [int(x) for x in raw.split(",")]
+    except ValueError:
+        return None
+    if any(n not in DICE_FACES for n in out):
+        return None
+    if len(out) > DICE_MAX_PICKS:
+        return None
+    if len(set(out)) != len(out):
+        return None
+    return out
+
+
+def parse_dice_callback(data: str) -> DiceCallback | None:
+    parts = data.split(":")
+    if len(parts) < 3 or parts[0] != "dice":
+        return None
+    action = parts[1]
+    try:
+        owner_id = int(parts[2])
+    except ValueError:
+        return None
+    if action == "cancel" and len(parts) == 3:
+        return DiceCallback(action="cancel", owner_id=owner_id, picks=[], number=None)
+    if action == "roll" and len(parts) == 4:
+        picks = _parse_picks_csv(parts[3])
+        if picks is None:
+            return None
+        return DiceCallback(action="roll", owner_id=owner_id, picks=picks, number=None)
+    if action == "pick" and len(parts) == 5:
+        picks = _parse_picks_csv(parts[3])
+        if picks is None:
+            return None
+        try:
+            number = int(parts[4])
+        except ValueError:
+            return None
+        if number not in DICE_FACES:
+            return None
+        return DiceCallback(action="pick", owner_id=owner_id, picks=picks, number=number)
+    return None
+
+
+def _picks_to_csv(picks: list[int]) -> str:
+    return ",".join(str(n) for n in picks)
+
+
+def build_dice_keyboard(owner_id: int, picks: list[int]) -> types.InlineKeyboardMarkup:
+    csv = _picks_to_csv(picks)
+    selected = set(picks)
+    rows: list[list[types.InlineKeyboardButton]] = []
+    for row_nums in ((1, 2, 3), (4, 5, 6)):
+        rows.append([
+            types.InlineKeyboardButton(
+                text=(f"✓ {n}" if n in selected else str(n)),
+                callback_data=f"dice:pick:{owner_id}:{csv}:{n}",
+            )
+            for n in row_nums
+        ])
+    rows.append([
+        types.InlineKeyboardButton(
+            text="🎲 Бросать",
+            callback_data=f"dice:roll:{owner_id}:{csv}",
+        ),
+        types.InlineKeyboardButton(
+            text="Отмена",
+            callback_data=f"dice:cancel:{owner_id}",
+        ),
+    ])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def format_dice_picks_text(picks: list[int]) -> str:
+    return ", ".join(str(n) for n in picks)
+
+
+def format_dice_intro_text() -> str:
+    return "Выбери 1 или 2 числа (1 число = –2 очка, 2 числа = –1 очко)"
+
+
+def format_dice_result(*, picks: list[int], dice_value: int, delta: int, mention: str) -> str:
+    picks_str = format_dice_picks_text(picks)
+    if delta == 0:
+        return f"😶 {mention} поставил {picks_str} — выпало {dice_value}. Мимо."
+    points_word = "очка" if abs(delta) in (2, 3, 4) else "очко"
+    return (
+        f"🎯 {mention} поставил {picks_str} — выпало {dice_value}! "
+        f"Минус {abs(delta)} {points_word} в месячной рулетке."
     )
 
 
@@ -132,6 +243,203 @@ async def cb_games_guess(query: types.CallbackQuery, bot: Bot, guess_game: Guess
     if isinstance(query.message, types.InaccessibleMessage):
         return
     await _start_round(query.message.chat, bot, guess_game)
+
+
+async def _open_dice(
+    *,
+    chat: types.Chat,
+    user: types.User,
+    reply_to_message_id: int | None,
+    bot: Bot,
+    dice_game: DiceGameService,
+) -> None:
+    if chat.type not in {"group", "supergroup"}:
+        await bot.send_message(
+            chat_id=chat.id,
+            text="Игра доступна только в групповых чатах.",
+        )
+        return
+
+    now = datetime.utcnow()
+    if not await dice_game.can_play_today(chat_id=chat.id, user_id=user.id, now=now):
+        await bot.send_message(
+            chat_id=chat.id,
+            text="Ты уже бросал сегодня, приходи завтра.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    await bot.send_message(
+        chat_id=chat.id,
+        text=format_dice_intro_text(),
+        reply_to_message_id=reply_to_message_id,
+        reply_markup=build_dice_keyboard(owner_id=user.id, picks=[]),
+    )
+
+
+@router.message(Command("dice"))
+async def cmd_dice(message: types.Message, bot: Bot, dice_game: DiceGameService) -> None:
+    if message.from_user is None:
+        return
+    await _open_dice(
+        chat=message.chat, user=message.from_user,
+        reply_to_message_id=message.message_id, bot=bot, dice_game=dice_game,
+    )
+
+
+@router.callback_query(F.data == "games:dice")
+async def cb_games_dice(query: types.CallbackQuery, bot: Bot, dice_game: DiceGameService) -> None:
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await _open_dice(
+        chat=query.message.chat, user=query.from_user,
+        reply_to_message_id=query.message.message_id, bot=bot, dice_game=dice_game,
+    )
+
+
+DICE_ANIMATION_DELAY = 2.0
+_DICE_ROLL_LOCKS: Dict[tuple[int, int], asyncio.Lock] = {}
+
+
+def _get_dice_lock(chat_id: int, user_id: int) -> asyncio.Lock:
+    key = (chat_id, user_id)
+    lock = _DICE_ROLL_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _DICE_ROLL_LOCKS[key] = lock
+    return lock
+
+
+def _mention_for(user: types.User) -> str:
+    if user.username:
+        return f"@{user.username}"
+    return escape(user.full_name or f"user{user.id}")
+
+
+@router.callback_query(F.data.startswith("dice:"))
+async def on_dice_callback(
+    query: types.CallbackQuery, bot: Bot, dice_game: DiceGameService,
+) -> None:
+    if query.data is None:
+        await query.answer()
+        return
+    parsed = parse_dice_callback(query.data)
+    if parsed is None:
+        await query.answer()
+        return
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        await query.answer()
+        return
+    if query.from_user.id != parsed.owner_id:
+        await query.answer("Это не твоя игра, вызови /dice сам", show_alert=True)
+        return
+
+    if parsed.action == "cancel":
+        try:
+            await query.message.edit_text("Бросок отменён.")
+        except TelegramBadRequest:
+            pass
+        await query.answer()
+        return
+
+    if parsed.action == "pick":
+        assert parsed.number is not None
+        picks = list(parsed.picks)
+        if parsed.number in picks:
+            picks.remove(parsed.number)
+        else:
+            if len(picks) >= DICE_MAX_PICKS:
+                await query.answer(f"Максимум {DICE_MAX_PICKS} числа")
+                return
+            picks.append(parsed.number)
+            picks.sort()
+        try:
+            await query.message.edit_reply_markup(
+                reply_markup=build_dice_keyboard(owner_id=parsed.owner_id, picks=picks),
+            )
+        except TelegramBadRequest:
+            pass
+        await query.answer()
+        return
+
+    # parsed.action == "roll"
+    if not parsed.picks:
+        await query.answer("Выбери хотя бы одно число")
+        return
+
+    chat_id = query.message.chat.id
+    user_id = parsed.owner_id
+
+    async with _get_dice_lock(chat_id, user_id):
+        await query.answer()
+        # Strip keyboard, show the stake
+        try:
+            await query.message.edit_text(f"Ставка: {format_dice_picks_text(parsed.picks)}")
+        except TelegramBadRequest:
+            pass
+
+        try:
+            dice_msg = await bot.send_dice(
+                chat_id=chat_id,
+                emoji="🎲",
+                reply_to_message_id=query.message.message_id,
+            )
+        except (TelegramBadRequest, TelegramForbiddenError):
+            logger.exception("dice.send_dice failed chat=%s user=%s", chat_id, user_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Не смог бросить кубик, попробуй ещё раз.",
+            )
+            return
+
+        if dice_msg.dice is None:
+            logger.warning("dice.send_dice returned no dice chat=%s", chat_id)
+            return
+        value = dice_msg.dice.value
+
+        try:
+            round_, delta = await dice_game.record_roll(
+                chat_id=chat_id, user_id=user_id, picks=parsed.picks,
+                dice_value=value, dice_message_id=dice_msg.message_id,
+                now=datetime.utcnow(),
+            )
+        except AlreadyPlayedTodayError:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Ты уже бросал сегодня, приходи завтра.",
+                reply_to_message_id=dice_msg.message_id,
+            )
+            return
+        except Exception:
+            logger.exception("dice.record_roll failed chat=%s user=%s", chat_id, user_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"Кубик показал {value}, но не смог записать — день не сгорел.",
+                reply_to_message_id=dice_msg.message_id,
+            )
+            return
+
+        if DICE_ANIMATION_DELAY > 0:
+            await asyncio.sleep(DICE_ANIMATION_DELAY)
+
+        text = format_dice_result(
+            picks=parsed.picks, dice_value=value, delta=delta,
+            mention=_mention_for(query.from_user),
+        )
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=dice_msg.message_id,
+            )
+        except TelegramBadRequest:
+            await bot.send_message(chat_id=chat_id, text=text)
+
+        logger.info(
+            "dice.round chat=%s user=%s picks=%s value=%s delta=%s",
+            chat_id, user_id, parsed.picks, value, delta,
+        )
 
 
 @router.poll_answer()

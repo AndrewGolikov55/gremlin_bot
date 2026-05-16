@@ -1,5 +1,6 @@
 from .app_setting import AppSetting
 from .chat import Chat, ChatSetting
+from .dice_round import DiceRound
 from .guess_round import GuessRound
 from .memory import ChatMemory, RelationshipState, UserMemoryProfile
 from .message import Message
@@ -13,6 +14,7 @@ __all__ = [
     "Chat",
     "ChatMemory",
     "ChatSetting",
+    "DiceRound",
     "GuessRound",
     "Message",
     "MonthlyChampion",

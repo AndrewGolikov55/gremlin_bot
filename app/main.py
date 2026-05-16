@@ -42,6 +42,7 @@ from .services.spontaneity import SpontaneityPolicy
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
 from .services.guess_game import GuessGameService
+from .services.dice_game import DiceGameService
 from .services.monthly_champion import MonthlyChampionService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
 from .services.release_broadcast import ReleaseBroadcaster
@@ -135,6 +136,7 @@ guess_game_service = GuessGameService(
     app_config=app_config_service,
     bot=bot,
 )
+dice_game_service = DiceGameService(sessionmaker=async_sessionmaker)
 monthly_champion_service = MonthlyChampionService(
     sessionmaker=async_sessionmaker,
     bot=bot,
@@ -181,6 +183,7 @@ dp.update.middleware(
         user_memory_service,
         spontaneity_policy,
         guess_game_service,
+        dice_game_service,
         monthly_champion_service,
     )
 )
