@@ -5,7 +5,6 @@ import logging
 import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-
 from typing import TYPE_CHECKING
 
 from aiogram import Bot
@@ -536,7 +535,7 @@ class ShipService:
                 needle = str(value).lstrip("@").lower()
                 if not needle:
                     return None
-                stmt = (
+                u_stmt = (
                     select(RouletteParticipant.user_id, RouletteParticipant.username)
                     .where(
                         RouletteParticipant.chat_id == chat_id,
@@ -544,15 +543,15 @@ class ShipService:
                     )
                     .limit(1)
                 )
-                row = (await session.execute(stmt)).first()
+                row = (await session.execute(u_stmt)).first()
                 if row is not None:
                     return int(row.user_id), str(row.username)
-                stmt2 = (
+                u_stmt2 = (
                     select(User.tg_id, User.username)
                     .where(func.lower(User.username) == needle)
                     .limit(1)
                 )
-                row2 = (await session.execute(stmt2)).first()
+                row2 = (await session.execute(u_stmt2)).first()
                 if row2 is not None:
                     return int(row2.tg_id), str(row2.username)
                 return None
