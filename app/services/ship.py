@@ -557,3 +557,108 @@ class ShipService:
                 return None
 
             return None
+
+    async def _has_any_messages(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        user_id: int,
+    ) -> bool:
+        from sqlalchemy import func, select
+
+        from ..models import Message
+
+        cutoff = datetime.utcnow() - timedelta(days=WINDOW_DAYS)
+        stmt = (
+            select(func.count())
+            .where(
+                Message.chat_id == chat_id,
+                Message.user_id == user_id,
+                Message.is_bot.is_(False),
+                Message.date >= cutoff,
+            )
+        )
+        return int((await session.execute(stmt)).scalar() or 0) > 0
+
+    async def compute_or_cached(
+        self,
+        *,
+        chat_id: int,
+        a: tuple[int, str],
+        b: tuple[int, str],
+        bot_id: int,
+    ) -> ShipOutcome:
+        """Main entry point. Returns ShipOutcome.
+
+        a, b: tuples of (user_id, display_name).
+        bot_id: bot's own Telegram user id (to refuse bot-in-pair).
+        score=-1 indicates a refusal/meta result that the handler should render as-is.
+        """
+        a_id, a_name = a
+        b_id, b_name = b
+
+        if a_id == b_id:
+            return ShipOutcome(
+                score=-1,
+                rendered_text=(
+                    f"💞 {a_name} сам с собой — совместимость 100%, "
+                    f"но это не диагноз, а синдром."
+                ),
+                cached=False,
+            )
+
+        if a_id == bot_id or b_id == bot_id:
+            return ShipOutcome(
+                score=-1,
+                rendered_text="С ботом нельзя, мне больно.",
+                cached=False,
+            )
+
+        async with self._get_lock(chat_id):
+            async with self.sessionmaker() as session:
+                has_a = await self._has_any_messages(session, chat_id=chat_id, user_id=a_id)
+                has_b = await self._has_any_messages(session, chat_id=chat_id, user_id=b_id)
+            if not has_a or not has_b:
+                missing = a_name if not has_a else b_name
+                return ShipOutcome(
+                    score=-1,
+                    rendered_text=f"Не из чего считать совместимость для @{missing}.",
+                    cached=False,
+                )
+
+            ua, ub = self.canonicalize_pair(a_id, b_id)
+            async with self.sessionmaker() as session:
+                cached = await self._load_cached(session, chat_id=chat_id, a=ua, b=ub)
+            if cached is not None:
+                return ShipOutcome(
+                    score=cached.score,
+                    rendered_text=cached.rendered_text,
+                    cached=True,
+                )
+
+            async with self.sessionmaker() as session:
+                metrics = await self._compute_metrics(session, chat_id=chat_id, a=a_id, b=b_id)
+            score = self.aggregate_score(metrics)
+            rendered = await self._render(
+                chat_id=chat_id,
+                name_a=a_name,
+                name_b=b_name,
+                score=score,
+                metrics=metrics,
+            )
+            payload = {
+                "reply_count": metrics.reply_count,
+                "mention_count": metrics.mention_count,
+                "co_active_days": metrics.co_active_days,
+                "pref_overlap_keywords": metrics.pref_overlap_keywords,
+                "reply_rate": metrics.reply_rate,
+                "mention_rate": metrics.mention_rate,
+                "co_activity": metrics.co_activity,
+                "pref_overlap": metrics.pref_overlap,
+            }
+            await self._persist(
+                chat_id=chat_id, a=ua, b=ub,
+                score=score, payload=payload, rendered_text=rendered,
+            )
+            return ShipOutcome(score=score, rendered_text=rendered, cached=False)

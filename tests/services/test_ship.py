@@ -533,3 +533,132 @@ async def test_resolve_candidate_by_id_returns_id_string_when_unknown(sessionmak
     res = await svc.resolve_candidate(chat_id=42, candidate=("id", 100))
     assert res is not None
     assert res == (100, "id100")
+
+
+@pytest.mark.asyncio
+async def test_compute_or_cached_self_ship_returns_meta_no_llm(sessionmaker):
+    svc = _make_service(sessionmaker)
+    svc.bot.id = 7
+    # ensure get_me unused; we pass bot_id explicitly anyway
+
+    async def must_not_call(*a, **kw):
+        raise AssertionError("LLM must not be called for self-ship")
+
+    with um.patch("app.services.ship.llm_generate", must_not_call):
+        outcome = await svc.compute_or_cached(
+            chat_id=42, a=(100, "Алиса"), b=(100, "Алиса"), bot_id=7,
+        )
+
+    assert outcome.score == -1
+    assert outcome.cached is False
+    assert "100%" in outcome.rendered_text or "синдром" in outcome.rendered_text.lower()
+
+    # No row written
+    async with sessionmaker() as session:
+        from sqlalchemy import select
+        rows = (await session.execute(select(ShipResult))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_compute_or_cached_refuses_bot_in_pair(sessionmaker):
+    svc = _make_service(sessionmaker)
+
+    async def must_not_call(*a, **kw):
+        raise AssertionError("LLM must not be called when bot is in pair")
+
+    with um.patch("app.services.ship.llm_generate", must_not_call):
+        outcome = await svc.compute_or_cached(
+            chat_id=42, a=(7, "GremlinBot"), b=(100, "Алиса"), bot_id=7,
+        )
+
+    assert outcome.score == -1
+    assert outcome.cached is False
+    assert "бот" in outcome.rendered_text.lower()
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select
+        rows = (await session.execute(select(ShipResult))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_compute_or_cached_pre_check_no_messages_does_not_persist(sessionmaker):
+    svc = _make_service(sessionmaker)
+
+    outcome = await svc.compute_or_cached(
+        chat_id=42, a=(100, "Алиса"), b=(200, "Боб"), bot_id=7,
+    )
+
+    assert outcome.score == -1
+    assert "@Алиса" in outcome.rendered_text or "@Боб" in outcome.rendered_text
+    async with sessionmaker() as session:
+        from sqlalchemy import select
+        rows = (await session.execute(select(ShipResult))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_compute_or_cached_cache_hit_skips_llm(sessionmaker):
+    chat_id = 42
+    a_id, b_id = 100, 200
+    async with sessionmaker() as session:
+        session.add(ShipResult(
+            chat_id=chat_id, user_id_a=a_id, user_id_b=b_id,
+            score=42, payload={}, rendered_text="💞 кэш",
+            computed_at=datetime.utcnow() - timedelta(hours=2),
+        ))
+        # And messages so pre-check passes
+        await _seed_msg(session, chat_id=chat_id, user_id=a_id, msg_id=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=b_id, msg_id=2)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+
+    async def must_not_call(*a, **kw):
+        raise AssertionError("LLM must not be called on cache hit")
+
+    with um.patch("app.services.ship.llm_generate", must_not_call):
+        outcome = await svc.compute_or_cached(
+            chat_id=chat_id, a=(a_id, "Алиса"), b=(b_id, "Боб"), bot_id=7,
+        )
+
+    assert outcome.cached is True
+    assert outcome.score == 42
+    assert outcome.rendered_text == "💞 кэш"
+
+
+@pytest.mark.asyncio
+async def test_compute_or_cached_full_run_persists_and_returns_text(sessionmaker):
+    chat_id = 42
+    a_id, b_id = 100, 200
+    async with sessionmaker() as session:
+        # seed messages so both have presence + 1 reply pair
+        await _seed_msg(session, chat_id=chat_id, user_id=a_id, msg_id=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=b_id, msg_id=2, reply_to=1)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"style": "standup"})
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.personas.get = AsyncMock(return_value="persona")
+
+    async def fake_generate(messages, **kwargs):
+        return "💞 рассчитано"
+
+    with um.patch("app.services.ship.llm_generate", fake_generate):
+        outcome = await svc.compute_or_cached(
+            chat_id=chat_id, a=(a_id, "Алиса"), b=(b_id, "Боб"), bot_id=7,
+        )
+
+    assert outcome.cached is False
+    assert outcome.score >= 0
+    assert outcome.rendered_text == "💞 рассчитано"
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select
+        rows = (await session.execute(select(ShipResult))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].user_id_a == min(a_id, b_id)
+    assert rows[0].user_id_b == max(a_id, b_id)
+    assert rows[0].rendered_text == "💞 рассчитано"
