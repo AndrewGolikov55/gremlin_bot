@@ -19,6 +19,7 @@ from ..services.dice_game import DiceGameService
 from ..services.monthly_champion import MonthlyChampionService
 from ..services.roast import RoastService
 from ..services.ship import ShipService
+from ..services.quotebook import QuotebookService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -54,6 +55,7 @@ class ServicesMiddleware(BaseMiddleware):
         monthly_champion: MonthlyChampionService,
         roast: RoastService,
         ship: ShipService,
+        quotebook: QuotebookService,
     ):
         self.settings = settings
         self.context = context
@@ -70,6 +72,7 @@ class ServicesMiddleware(BaseMiddleware):
         self.monthly_champion = monthly_champion
         self.roast = roast
         self.ship = ship
+        self.quotebook = quotebook
 
     async def __call__(
         self,
@@ -92,4 +95,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["monthly_champion"] = self.monthly_champion
         data["roast"] = self.roast
         data["ship"] = self.ship
+        data["quotebook"] = self.quotebook
         return await handler(event, data)
