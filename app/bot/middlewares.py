@@ -17,6 +17,7 @@ from ..services.user_memory import UserMemoryService
 from ..services.guess_game import GuessGameService
 from ..services.dice_game import DiceGameService
 from ..services.monthly_champion import MonthlyChampionService
+from ..services.quotebook import QuotebookService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -50,6 +51,7 @@ class ServicesMiddleware(BaseMiddleware):
         guess_game: GuessGameService,
         dice_game: DiceGameService,
         monthly_champion: MonthlyChampionService,
+        quotebook: QuotebookService,
     ):
         self.settings = settings
         self.context = context
@@ -64,6 +66,7 @@ class ServicesMiddleware(BaseMiddleware):
         self.guess_game = guess_game
         self.dice_game = dice_game
         self.monthly_champion = monthly_champion
+        self.quotebook = quotebook
 
     async def __call__(
         self,
@@ -84,4 +87,5 @@ class ServicesMiddleware(BaseMiddleware):
         data["guess_game"] = self.guess_game
         data["dice_game"] = self.dice_game
         data["monthly_champion"] = self.monthly_champion
+        data["quotebook"] = self.quotebook
         return await handler(event, data)
