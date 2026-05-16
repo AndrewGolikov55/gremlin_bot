@@ -34,3 +34,74 @@ async def test_service_creates_lock_per_chat(sessionmaker):
     l3 = svc._get_lock(43)
     assert l1 is l2
     assert l1 is not l3
+
+
+from datetime import datetime, timedelta
+
+from app.models import Message
+
+
+async def _seed_msg(session, *, chat_id, user_id, msg_id, text="x", reply_to=None, days_ago=1, is_bot=False):
+    session.add(Message(
+        chat_id=chat_id,
+        message_id=msg_id,
+        user_id=user_id,
+        text=text,
+        reply_to_id=reply_to,
+        date=datetime.utcnow() - timedelta(days=days_ago),
+        is_bot=is_bot,
+        tg_file_id=None,
+        media_group_id=None,
+    ))
+
+
+@pytest.mark.asyncio
+async def test_compute_reply_rate_counts_mutual_replies(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        # A wrote msg 1, B replied with msg 2 (B→A)
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=2, reply_to=1)
+        # A wrote msg 3, B replied with msg 4 (B→A)
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=3)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=4, reply_to=3)
+        # B wrote msg 5, A replied with msg 6 (A→B)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=5)
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=6, reply_to=5)
+        # Noise: C wrote msg 7, A replied to C (msg 8) — must NOT count
+        await _seed_msg(session, chat_id=chat_id, user_id=999, msg_id=7)
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=8, reply_to=7)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        count, denom = await svc._reply_stats(session, chat_id=chat_id, a=a, b=b)
+    assert count == 3  # 2 B→A + 1 A→B
+    # A_total = 4 msgs (1, 3, 6, 8); B_total = 3 msgs (2, 4, 5); min = 3
+    assert denom == 3
+
+
+@pytest.mark.asyncio
+async def test_compute_reply_rate_zero_when_no_messages(sessionmaker):
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        count, denom = await svc._reply_stats(session, chat_id=42, a=100, b=200)
+    assert count == 0
+    assert denom == 0
+
+
+@pytest.mark.asyncio
+async def test_compute_reply_rate_excludes_old_messages(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=1, days_ago=60)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=2, reply_to=1, days_ago=60)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        count, denom = await svc._reply_stats(session, chat_id=chat_id, a=a, b=b)
+    assert count == 0
+    assert denom == 0

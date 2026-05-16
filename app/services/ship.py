@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -74,3 +74,61 @@ class ShipService:
         if a <= b:
             return a, b
         return b, a
+
+    async def _reply_stats(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        a: int,
+        b: int,
+    ) -> tuple[int, int]:
+        """Return (mutual_reply_count, denominator=min(A_total, B_total)) over the 30d window."""
+        from sqlalchemy import and_, func, select
+
+        from ..models import Message
+
+        cutoff = datetime.utcnow() - timedelta(days=WINDOW_DAYS)
+
+        # totals per user in window (exclude bot messages)
+        totals_stmt = (
+            select(Message.user_id, func.count().label("cnt"))
+            .where(
+                Message.chat_id == chat_id,
+                Message.is_bot.is_(False),
+                Message.date >= cutoff,
+                Message.user_id.in_([a, b]),
+            )
+            .group_by(Message.user_id)
+        )
+        totals = dict((row.user_id, int(row.cnt)) for row in (await session.execute(totals_stmt)).all())
+        a_total = totals.get(a, 0)
+        b_total = totals.get(b, 0)
+
+        # Self-join: child.reply_to_id == parent.message_id (same chat)
+        Parent = Message.__table__.alias("parent")
+        Child = Message.__table__.alias("child")
+        reply_stmt = (
+            select(func.count())
+            .select_from(
+                Child.join(
+                    Parent,
+                    and_(
+                        Child.c.chat_id == Parent.c.chat_id,
+                        Child.c.reply_to_id == Parent.c.message_id,
+                    ),
+                )
+            )
+            .where(
+                Child.c.chat_id == chat_id,
+                Child.c.date >= cutoff,
+                Child.c.is_bot.is_(False),
+                Parent.c.is_bot.is_(False),
+                # (author=A, replying-to-B) OR (author=B, replying-to-A)
+                ((Child.c.user_id == a) & (Parent.c.user_id == b))
+                | ((Child.c.user_id == b) & (Parent.c.user_id == a)),
+            )
+        )
+        reply_count = int((await session.execute(reply_stmt)).scalar() or 0)
+        denom = min(a_total, b_total)
+        return reply_count, denom
