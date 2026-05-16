@@ -6,6 +6,7 @@ from .memory import ChatMemory, RelationshipState, UserMemoryProfile
 from .message import Message
 from .monthly_champion import MonthlyChampion  # noqa: F401
 from .persona import StylePrompt
+from .quote_week_round import QuoteWeekRound  # noqa: F401
 from .roulette import RouletteParticipant, RouletteScoreAdjustment, RouletteWinner
 from .user import User
 
@@ -18,6 +19,7 @@ __all__ = [
     "GuessRound",
     "Message",
     "MonthlyChampion",
+    "QuoteWeekRound",
     "RelationshipState",
     "RouletteParticipant",
     "RouletteScoreAdjustment",
