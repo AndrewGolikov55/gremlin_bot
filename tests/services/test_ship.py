@@ -185,3 +185,69 @@ async def test_co_activity_zero_when_no_overlap(sessionmaker):
     async with sessionmaker() as session:
         days = await svc._co_active_days(session, chat_id=chat_id, a=a, b=b)
     assert days == 0
+
+
+from app.models import UserMemoryProfile  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_pref_overlap_intersection_keywords(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        session.add(UserMemoryProfile(
+            chat_id=chat_id, user_id=a,
+            preferences=["docker", "kafka", "vim"],
+            projects=["gremlin", "labs"],
+            identity=["devops"],
+        ))
+        session.add(UserMemoryProfile(
+            chat_id=chat_id, user_id=b,
+            preferences=["docker", "emacs"],
+            projects=["gremlin", "infra"],
+            identity=["devops", "sre"],
+        ))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        keywords, ratio = await svc._pref_overlap(session, chat_id=chat_id, a=a, b=b)
+
+    assert set(keywords) == {"docker", "gremlin", "devops"}
+    # union = {docker, kafka, vim, gremlin, labs, devops, emacs, infra, sre} = 9
+    # intersection = 3 → 3/9
+    assert ratio == pytest.approx(3 / 9)
+
+
+@pytest.mark.asyncio
+async def test_pref_overlap_returns_zero_when_no_profiles(sessionmaker):
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        keywords, ratio = await svc._pref_overlap(session, chat_id=42, a=100, b=200)
+    assert keywords == []
+    assert ratio == 0.0
+
+
+@pytest.mark.asyncio
+async def test_pref_overlap_case_insensitive_and_dedup(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        session.add(UserMemoryProfile(
+            chat_id=chat_id, user_id=a,
+            preferences=["Docker", "DOCKER", "vim"],
+            projects=[], identity=[],
+        ))
+        session.add(UserMemoryProfile(
+            chat_id=chat_id, user_id=b,
+            preferences=["docker"],
+            projects=[], identity=[],
+        ))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        keywords, ratio = await svc._pref_overlap(session, chat_id=chat_id, a=a, b=b)
+    assert keywords == ["docker"]
+    # union = {docker, vim} = 2; intersection = 1
+    assert ratio == pytest.approx(0.5)

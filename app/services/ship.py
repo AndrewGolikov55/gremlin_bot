@@ -258,3 +258,42 @@ class ShipService:
             elif row.user_id == b:
                 days_b.add(key)
         return len(days_a & days_b)
+
+    async def _pref_overlap(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        a: int,
+        b: int,
+    ) -> tuple[list[str], float]:
+        """Return (sorted intersection keywords, ratio = |A∩B| / max(1, |A∪B|)).
+
+        Combines preferences + projects + identity lists from UserMemoryProfile.
+        Case-insensitive, deduplicated within each user.
+        """
+        from sqlalchemy import select
+
+        from ..models import UserMemoryProfile
+
+        def _bag(profile: UserMemoryProfile | None) -> set[str]:
+            if profile is None:
+                return set()
+            items: list[str] = []
+            items.extend(profile.preferences or [])
+            items.extend(profile.projects or [])
+            items.extend(profile.identity or [])
+            return {str(x).strip().lower() for x in items if str(x).strip()}
+
+        stmt = select(UserMemoryProfile).where(
+            UserMemoryProfile.chat_id == chat_id,
+            UserMemoryProfile.user_id.in_([a, b]),
+        )
+        profiles = {p.user_id: p for p in (await session.execute(stmt)).scalars().all()}
+        bag_a = _bag(profiles.get(a))
+        bag_b = _bag(profiles.get(b))
+        intersection = bag_a & bag_b
+        union = bag_a | bag_b
+        if not union:
+            return [], 0.0
+        return sorted(intersection), len(intersection) / len(union)
