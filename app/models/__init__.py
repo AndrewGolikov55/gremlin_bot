@@ -7,6 +7,7 @@ from .message import Message
 from .monthly_champion import MonthlyChampion  # noqa: F401
 from .persona import StylePrompt
 from .roulette import RouletteParticipant, RouletteScoreAdjustment, RouletteWinner
+from .ship import ShipResult
 from .user import User
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "RouletteParticipant",
     "RouletteScoreAdjustment",
     "RouletteWinner",
+    "ShipResult",
     "StylePrompt",
     "User",
     "UserMemoryProfile",
