@@ -662,3 +662,73 @@ async def test_compute_or_cached_full_run_persists_and_returns_text(sessionmaker
     assert rows[0].user_id_a == min(a_id, b_id)
     assert rows[0].user_id_b == max(a_id, b_id)
     assert rows[0].rendered_text == "💞 рассчитано"
+
+
+@pytest.mark.asyncio
+async def test_pick_random_pair_returns_none_when_under_two_active(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        await _seed_msg(session, chat_id=chat_id, user_id=100, msg_id=1)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    res = await svc.pick_random_pair(chat_id=chat_id, bot_id=7)
+    assert res is None
+
+
+@pytest.mark.asyncio
+async def test_pick_random_pair_excludes_bot_and_is_bot_messages(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        await _seed_msg(session, chat_id=chat_id, user_id=100, msg_id=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=7, msg_id=2)  # bot's user id
+        await _seed_msg(session, chat_id=chat_id, user_id=999, msg_id=3, is_bot=True)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    res = await svc.pick_random_pair(chat_id=chat_id, bot_id=7)
+    # only user 100 remains active → not enough
+    assert res is None
+
+
+@pytest.mark.asyncio
+async def test_pick_random_pair_returns_two_active(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(RouletteParticipant(chat_id=chat_id, user_id=100, username="alice"))
+        session.add(RouletteParticipant(chat_id=chat_id, user_id=200, username="bob"))
+        await _seed_msg(session, chat_id=chat_id, user_id=100, msg_id=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=200, msg_id=2)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    res = await svc.pick_random_pair(chat_id=chat_id, bot_id=7)
+    assert res is not None
+    a, b = res
+    ids = {a[0], b[0]}
+    assert ids == {100, 200}
+
+
+@pytest.mark.asyncio
+async def test_pick_random_pair_prefers_uncached_pairs(sessionmaker):
+    chat_id = 42
+    # 3 active users; pair (100,200) is cached, pair (100,300) and (200,300) not.
+    async with sessionmaker() as session:
+        for uid, name in [(100, "alice"), (200, "bob"), (300, "carl")]:
+            session.add(RouletteParticipant(chat_id=chat_id, user_id=uid, username=name))
+            await _seed_msg(session, chat_id=chat_id, user_id=uid, msg_id=uid)
+        session.add(ShipResult(
+            chat_id=chat_id, user_id_a=100, user_id_b=200,
+            score=42, payload={}, rendered_text="cached",
+            computed_at=datetime.utcnow() - timedelta(hours=1),
+        ))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    # Run repeatedly: must never pick (100,200) when uncached options exist
+    seen_pairs: set[frozenset[int]] = set()
+    for _ in range(20):
+        res = await svc.pick_random_pair(chat_id=chat_id, bot_id=7)
+        assert res is not None
+        seen_pairs.add(frozenset({res[0][0], res[1][0]}))
+    assert frozenset({100, 200}) not in seen_pairs

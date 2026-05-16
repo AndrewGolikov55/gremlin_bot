@@ -153,3 +153,80 @@ async def test_cmd_ship_happy_path_runs_pipeline_and_sends_text():
     )
     message.reply.assert_awaited_once()
     assert "💞" in message.reply.call_args.args[0]
+
+
+from aiogram.types import InaccessibleMessage  # noqa: E402
+
+from app.bot.router_games import build_games_menu_markup, cb_games_ship_random  # noqa: E402
+
+
+def test_build_games_menu_includes_ship_random_button() -> None:
+    markup = build_games_menu_markup()
+    flat = [btn for row in markup.inline_keyboard for btn in row]
+    assert any(btn.callback_data == "games:ship_random" for btn in flat)
+    assert any("Шипперинг" in btn.text for btn in flat)
+
+
+@pytest.mark.asyncio
+async def test_cb_games_ship_random_says_quiet_when_under_two():
+    bot = AsyncMock()
+    bot.id = 7
+    bot.send_message = AsyncMock()
+    ship = AsyncMock()
+    ship.pick_random_pair = AsyncMock(return_value=None)
+
+    query = MagicMock()
+    query.answer = AsyncMock()
+    message = MagicMock()
+    message.chat = Chat(id=-100, type="supergroup")
+    query.message = message
+
+    await cb_games_ship_random(query, bot, ship)
+
+    bot.send_message.assert_awaited_once()
+    text = bot.send_message.call_args.kwargs.get("text") or bot.send_message.call_args.args[1]
+    assert "тихо" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_cb_games_ship_random_runs_pipeline_on_picked_pair():
+    bot = AsyncMock()
+    bot.id = 7
+    bot.send_message = AsyncMock()
+    ship = AsyncMock()
+    ship.pick_random_pair = AsyncMock(return_value=((100, "alice"), (200, "bob")))
+    ship.compute_or_cached = AsyncMock(return_value=ShipOutcome(
+        score=55, rendered_text="💞 55/100", cached=False,
+    ))
+
+    query = MagicMock()
+    query.answer = AsyncMock()
+    message = MagicMock()
+    message.chat = Chat(id=-100, type="supergroup")
+    query.message = message
+
+    await cb_games_ship_random(query, bot, ship)
+
+    ship.compute_or_cached.assert_awaited_once_with(
+        chat_id=-100,
+        a=(100, "alice"),
+        b=(200, "bob"),
+        bot_id=7,
+    )
+    bot.send_message.assert_awaited_once()
+    text = bot.send_message.call_args.kwargs.get("text") or bot.send_message.call_args.args[1]
+    assert "💞" in text
+
+
+@pytest.mark.asyncio
+async def test_cb_games_ship_random_ignores_inaccessible_message():
+    bot = AsyncMock()
+    bot.id = 7
+    ship = AsyncMock()
+
+    query = MagicMock()
+    query.answer = AsyncMock()
+    query.message = InaccessibleMessage(chat=Chat(id=-100, type="supergroup"), message_id=1, date=0)
+
+    await cb_games_ship_random(query, bot, ship)
+    ship.pick_random_pair.assert_not_called()

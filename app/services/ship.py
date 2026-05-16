@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -662,3 +663,61 @@ class ShipService:
                 score=score, payload=payload, rendered_text=rendered,
             )
             return ShipOutcome(score=score, rendered_text=rendered, cached=False)
+
+    async def pick_random_pair(
+        self,
+        *,
+        chat_id: int,
+        bot_id: int,
+    ) -> tuple[tuple[int, str], tuple[int, str]] | None:
+        """Return two random active users (excluding bot) for /games ship-random.
+
+        Prefers pairs that don't have a fresh (<24h) cached ship_result.
+        Returns None if fewer than 2 active human authors in the last 30 days.
+        """
+        from sqlalchemy import select
+
+        from ..models import Message
+        from ..models import ShipResult as ShipResultModel
+
+        cutoff = datetime.utcnow() - timedelta(days=WINDOW_DAYS)
+        async with self.sessionmaker() as session:
+            stmt = (
+                select(Message.user_id)
+                .where(
+                    Message.chat_id == chat_id,
+                    Message.is_bot.is_(False),
+                    Message.user_id != bot_id,
+                    Message.date >= cutoff,
+                )
+                .group_by(Message.user_id)
+            )
+            user_ids = sorted({int(r[0]) for r in (await session.execute(stmt)).all()})
+        if len(user_ids) < 2:
+            return None
+
+        # All unordered pairs
+        all_pairs: list[tuple[int, int]] = [
+            (user_ids[i], user_ids[j])
+            for i in range(len(user_ids))
+            for j in range(i + 1, len(user_ids))
+        ]
+
+        # Filter pairs by cache state (prefer uncached/stale)
+        cache_cutoff = datetime.utcnow() - CACHE_TTL
+        async with self.sessionmaker() as session:
+            cached_stmt = select(ShipResultModel.user_id_a, ShipResultModel.user_id_b).where(
+                ShipResultModel.chat_id == chat_id,
+                ShipResultModel.computed_at >= cache_cutoff,
+            )
+            cached_set = {(int(r[0]), int(r[1])) for r in (await session.execute(cached_stmt)).all()}
+
+        uncached = [p for p in all_pairs if p not in cached_set]
+        pool = uncached if uncached else all_pairs
+        chosen = random.choice(pool)
+
+        a_res = await self.resolve_candidate(chat_id=chat_id, candidate=("id", chosen[0]))
+        b_res = await self.resolve_candidate(chat_id=chat_id, candidate=("id", chosen[1]))
+        # resolve_candidate("id", *) never returns None — always falls back to id<n>
+        assert a_res is not None and b_res is not None
+        return a_res, b_res

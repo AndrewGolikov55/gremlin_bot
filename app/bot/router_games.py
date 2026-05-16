@@ -36,6 +36,7 @@ def build_games_menu_markup() -> types.InlineKeyboardMarkup:
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
             [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
+            [types.InlineKeyboardButton(text="💞 Шипперинг (рандом)", callback_data="games:ship_random")],
         ]
     )
 
@@ -537,3 +538,29 @@ async def on_poll_answer(poll_answer: types.PollAnswer, bot: Bot, guess_game: Gu
         "guess.round.first_winner chat=%s round=%s user=%s",
         round_.chat_id, round_.id, poll_answer.user.id,
     )
+
+
+@router.callback_query(F.data == "games:ship_random")
+async def cb_games_ship_random(query: types.CallbackQuery, bot: Bot, ship: ShipService) -> None:
+    await query.answer()
+    if query.message is None:
+        return
+    if isinstance(query.message, types.InaccessibleMessage):
+        return
+    chat = query.message.chat
+    if chat.type not in {"group", "supergroup"}:
+        await bot.send_message(chat_id=chat.id, text="Игра для групповых чатов.")
+        return
+
+    pair = await ship.pick_random_pair(chat_id=chat.id, bot_id=bot.id)
+    if pair is None:
+        await bot.send_message(chat_id=chat.id, text="Слишком тихо у вас, не из кого пары собрать.")
+        return
+
+    outcome = await ship.compute_or_cached(
+        chat_id=chat.id,
+        a=pair[0],
+        b=pair[1],
+        bot_id=bot.id,
+    )
+    await bot.send_message(chat_id=chat.id, text=outcome.rendered_text)
