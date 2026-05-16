@@ -217,6 +217,73 @@ class QuotebookService:
             source_message_id=c.message_id,
         )
 
+    async def _llm_select_indices(
+        self,
+        ranked_for_llm: list[Candidate],
+    ) -> list[int] | None:
+        """Ask LLM for up to 6 «memey» 1-based indices into `ranked_for_llm`.
+
+        Returns parsed list of indices (in range [1, len(ranked_for_llm)],
+        deduplicated, preserving LLM order, truncated to MAX_POLL_OPTIONS) or
+        None on any failure (LLM error, unparseable JSON, empty result).
+        """
+        lines: list[str] = []
+        for idx, c in enumerate(ranked_for_llm, start=1):
+            lines.append(f"[{idx}] uid{c.user_id}: {c.text}")
+        listing = "\n".join(lines)
+        user_prompt = (
+            f"Выбери из списка ниже до {MAX_POLL_OPTIONS} цитат, которые звучат "
+            f"как мем чата: острые, абсурдные, неожиданные, цепляющие. "
+            f"Скучных «топ-цитат» не бывает — лучше меньше, но в точку.\n\n"
+            f"Кандидаты (формат: [N] uid<author>: текст):\n{listing}\n\n"
+            f"Верни JSON-массив индексов выбранных цитат, отсортированный по "
+            f"убыванию «мемности». Например: [4, 1, 7, 2]. Без пояснений, без markdown."
+        )
+
+        conf = await self.app_config.get_all()
+        provider = resolve_llm_options(conf)
+
+        try:
+            raw = await llm_generate(
+                [{"role": "user", "content": user_prompt}],
+                temperature=LLM_TEMPERATURE,
+                max_tokens=LLM_MAX_TOKENS,
+                provider=provider,
+            )
+        except (LLMError, LLMRateLimitError):
+            logger.exception("quotebook: LLM provider failed")
+            return None
+        except Exception:
+            logger.exception("quotebook: unexpected LLM error")
+            return None
+
+        if not raw:
+            return None
+        match = re.search(r"\[[^\[\]]*\]", raw)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(parsed, list):
+            return None
+
+        max_idx = len(ranked_for_llm)
+        result: list[int] = []
+        seen: set[int] = set()
+        for x in parsed:
+            try:
+                i = int(x)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= i <= max_idx and i not in seen:
+                seen.add(i)
+                result.append(i)
+            if len(result) >= MAX_POLL_OPTIONS:
+                break
+        return result or None
+
     async def select_options(
         self,
         candidates: list[Candidate],
@@ -228,14 +295,20 @@ class QuotebookService:
 
         - len < 3 → []  (caller skips the week)
         - 3 <= len <= 6 → all candidates, ranked by heuristic score (no LLM)
-        - len > 6 → top-50 by score → LLM selects ≤6 (Task 7 wires LLM in;
-          for now returns heuristic top-6)
+        - len > 6 → top-50 by score → LLM selects ≤6, fallback to heuristic top-6
         """
         if len(candidates) < MIN_CANDIDATES:
             return []
         if len(candidates) <= MAX_POLL_OPTIONS:
             ranked = self._heuristic_top(candidates, now=now, limit=MAX_POLL_OPTIONS)
             return [self._to_poll_option(c) for c in ranked]
-        # > 6: top-6 by heuristic — Task 7 will override with LLM-selected ≤6
-        ranked = self._heuristic_top(candidates, now=now, limit=MAX_POLL_OPTIONS)
-        return [self._to_poll_option(c) for c in ranked]
+
+        # > 6 candidates: top-50 by heuristic → LLM → ≤6, fallback to heuristic top-6
+        ranked_for_llm = self._heuristic_top(candidates, now=now, limit=LLM_INPUT_TOP_N)
+        indices = await self._llm_select_indices(ranked_for_llm)
+        if indices:
+            picked = [ranked_for_llm[i - 1] for i in indices]
+            return [self._to_poll_option(c) for c in picked]
+        # Fallback: heuristic top-6
+        fallback = self._heuristic_top(candidates, now=now, limit=MAX_POLL_OPTIONS)
+        return [self._to_poll_option(c) for c in fallback]

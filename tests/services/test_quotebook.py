@@ -265,19 +265,98 @@ async def test_select_options_returns_all_when_three_to_six_without_llm(sessionm
     assert result[-1].source_message_id == 1
 
 
+import json as _json
+
+
 @pytest.mark.asyncio
-async def test_select_options_more_than_six_returns_top_six_without_llm_for_now(sessionmaker, monkeypatch):
-    """Pre-LLM behaviour: > 6 candidates → heuristic top-6 (will be wrapped by LLM in next task)."""
+async def test_select_options_more_than_six_calls_llm_with_top_fifty(sessionmaker, monkeypatch):
     svc = _make_svc(sessionmaker)
+    svc.app_config.get_all = AsyncMock(return_value={})
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    # 60 кандидатов
+    candidates = [_cand(i, now=now, replies=i) for i in range(1, 61)]
+
+    captured: dict = {}
+
+    async def fake_llm(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        # LLM выбирает индексы 1, 3, 5 (1-based) из присланного списка
+        return "[1, 3, 5]"
+
+    monkeypatch.setattr("app.services.quotebook.llm_generate", fake_llm)
+    result = await svc.select_options(candidates, now=now)
+
+    # LLM получает топ-50 по score (1..60 по reply_count → id 60..11)
+    user_msg = captured["messages"][-1]["content"]
+    assert "[1]" in user_msg  # формат списка
+    # max_tokens из LLM_MAX_TOKENS
+    assert captured["kwargs"].get("max_tokens") == 100
+    # LLM выбрал 3 индекса — получаем 3 опции
+    assert len(result) == 3
+
+
+@pytest.mark.asyncio
+async def test_select_options_falls_back_on_bad_json(sessionmaker, monkeypatch):
+    svc = _make_svc(sessionmaker)
+    svc.app_config.get_all = AsyncMock(return_value={})
     now = datetime(2026, 5, 17, 20, 0, 0)
     candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]  # 10 кандидатов
 
-    # В этой задаче LLM ещё не интегрирован — функция не должна звать его
-    async def boom(*a, **kw):
-        raise AssertionError("LLM not expected at Task 6")
-    monkeypatch.setattr("app.services.quotebook.llm_generate", boom)
+    async def bad_llm(messages, **kwargs):
+        return "это не JSON, тут только болтовня"
 
+    monkeypatch.setattr("app.services.quotebook.llm_generate", bad_llm)
+    result = await svc.select_options(candidates, now=now)
+
+    # Fallback на эвристический top-6
+    assert len(result) == 6
+    assert [opt.source_message_id for opt in result] == [10, 9, 8, 7, 6, 5]
+
+
+@pytest.mark.asyncio
+async def test_select_options_falls_back_on_llm_error(sessionmaker, monkeypatch):
+    from app.services.llm.client import LLMError
+
+    svc = _make_svc(sessionmaker)
+    svc.app_config.get_all = AsyncMock(return_value={})
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]
+
+    async def boom(messages, **kwargs):
+        raise LLMError("provider down")
+
+    monkeypatch.setattr("app.services.quotebook.llm_generate", boom)
     result = await svc.select_options(candidates, now=now)
     assert len(result) == 6
-    # Топ-6 по reply_count = 10,9,8,7,6,5
-    assert [opt.source_message_id for opt in result] == [10, 9, 8, 7, 6, 5]
+
+
+@pytest.mark.asyncio
+async def test_select_options_drops_out_of_range_indices(sessionmaker, monkeypatch):
+    svc = _make_svc(sessionmaker)
+    svc.app_config.get_all = AsyncMock(return_value={})
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]
+
+    async def weird_llm(messages, **kwargs):
+        # 99 — вне диапазона, 0 — вне (1-based), 1 — ок, 2 — ок
+        return "[99, 0, 1, 2]"
+
+    monkeypatch.setattr("app.services.quotebook.llm_generate", weird_llm)
+    result = await svc.select_options(candidates, now=now)
+    assert len(result) == 2
+
+
+@pytest.mark.asyncio
+async def test_select_options_caps_at_six_even_if_llm_returns_more(sessionmaker, monkeypatch):
+    svc = _make_svc(sessionmaker)
+    svc.app_config.get_all = AsyncMock(return_value={})
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]
+
+    async def big_llm(messages, **kwargs):
+        return _json.dumps(list(range(1, 11)))  # 10 индексов
+
+    monkeypatch.setattr("app.services.quotebook.llm_generate", big_llm)
+    result = await svc.select_options(candidates, now=now)
+    assert len(result) == 6
