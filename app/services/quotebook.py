@@ -663,3 +663,36 @@ class QuotebookService:
             except Exception:
                 logger.exception("quotebook.process_chat failed chat=%s", chat_id)
             await asyncio.sleep(PER_CHAT_SLEEP_SEC)
+
+    async def catch_up_stale_open_rounds(self) -> None:
+        """Startup hook: close any round whose poll has been open > 24h.
+
+        Does NOT open new rounds — those wait for the next Sunday 20:00 MSK cron.
+        This is intentionally narrower than MonthlyChampionService.catch_up_if_needed,
+        because a stale 7-day window is no longer interesting to re-publish.
+        """
+        now = datetime.now(MoscowTZ).replace(tzinfo=None)
+        cutoff = now - timedelta(hours=CATCH_UP_STALE_HOURS)
+        async with self.sessionmaker() as session:
+            stmt = (
+                select(QuoteWeekRound)
+                .where(
+                    QuoteWeekRound.closed_at.is_(None),
+                    QuoteWeekRound.opened_at <= cutoff,
+                )
+            )
+            stale = (await session.execute(stmt)).scalars().all()
+
+        for round_ in stale:
+            chat_id = round_.chat_id
+            try:
+                if not await self._is_chat_targetable(chat_id):
+                    continue
+                async with self._get_lock(chat_id):
+                    await self.close_previous_round_if_any(chat_id=chat_id, now=now)
+            except Exception:
+                logger.exception(
+                    "quotebook.catch_up: close failed chat=%s round=%s",
+                    chat_id, round_.id,
+                )
+            await asyncio.sleep(PER_CHAT_SLEEP_SEC)

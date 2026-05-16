@@ -848,3 +848,88 @@ async def test_tick_all_chats_iterates_active_with_isolation(sessionmaker, monke
 
     # Оба активных чата попытаны (даже после исключения первого)
     assert sorted(processed) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_catch_up_closes_stale_open_round_without_opening_new(sessionmaker, monkeypatch):
+    chat_id = 42
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        # opened_at в воскресенье 17 мая 20:00 — старше 24ч
+        session.add(QuoteWeekRound(
+            chat_id=chat_id, week_start=date(2026, 5, 11),
+            poll_id="stale", poll_message_id=10,
+            options=[
+                {"text": "цитата", "author_user_id": 100, "source_message_id": 1},
+                {"text": "ещё цитата", "author_user_id": 101, "source_message_id": 2},
+            ],
+            opened_at=datetime(2026, 5, 17, 20, 0, 0),
+        ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([2, 1]))
+    svc.bot.send_message = AsyncMock()
+    svc.bot.send_poll = AsyncMock()  # MUST NOT be called
+    svc.bot.get_chat_member = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="x")  # type: ignore[arg-type]
+    )
+
+    async def fake_gen(messages, **kw):
+        return "x"
+    monkeypatch.setattr("app.services.quotebook.llm_generate", fake_gen)
+
+    fixed_now = datetime(2026, 5, 19, 9, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+    import datetime as _real
+    class _DT:
+        now = staticmethod(lambda tz=None: fixed_now if tz else fixed_now.replace(tzinfo=None))
+        combine = staticmethod(_real.datetime.combine)
+        utcnow = staticmethod(_real.datetime.utcnow)
+    monkeypatch.setattr("app.services.quotebook.datetime", _DT)
+
+    await svc.catch_up_stale_open_rounds()
+
+    # Закрытие случилось
+    svc.bot.stop_poll.assert_awaited_once_with(chat_id=chat_id, message_id=10)
+    # Новый опрос НЕ публиковался
+    svc.bot.send_poll.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_catch_up_skips_fresh_open_round(sessionmaker, monkeypatch):
+    chat_id = 42
+    fresh_now = datetime(2026, 5, 17, 23, 0, 0)  # ровно через 3 часа после открытия
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        session.add(QuoteWeekRound(
+            chat_id=chat_id, week_start=date(2026, 5, 11),
+            poll_id="fresh", poll_message_id=10,
+            options=[
+                {"text": "цитата", "author_user_id": 100, "source_message_id": 1},
+            ],
+            opened_at=datetime(2026, 5, 17, 20, 0, 0),  # 3 часа назад
+        ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.bot.stop_poll = AsyncMock()
+    svc.bot.send_poll = AsyncMock()
+    svc.bot.send_message = AsyncMock()
+
+    fixed_now = fresh_now.replace(tzinfo=ZoneInfo("Europe/Moscow"))
+    import datetime as _real
+    class _DT:
+        now = staticmethod(lambda tz=None: fixed_now if tz else fixed_now.replace(tzinfo=None))
+        combine = staticmethod(_real.datetime.combine)
+        utcnow = staticmethod(_real.datetime.utcnow)
+    monkeypatch.setattr("app.services.quotebook.datetime", _DT)
+
+    await svc.catch_up_stale_open_rounds()
+
+    svc.bot.stop_poll.assert_not_awaited()
+    svc.bot.send_poll.assert_not_awaited()
