@@ -344,8 +344,13 @@ async def test_open_dice_refuses_when_already_played(sessionmaker: async_session
 def _fake_callback(
     *, data: str, from_user_id: int, owner_in_msg: bool = True,
     chat_id: int = -100, message_id: int = 555,
-) -> tuple[CallbackQuery, MagicMock]:
-    """Build a CallbackQuery with mock .answer / .message.edit_text."""
+) -> tuple[CallbackQuery, MagicMock, AsyncMock]:
+    """Build a CallbackQuery with mock .answer / .message.edit_text.
+
+    Returns ``(cb, msg, answer_mock)``. The ``answer_mock`` is returned
+    separately so tests can assert on it without mypy complaining about the
+    aiogram-typed ``CallbackQuery.answer`` attribute.
+    """
     msg = MagicMock(spec=TgMessage)
     msg.message_id = message_id
     msg.chat = Chat(id=chat_id, type="supergroup")
@@ -355,20 +360,21 @@ def _fake_callback(
     cb.data = data
     cb.from_user = TgUser(id=from_user_id, is_bot=False, first_name="U", username="u")
     cb.message = msg
-    cb.answer = AsyncMock()
-    return cb, msg
+    answer_mock = AsyncMock()
+    cb.answer = answer_mock
+    return cb, msg, answer_mock
 
 
 @pytest.mark.asyncio
 async def test_dice_pick_from_foreign_user_alerts_and_no_edit(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
-    cb, msg = _fake_callback(data="dice:pick:10::3", from_user_id=99)
+    cb, msg, answer = _fake_callback(data="dice:pick:10::3", from_user_id=99)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
-    cb.answer.assert_called_once()
-    assert cb.answer.call_args.kwargs.get("show_alert") is True
+    answer.assert_called_once()
+    assert answer.call_args.kwargs.get("show_alert") is True
     msg.edit_text.assert_not_called()
     msg.edit_reply_markup.assert_not_called()
 
@@ -377,7 +383,7 @@ async def test_dice_pick_from_foreign_user_alerts_and_no_edit(sessionmaker: asyn
 async def test_dice_pick_toggles_number_on(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
-    cb, msg = _fake_callback(data="dice:pick:10::3", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:pick:10::3", from_user_id=10)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
@@ -392,7 +398,7 @@ async def test_dice_pick_toggles_number_off(sessionmaker: async_sessionmaker[Asy
     svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
     # current picks already include 3 → tap again removes it
-    cb, msg = _fake_callback(data="dice:pick:10:3:3", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:pick:10:3:3", from_user_id=10)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
@@ -406,12 +412,12 @@ async def test_dice_pick_max_two_blocks_third(sessionmaker: async_sessionmaker[A
     svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
     # current picks: 3, 5 → trying to add 2
-    cb, msg = _fake_callback(data="dice:pick:10:3,5:2", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:pick:10:3,5:2", from_user_id=10)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
-    cb.answer.assert_called_once()
-    assert "Максимум" in cb.answer.call_args.args[0] or "макс" in (cb.answer.call_args.args[0] or "").lower()
+    answer.assert_called_once()
+    assert "Максимум" in answer.call_args.args[0] or "макс" in (answer.call_args.args[0] or "").lower()
     msg.edit_reply_markup.assert_not_called()
 
 
@@ -419,12 +425,12 @@ async def test_dice_pick_max_two_blocks_third(sessionmaker: async_sessionmaker[A
 async def test_dice_roll_without_picks_alerts(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
-    cb, msg = _fake_callback(data="dice:roll:10:", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:roll:10:", from_user_id=10)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
-    cb.answer.assert_called_once()
-    text = cb.answer.call_args.args[0] if cb.answer.call_args.args else ""
+    answer.assert_called_once()
+    text = answer.call_args.args[0] if answer.call_args.args else ""
     assert "Выбери" in text or "хотя бы" in text.lower()
     bot.send_dice.assert_not_called()
 
@@ -433,7 +439,7 @@ async def test_dice_roll_without_picks_alerts(sessionmaker: async_sessionmaker[A
 async def test_dice_cancel(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
-    cb, msg = _fake_callback(data="dice:cancel:10", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:cancel:10", from_user_id=10)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
@@ -459,7 +465,7 @@ async def test_dice_roll_happy_path_win(
     sent_dice.dice = MagicMock(value=3)
     bot.send_dice = AsyncMock(return_value=sent_dice)
 
-    cb, msg = _fake_callback(data="dice:roll:10:3", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:roll:10:3", from_user_id=10)
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
     bot.send_dice.assert_called_once()
@@ -491,7 +497,7 @@ async def test_dice_roll_happy_path_loss(
     sent_dice.dice = MagicMock(value=6)
     bot.send_dice = AsyncMock(return_value=sent_dice)
 
-    cb, msg = _fake_callback(data="dice:roll:10:3", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:roll:10:3", from_user_id=10)
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
     from app.models import DiceRound, RouletteScoreAdjustment
@@ -520,12 +526,12 @@ async def test_dice_roll_concurrent_second_attempt_loses_race(
     bot = _fake_bot()
     sent_dice = MagicMock(message_id=777, dice=MagicMock(value=5))
     bot.send_dice = AsyncMock(return_value=sent_dice)
-    cb, msg = _fake_callback(data="dice:roll:10:3", from_user_id=10)
+    cb, msg, answer = _fake_callback(data="dice:roll:10:3", from_user_id=10)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
     # Second roll attempt: dice rolled but record fails → user told it didn't burn the day
-    cb.answer.assert_called()
+    answer.assert_called()
     bot.send_message.assert_called()
     text = bot.send_message.call_args.kwargs.get("text") or ""
     assert "уже бросал" in text.lower()
