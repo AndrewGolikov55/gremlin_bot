@@ -380,3 +380,67 @@ async def test_collect_target_context_no_profile_returns_empty_lists(sessionmake
     assert ctx.boundaries == []
     assert ctx.display_name == "Семён"
     assert ctx.username is None
+
+
+@pytest.mark.asyncio
+async def test_build_prompts_contains_persona_and_roast_rules(sessionmaker):
+    personas = create_autospec(StylePromptService, instance=True)
+    personas.get = AsyncMock(return_value="Ты гопник из 90х.")
+
+    settings = create_autospec(SettingsService, instance=True)
+    settings.get_all = AsyncMock(return_value={"style": "gopnik"})
+
+    svc = _make_svc(sessionmaker, personas=personas, settings=settings)
+
+    ctx = __import__("app.services.roast", fromlist=["_TargetContext"])._TargetContext(
+        user_id=100, display_name="Андрей", username="andrew",
+        messages=["сегодня я снова не выспался", "ладно, погнали кодить"],
+        identity=["разработчик"],
+        preferences=["любит rust"],
+        projects=["gremlin_bot"],
+        boundaries=["не упоминать развод"],
+        summary="вечно усталый",
+    )
+
+    system, user = await svc._build_prompts(chat_id=42, ctx=ctx)
+
+    # Persona is present
+    assert "гопник" in system
+    # Hard rules are present
+    assert "Прожарка" in system or "прожарк" in system.lower()
+    assert "3-5" in system or "три-пять" in system.lower() or "3–5" in system
+    # User prompt has the profile + messages + hidden topics block
+    assert "Андрей" in user
+    assert "andrew" in user
+    assert "разработчик" in user
+    assert "любит rust" in user
+    assert "gremlin_bot" in user
+    assert "вечно усталый" in user
+    assert "Hidden topics" in user
+    assert "не упоминать развод" in user
+    assert "сегодня я снова не выспался" in user
+    assert "ладно, погнали кодить" in user
+    # Roast call-to-action
+    assert "Жарь" in user
+
+
+@pytest.mark.asyncio
+async def test_build_prompts_empty_profile_and_messages(sessionmaker):
+    personas = create_autospec(StylePromptService, instance=True)
+    personas.get = AsyncMock(return_value="Ты гопник.")
+    settings = create_autospec(SettingsService, instance=True)
+    settings.get_all = AsyncMock(return_value={"style": "gopnik"})
+
+    svc = _make_svc(sessionmaker, personas=personas, settings=settings)
+
+    ctx = __import__("app.services.roast", fromlist=["_TargetContext"])._TargetContext(
+        user_id=100, display_name="Семён", username=None,
+        messages=[], identity=[], preferences=[], projects=[],
+        boundaries=[], summary=None,
+    )
+    system, user = await svc._build_prompts(chat_id=42, ctx=ctx)
+    # Hidden topics block exists even when empty
+    assert "Hidden topics" in user
+    assert "—" in user
+    # No-text fallback marker
+    assert "нет текстовых сообщений" in user.lower()

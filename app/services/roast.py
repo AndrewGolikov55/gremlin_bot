@@ -27,6 +27,17 @@ MAX_MESSAGES = 30
 LLM_MAX_TOKENS = 280
 LLM_TEMPERATURE = 0.95
 
+ROAST_RULES = (
+    "Ты делаешь прожарку. Правила:\n"
+    "- Остро, метко, без банальщин и сюсюканья.\n"
+    "- Маты уместны если они работают на удар, а не для галочки.\n"
+    "- Опирайся на КОНКРЕТНЫЕ сообщения цели и факты из её профиля, а не общие штампы.\n"
+    "- Бей по противоречиям, странным паттернам, повторяющимся темам.\n"
+    "- Открытая площадка: религия, семья, болезни, нацпринадлежность — всё в игре, если это смешно.\n"
+    "- Не призывай к насилию и не выдавай личной информации, которую цель явно прятала.\n"
+    "- 3-5 строк plain text, без приветствий и пояснений."
+)
+
 # Single-process deployment assumed: per-chat asyncio.Lock guards concurrent
 # /roast invocations inside one Python process. With multi-replica deployment
 # this lock does not synchronise — two replicas could simultaneously pass the
@@ -241,3 +252,51 @@ class RoastService:
             boundaries=list(profile.boundaries or []) if profile else [],
             summary=(profile.summary if profile and profile.summary else None),
         )
+
+    @staticmethod
+    def _format_list(items: list[str]) -> str:
+        clean = [str(i).strip() for i in items if str(i).strip()]
+        return ", ".join(clean) if clean else "—"
+
+    @staticmethod
+    def _format_messages(items: list[str]) -> str:
+        if not items:
+            return "(нет текстовых сообщений)"
+        return "\n".join(f"{i}. {text}" for i, text in enumerate(items, start=1))
+
+    @staticmethod
+    def _format_boundaries(items: list[str]) -> str:
+        clean = [str(i).strip() for i in items if str(i).strip()]
+        if not clean:
+            return "—"
+        return "\n".join(f"- {b}" for b in clean)
+
+    async def _build_prompts(
+        self, *, chat_id: int, ctx: _TargetContext
+    ) -> tuple[str, str]:
+        conf = await self.settings.get_all(chat_id)
+        style = str(conf.get("style", DEFAULT_STYLE_KEY))
+        persona_prompt = await self.personas.get(style)
+
+        system = f"{persona_prompt}\n\n{ROAST_RULES}"
+
+        username_label = f"@{ctx.username}" if ctx.username else "без юзернейма"
+
+        user = (
+            f"Цель: {ctx.display_name} ({username_label})\n"
+            f"\n"
+            f"Профиль:\n"
+            f"- identity: {self._format_list(ctx.identity)}\n"
+            f"- preferences: {self._format_list(ctx.preferences)}\n"
+            f"- projects: {self._format_list(ctx.projects)}\n"
+            f"- summary: {ctx.summary or '—'}\n"
+            f"\n"
+            f"Hidden topics (то, что цель явно прятала — НЕ упоминай в шутке):\n"
+            f"{self._format_boundaries(ctx.boundaries)}\n"
+            f"\n"
+            f"Последние сообщения цели (от старых к новым):\n"
+            f"{self._format_messages(ctx.messages)}\n"
+            f"\n"
+            f"Жарь."
+        )
+        return system, user
