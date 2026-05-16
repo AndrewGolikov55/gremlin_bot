@@ -44,6 +44,7 @@ from .services.user_memory import UserMemoryService
 from .services.guess_game import GuessGameService
 from .services.dice_game import DiceGameService
 from .services.monthly_champion import MonthlyChampionService
+from .services.ship import ShipService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
 from .services.release_broadcast import ReleaseBroadcaster
 from .utils.version import get_version
@@ -144,6 +145,13 @@ monthly_champion_service = MonthlyChampionService(
     settings=settings_service,
     app_config=app_config_service,
 )
+ship_service = ShipService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    settings=settings_service,
+    app_config=app_config_service,
+    personas=persona_service,
+)
 
 # Routers — order matters: command routers MUST be registered before triggers_router,
 # which has a catch-all @router.message(F.text) that consumes any text message.
@@ -185,6 +193,7 @@ dp.update.middleware(
         guess_game_service,
         dice_game_service,
         monthly_champion_service,
+        ship_service,
     )
 )
 scheduler = get_scheduler()
