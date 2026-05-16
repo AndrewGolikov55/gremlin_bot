@@ -369,3 +369,98 @@ async def test_persist_inserts_then_updates_same_pair(sessionmaker):
     assert rows[0].score == 80
     assert rows[0].rendered_text == "second"
     assert rows[0].payload["v"] == 2
+
+
+import unittest.mock as um  # noqa: E402
+
+from app.services.llm.client import LLMError  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_render_calls_llm_with_persona_system_and_numbers(sessionmaker):
+    captured: dict = {}
+
+    async def fake_generate(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "💞 73/100\nалиса и боб — энергия общая, цифры тёплые."
+
+    svc = _make_service(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"style": "standup"})
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.personas.get = AsyncMock(return_value="ТЫ — STANDUP-комик.")
+
+    metrics = ShipMetrics(
+        reply_count=5, mention_count=2, co_active_days=8,
+        pref_overlap_keywords=["docker", "vim"],
+        reply_rate=0.5, mention_rate=0.1, co_activity=0.27, pref_overlap=0.3,
+    )
+
+    with um.patch("app.services.ship.llm_generate", fake_generate):
+        text = await svc._render(
+            chat_id=42, name_a="Алиса", name_b="Боб", score=73, metrics=metrics,
+        )
+
+    assert "73" in text or "Алиса" in text
+    # system message contains persona
+    assert captured["messages"][0]["role"] == "system"
+    assert "STANDUP" in captured["messages"][0]["content"]
+    # user message contains numbers and names
+    user_content = captured["messages"][1]["content"]
+    assert "Алиса" in user_content
+    assert "Боб" in user_content
+    assert "73" in user_content
+    assert "5" in user_content  # reply_count
+    assert "docker" in user_content
+
+
+@pytest.mark.asyncio
+async def test_render_falls_back_to_plain_text_on_llm_error(sessionmaker):
+    svc = _make_service(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"style": "standup"})
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.personas.get = AsyncMock(return_value="anything")
+
+    async def boom(messages, **kwargs):
+        raise LLMError("provider down")
+
+    metrics = ShipMetrics(
+        reply_count=5, mention_count=2, co_active_days=8,
+        pref_overlap_keywords=["docker", "vim"],
+        reply_rate=0.5, mention_rate=0.1, co_activity=0.27, pref_overlap=0.3,
+    )
+
+    with um.patch("app.services.ship.llm_generate", boom):
+        text = await svc._render(
+            chat_id=42, name_a="Алиса", name_b="Боб", score=73, metrics=metrics,
+        )
+
+    assert "💞" in text
+    assert "Алиса" in text and "Боб" in text
+    assert "73" in text
+    assert "docker" in text
+    assert "5" in text  # reply_count
+
+
+@pytest.mark.asyncio
+async def test_render_fallback_when_keywords_empty(sessionmaker):
+    svc = _make_service(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"style": "standup"})
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.personas.get = AsyncMock(return_value="anything")
+
+    async def boom(messages, **kwargs):
+        raise LLMError("down")
+
+    metrics = ShipMetrics(
+        reply_count=0, mention_count=0, co_active_days=0,
+        pref_overlap_keywords=[],
+        reply_rate=0.0, mention_rate=0.0, co_activity=0.0, pref_overlap=0.0,
+    )
+
+    with um.patch("app.services.ship.llm_generate", boom):
+        text = await svc._render(
+            chat_id=42, name_a="Алиса", name_b="Боб", score=0, metrics=metrics,
+        )
+
+    assert "не нашлось" in text or "не нашло" in text or "почти нет" in text.lower()

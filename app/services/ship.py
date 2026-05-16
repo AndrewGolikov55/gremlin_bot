@@ -11,6 +11,8 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .app_config import AppConfigService
+from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
+from .llm.client import generate as llm_generate
 from .persona import StylePromptService
 from .settings import SettingsService
 
@@ -415,3 +417,78 @@ class ShipService:
                     "ship: integrity race on persist chat=%s pair=(%s,%s)",
                     chat_id, a, b,
                 )
+
+    @staticmethod
+    def _fallback_text(*, name_a: str, name_b: str, score: int, metrics: ShipMetrics) -> str:
+        keywords = ", ".join(metrics.pref_overlap_keywords) if metrics.pref_overlap_keywords else "не нашлось"
+        return (
+            f"💞 {name_a} и {name_b} — совместимость {score}/100.\n"
+            f"Общие интересы: {keywords}. "
+            f"Друг другу отвечают: {metrics.reply_count} раз."
+        )
+
+    def _build_user_prompt(
+        self,
+        *,
+        name_a: str,
+        name_b: str,
+        score: int,
+        metrics: ShipMetrics,
+    ) -> str:
+        intersect = ", ".join(metrics.pref_overlap_keywords) if metrics.pref_overlap_keywords else "почти нет"
+        return (
+            f"Шипперинг двух участников чата: {name_a} и {name_b}.\n"
+            f"\n"
+            f"Совместимость: {score}/100\n"
+            f"\n"
+            f"Сырые метрики:\n"
+            f"- Друг другу отвечают: {metrics.reply_count} раз\n"
+            f"- Упоминают друг друга: {metrics.mention_count} раз\n"
+            f"- Совместные активные дни: {metrics.co_active_days}/{WINDOW_DAYS}\n"
+            f"- Общие интересы из профилей: {intersect}\n"
+            f"\n"
+            f"Сделай 3-4 строки «аналитики пары» в своей персоне.\n"
+            f"Опирайся на ЦИФРЫ выше и реальные пересечения, не выдумывай факты.\n"
+            f"Не сюсюкай. Plain text, без HTML/Markdown.\n"
+            f"Начни первой строкой с эмодзи 💞 и цифрой совместимости в шапке."
+        )
+
+    async def _render(
+        self,
+        *,
+        chat_id: int,
+        name_a: str,
+        name_b: str,
+        score: int,
+        metrics: ShipMetrics,
+    ) -> str:
+        conf = await self.settings.get_all(chat_id)
+        style = str(conf.get("style", "standup"))
+        system_prompt = await self.personas.get(style)
+        user_prompt = self._build_user_prompt(
+            name_a=name_a, name_b=name_b, score=score, metrics=metrics
+        )
+
+        app_conf = await self.app_config.get_all()
+        provider = resolve_llm_options(app_conf)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        try:
+            text = await llm_generate(
+                messages,
+                temperature=LLM_TEMPERATURE,
+                max_tokens=LLM_MAX_TOKENS,
+                provider=provider,
+            )
+        except (LLMError, LLMRateLimitError):
+            logger.exception("ship: LLM provider failed chat=%s", chat_id)
+            return self._fallback_text(name_a=name_a, name_b=name_b, score=score, metrics=metrics)
+        except Exception:
+            logger.exception("ship: unexpected LLM error chat=%s", chat_id)
+            return self._fallback_text(name_a=name_a, name_b=name_b, score=score, metrics=metrics)
+
+        if not text or not text.strip():
+            return self._fallback_text(name_a=name_a, name_b=name_b, score=score, metrics=metrics)
+        return text.strip()
