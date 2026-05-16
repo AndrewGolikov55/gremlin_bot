@@ -416,3 +416,187 @@ class QuotebookService:
             chat_id, poll_msg.poll.id, week_start, len(options),
         )
         return True
+
+    async def _resolve_author_name(self, *, chat_id: int, user_id: int) -> str:
+        """Best-effort display name via bot.get_chat_member; falls back to f'id{user_id}'."""
+        try:
+            member = await self.bot.get_chat_member(chat_id, user_id)
+        except TelegramBadRequest:
+            return f"id{user_id}"
+        except Exception:  # noqa: BLE001 — never bubble out of cosmetics
+            logger.exception(
+                "quotebook.get_chat_member failed chat=%s user=%s", chat_id, user_id
+            )
+            return f"id{user_id}"
+        user = getattr(member, "user", None)
+        if user is None:
+            return f"id{user_id}"
+        return str(user.first_name or user.username or f"id{user_id}")
+
+    async def _llm_render_winner(
+        self, *, full_text: str, author_name: str
+    ) -> str:
+        prompt = (
+            f"Афоризм недели в нашем чате выбран голосованием.\n"
+            f"Цитата: «{full_text}»\n"
+            f"Автор: {author_name}\n"
+            f"Объяви результат 3-4 строки в своей персоне.\n"
+            f"Plain text, без HTML и Markdown."
+        )
+        conf = await self.app_config.get_all()
+        provider = resolve_llm_options(conf)
+        try:
+            raw = await llm_generate(
+                [{"role": "user", "content": prompt}],
+                temperature=0.8,
+                max_tokens=250,
+                provider=provider,
+            )
+        except (LLMError, LLMRateLimitError):
+            logger.exception("quotebook: LLM render-winner failed")
+            return f"📜 Афоризм недели: «{full_text}» — {author_name}."
+        except Exception:
+            logger.exception("quotebook: unexpected LLM error in render-winner")
+            return f"📜 Афоризм недели: «{full_text}» — {author_name}."
+        if not raw or not raw.strip():
+            return f"📜 Афоризм недели: «{full_text}» — {author_name}."
+        return raw.strip()
+
+    async def _find_open_round(
+        self, *, chat_id: int, now: datetime
+    ) -> QuoteWeekRound | None:
+        cutoff = now - timedelta(days=8)
+        async with self.sessionmaker() as session:
+            stmt = (
+                select(QuoteWeekRound)
+                .where(
+                    QuoteWeekRound.chat_id == chat_id,
+                    QuoteWeekRound.closed_at.is_(None),
+                    QuoteWeekRound.opened_at >= cutoff,
+                )
+                .order_by(QuoteWeekRound.opened_at.desc())
+                .limit(1)
+            )
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def close_previous_round_if_any(
+        self, *, chat_id: int, now: datetime
+    ) -> None:
+        round_ = await self._find_open_round(chat_id=chat_id, now=now)
+        if round_ is None:
+            return
+
+        try:
+            poll = await self.bot.stop_poll(
+                chat_id=chat_id, message_id=round_.poll_message_id
+            )
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            logger.warning(
+                "quotebook.stop_poll failed chat=%s poll=%s: %s",
+                chat_id, round_.poll_id, exc,
+            )
+            # Mark the round as closed with NULL winner so we don't retry forever.
+            async with self.sessionmaker() as session:
+                db_row = await session.get(QuoteWeekRound, round_.id)
+                if db_row is not None:
+                    db_row.closed_at = datetime.utcnow()
+                    await session.commit()
+            return
+        except TelegramAPIError:
+            logger.exception("quotebook.stop_poll TG API error chat=%s", chat_id)
+            return
+
+        voter_counts = [int(o.voter_count) for o in poll.options]
+        total = int(getattr(poll, "total_voter_count", sum(voter_counts)))
+
+        if total == 0:
+            await self._finalize_no_winner(
+                round_=round_, voter_counts=voter_counts, chat_id=chat_id
+            )
+            return
+
+        max_count = max(voter_counts)
+        winners_idx = [i for i, c in enumerate(voter_counts) if c == max_count]
+        if len(winners_idx) == 1:
+            winner_idx = winners_idx[0]
+            await self._finalize_with_winner(
+                round_=round_,
+                voter_counts=voter_counts,
+                winner_idx=winner_idx,
+                chat_id=chat_id,
+            )
+            return
+
+        # Tie — Task 10 wires runoff. Until then, deterministic min-index pick
+        # so the close-flow does not stall (will be replaced in Task 10).
+        winner_idx = winners_idx[0]
+        await self._finalize_with_winner(
+            round_=round_,
+            voter_counts=voter_counts,
+            winner_idx=winner_idx,
+            chat_id=chat_id,
+        )
+
+    async def _finalize_no_winner(
+        self,
+        *,
+        round_: QuoteWeekRound,
+        voter_counts: list[int],
+        chat_id: int,
+    ) -> None:
+        msg = "📜 Афоризм недели не выбран — никто не пришёл голосовать."
+        try:
+            await self.bot.send_message(chat_id=chat_id, text=msg)
+        except TelegramAPIError:
+            logger.exception("quotebook.no_winner send_message failed chat=%s", chat_id)
+        async with self.sessionmaker() as session:
+            db_row = await session.get(QuoteWeekRound, round_.id)
+            if db_row is None:
+                return
+            db_row.closed_at = datetime.utcnow()
+            db_row.final_counts = list(voter_counts)
+            await session.commit()
+
+    async def _finalize_with_winner(
+        self,
+        *,
+        round_: QuoteWeekRound,
+        voter_counts: list[int],
+        winner_idx: int,
+        chat_id: int,
+    ) -> None:
+        option = round_.options[winner_idx]
+        winner_user_id = int(option["author_user_id"])
+        full_text = str(option["text"])
+
+        # Persist winner + RouletteScoreAdjustment in the same transaction.
+        async with self.sessionmaker() as session:
+            db_row = await session.get(QuoteWeekRound, round_.id)
+            if db_row is None:
+                logger.warning(
+                    "quotebook: round %s disappeared before finalize", round_.id
+                )
+                return
+            db_row.closed_at = datetime.utcnow()
+            db_row.winner_user_id = winner_user_id
+            db_row.winner_option_idx = winner_idx
+            db_row.final_counts = list(voter_counts)
+            session.add(RouletteScoreAdjustment(
+                chat_id=chat_id,
+                user_id=winner_user_id,
+                delta=+1,
+                reason="quote_week_winner",
+                source_id=db_row.id,
+            ))
+            await session.commit()
+
+        author_name = await self._resolve_author_name(
+            chat_id=chat_id, user_id=winner_user_id
+        )
+        text = await self._llm_render_winner(
+            full_text=full_text, author_name=author_name
+        )
+        try:
+            await self.bot.send_message(chat_id=chat_id, text=text)
+        except TelegramAPIError:
+            logger.exception("quotebook.winner send_message failed chat=%s", chat_id)

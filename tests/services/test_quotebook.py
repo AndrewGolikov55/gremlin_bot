@@ -57,9 +57,9 @@ async def test_service_lock_is_per_chat(sessionmaker):
 from datetime import timedelta
 from unittest.mock import AsyncMock, create_autospec
 
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from app.models import Chat, Message, QuoteWeekRound
+from app.models import Chat, Message, QuoteWeekRound, RouletteScoreAdjustment
 from app.services.app_config import AppConfigService
 from app.services.settings import SettingsService
 
@@ -539,3 +539,121 @@ async def test_open_new_round_handles_forbidden(sessionmaker):
         from sqlalchemy import select as _s
         rows = (await session.execute(_s(QuoteWeekRound))).all()
         assert rows == []
+
+
+def _stub_stop_poll_result(voter_counts: list[int]):
+    """Return a fake Poll object compatible with bot.stop_poll return value."""
+    poll = type("P", (), {})()
+    poll.total_voter_count = sum(voter_counts)
+    opts = []
+    for c in voter_counts:
+        o = type("O", (), {})()
+        o.voter_count = c
+        opts.append(o)
+    poll.options = opts
+    return poll
+
+
+@pytest.mark.asyncio
+async def test_close_previous_no_open_round_is_noop(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.bot.stop_poll = AsyncMock()
+    svc.bot.send_message = AsyncMock()
+
+    await svc.close_previous_round_if_any(chat_id=chat_id, now=now)
+
+    svc.bot.stop_poll.assert_not_awaited()
+    svc.bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_previous_zero_votes_no_adjustment(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        session.add(QuoteWeekRound(
+            chat_id=chat_id, week_start=date(2026, 5, 4),
+            poll_id="p1", poll_message_id=10,
+            options=[
+                {"text": "a", "author_user_id": 100, "source_message_id": 1},
+                {"text": "b", "author_user_id": 101, "source_message_id": 2},
+            ],
+            opened_at=datetime(2026, 5, 10, 17, 0, 0),
+        ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([0, 0]))
+    svc.bot.send_message = AsyncMock()
+
+    await svc.close_previous_round_if_any(chat_id=chat_id, now=now)
+
+    svc.bot.stop_poll.assert_awaited_once_with(chat_id=chat_id, message_id=10)
+    svc.bot.send_message.assert_awaited()
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        row = (await session.execute(_s(QuoteWeekRound))).scalar_one()
+        assert row.closed_at is not None
+        assert row.winner_user_id is None
+        assert row.winner_option_idx is None
+        assert row.final_counts == [0, 0]
+        adjustments = (await session.execute(_s(RouletteScoreAdjustment))).all()
+        assert adjustments == []
+
+
+@pytest.mark.asyncio
+async def test_close_previous_single_winner_adds_plus_one(sessionmaker, monkeypatch):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        session.add(QuoteWeekRound(
+            chat_id=chat_id, week_start=date(2026, 5, 4),
+            poll_id="p1", poll_message_id=10,
+            options=[
+                {"text": "первый вариант", "author_user_id": 100, "source_message_id": 1},
+                {"text": "второй вариант", "author_user_id": 101, "source_message_id": 2},
+            ],
+            opened_at=datetime(2026, 5, 10, 17, 0, 0),
+        ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([1, 3]))
+    svc.bot.send_message = AsyncMock()
+    svc.bot.get_chat_member = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="not found")  # type: ignore[arg-type]
+    )
+
+    async def fake_gen(messages, **kw):
+        return "📜 Афоризм недели — «второй вариант» от id101!"
+    monkeypatch.setattr("app.services.quotebook.llm_generate", fake_gen)
+
+    await svc.close_previous_round_if_any(chat_id=chat_id, now=now)
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        row = (await session.execute(_s(QuoteWeekRound))).scalar_one()
+        assert row.winner_user_id == 101
+        assert row.winner_option_idx == 1
+        assert row.final_counts == [1, 3]
+        assert row.closed_at is not None
+
+        adj = (await session.execute(_s(RouletteScoreAdjustment))).scalars().all()
+        assert len(adj) == 1
+        assert adj[0].user_id == 101
+        assert adj[0].delta == 1
+        assert adj[0].reason == "quote_week_winner"
+        assert adj[0].source_id == row.id
+
+    # Одно объявление (LLM-рендер)
+    svc.bot.send_message.assert_awaited_once()
