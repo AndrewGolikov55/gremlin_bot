@@ -57,7 +57,9 @@ async def test_service_lock_is_per_chat(sessionmaker):
 from datetime import timedelta
 from unittest.mock import AsyncMock, create_autospec
 
-from app.models import Chat, Message
+from aiogram.exceptions import TelegramForbiddenError
+
+from app.models import Chat, Message, QuoteWeekRound
 from app.services.app_config import AppConfigService
 from app.services.settings import SettingsService
 
@@ -360,3 +362,180 @@ async def test_select_options_caps_at_six_even_if_llm_returns_more(sessionmaker,
     monkeypatch.setattr("app.services.quotebook.llm_generate", big_llm)
     result = await svc.select_options(candidates, now=now)
     assert len(result) == 6
+
+
+def _truncate_for_assert(s: str) -> str:
+    return s if len(s) <= 100 else s[:99] + "…"
+
+
+@pytest.mark.asyncio
+async def test_open_new_round_publishes_poll_and_persists(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        for i in range(1, 5):  # 4 кандидата — лестница: 3..6 → all
+            session.add(Message(
+                chat_id=chat_id, message_id=i, user_id=100 + i,
+                text=f"цитата номер {i} длиной побольше двадцати",
+                is_bot=False, date=now - timedelta(days=1),
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    poll_msg = type("PM", (), {})()
+    poll_msg.message_id = 999
+    poll_msg.poll = type("P", (), {})()
+    poll_msg.poll.id = "poll-abc"
+    svc.bot.send_poll = AsyncMock(return_value=poll_msg)
+
+    opened = await svc.open_new_round(chat_id=chat_id, now=now)
+    assert opened is True
+
+    svc.bot.send_poll.assert_awaited_once()
+    kwargs = svc.bot.send_poll.call_args.kwargs
+    assert kwargs["chat_id"] == chat_id
+    assert kwargs["type"] == "regular"
+    assert kwargs["is_anonymous"] is False
+    assert kwargs["allows_multiple_answers"] is False
+    assert len(kwargs["options"]) == 4
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        row = (await session.execute(_s(QuoteWeekRound))).scalar_one()
+        assert row.chat_id == chat_id
+        assert row.poll_id == "poll-abc"
+        assert row.poll_message_id == 999
+        assert len(row.options) == 4
+        assert row.closed_at is None
+
+
+@pytest.mark.asyncio
+async def test_open_new_round_skips_when_under_three(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        # Только 2 годных
+        for i in range(1, 3):
+            session.add(Message(
+                chat_id=chat_id, message_id=i, user_id=100 + i,
+                text=f"короткая цитата {i} норм длины уже",
+                is_bot=False, date=now - timedelta(days=1),
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.bot.send_poll = AsyncMock()
+
+    opened = await svc.open_new_round(chat_id=chat_id, now=now)
+    assert opened is False
+    svc.bot.send_poll.assert_not_awaited()
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        rows = (await session.execute(_s(QuoteWeekRound))).all()
+        assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_open_new_round_truncates_long_options(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        long_text = "а" * 280  # > 100
+        for i in range(1, 4):
+            session.add(Message(
+                chat_id=chat_id, message_id=i, user_id=100 + i,
+                text=long_text, is_bot=False, date=now - timedelta(days=1),
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    poll_msg = type("PM", (), {})()
+    poll_msg.message_id = 1
+    poll_msg.poll = type("P", (), {})()
+    poll_msg.poll.id = "p"
+    svc.bot.send_poll = AsyncMock(return_value=poll_msg)
+
+    opened = await svc.open_new_round(chat_id=chat_id, now=now)
+    assert opened is True
+
+    kwargs = svc.bot.send_poll.call_args.kwargs
+    for opt in kwargs["options"]:
+        assert len(opt) <= 100
+        assert opt.endswith("…")
+
+    # В персистенс пишем ПОЛНЫЙ текст
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        row = (await session.execute(_s(QuoteWeekRound))).scalar_one()
+        for opt in row.options:
+            assert len(opt["text"]) == 280
+
+
+@pytest.mark.asyncio
+async def test_open_new_round_idempotent_on_integrity_race(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    week_start = date(2026, 5, 11)  # понедельник прошлой недели для now=17
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        # Preexisting row на ту же неделю — будет конфликт по UNIQUE
+        session.add(QuoteWeekRound(
+            chat_id=chat_id, week_start=week_start,
+            poll_id="existing", poll_message_id=1, options=[],
+            opened_at=datetime(2026, 5, 17, 19, 0, 0),
+        ))
+        for i in range(1, 5):
+            session.add(Message(
+                chat_id=chat_id, message_id=i, user_id=100 + i,
+                text=f"цитата {i} длиннее двадцати символов норм",
+                is_bot=False, date=now - timedelta(days=1),
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    poll_msg = type("PM", (), {})()
+    poll_msg.message_id = 2
+    poll_msg.poll = type("P", (), {})()
+    poll_msg.poll.id = "new-poll"
+    svc.bot.send_poll = AsyncMock(return_value=poll_msg)
+    svc.bot.stop_poll = AsyncMock()
+
+    opened = await svc.open_new_round(chat_id=chat_id, now=now)
+    assert opened is False  # racing insert lost
+    svc.bot.stop_poll.assert_awaited_once_with(chat_id=chat_id, message_id=2)
+
+
+@pytest.mark.asyncio
+async def test_open_new_round_handles_forbidden(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        for i in range(1, 5):
+            session.add(Message(
+                chat_id=chat_id, message_id=i, user_id=100 + i,
+                text=f"цитата {i} длиннее двадцати символов норм",
+                is_bot=False, date=now - timedelta(days=1),
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.bot.send_poll = AsyncMock(
+        side_effect=TelegramForbiddenError(method=None, message="bot was kicked")  # type: ignore[arg-type]
+    )
+
+    # Не должно бросить
+    opened = await svc.open_new_round(chat_id=chat_id, now=now)
+    assert opened is False
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        rows = (await session.execute(_s(QuoteWeekRound))).all()
+        assert rows == []

@@ -312,3 +312,107 @@ class QuotebookService:
         # Fallback: heuristic top-6
         fallback = self._heuristic_top(candidates, now=now, limit=MAX_POLL_OPTIONS)
         return [self._to_poll_option(c) for c in fallback]
+
+    @staticmethod
+    def _truncate_option(text: str) -> str:
+        if len(text) <= TG_POLL_OPTION_LIMIT:
+            return text
+        return text[: TG_POLL_OPTION_LIMIT - 1].rstrip() + "…"
+
+    @staticmethod
+    def _week_start_from_naive(now: datetime) -> date:
+        """Treat naive `now` as Moscow-local and compute the closed week's Monday."""
+        if now.tzinfo is None:
+            aware = now.replace(tzinfo=MoscowTZ)
+        else:
+            aware = now
+        return _week_start_for(aware)
+
+    async def open_new_round(self, *, chat_id: int, now: datetime) -> bool:
+        """Open a fresh poll for `chat_id` covering the last 7 days.
+
+        Returns True iff a poll was sent and persisted. False on skip
+        (insufficient candidates, TG forbidden, UNIQUE race).
+        """
+        candidates = await self.collect_candidates(chat_id=chat_id, now=now)
+        if len(candidates) < MIN_CANDIDATES:
+            logger.info(
+                "quotebook.skip chat=%s reason=insufficient_candidates count=%d",
+                chat_id, len(candidates),
+            )
+            return False
+
+        options = await self.select_options(candidates, now=now, chat_id=chat_id)
+        if not options:
+            logger.info(
+                "quotebook.skip chat=%s reason=no_options_after_selection", chat_id
+            )
+            return False
+
+        question = "Афоризм недели?"
+        poll_option_texts = [self._truncate_option(opt.text) for opt in options]
+
+        try:
+            poll_msg = await self.bot.send_poll(
+                chat_id=chat_id,
+                question=question,
+                options=poll_option_texts,
+                type="regular",
+                is_anonymous=False,
+                allows_multiple_answers=False,
+            )
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            logger.warning(
+                "quotebook.send_poll permission failed chat=%s: %s", chat_id, exc
+            )
+            return False
+        except TelegramAPIError:
+            logger.exception("quotebook.send_poll TG API error chat=%s", chat_id)
+            return False
+
+        if poll_msg.poll is None:
+            logger.warning("quotebook.send_poll returned no poll for chat=%s", chat_id)
+            return False
+
+        week_start = self._week_start_from_naive(now)
+        async with self.sessionmaker() as session:
+            row = QuoteWeekRound(
+                chat_id=chat_id,
+                week_start=week_start,
+                poll_id=poll_msg.poll.id,
+                poll_message_id=poll_msg.message_id,
+                options=[
+                    {
+                        "text": opt.text,
+                        "author_user_id": opt.author_user_id,
+                        "source_message_id": opt.source_message_id,
+                    }
+                    for opt in options
+                ],
+                opened_at=datetime.utcnow(),
+            )
+            session.add(row)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                logger.info(
+                    "quotebook: integrity race for chat=%s week=%s; rolling back poll",
+                    chat_id, week_start,
+                )
+                # Try to remove the duplicate Telegram poll; ignore failures.
+                try:
+                    await self.bot.stop_poll(
+                        chat_id=chat_id, message_id=poll_msg.message_id
+                    )
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    logger.exception(
+                        "quotebook: failed to stop_poll after race chat=%s", chat_id
+                    )
+                return False
+
+        logger.info(
+            "quotebook.round.opened chat=%s poll=%s week_start=%s n_options=%d",
+            chat_id, poll_msg.poll.id, week_start, len(options),
+        )
+        return True
