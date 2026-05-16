@@ -13,6 +13,7 @@ from aiogram.filters import Command
 
 from ..services.dice_game import AlreadyPlayedTodayError, DiceGameService
 from ..services.guess_game import GuessGameService, NoCandidatesError, PreparedRound
+from ..services.ship import ShipService
 
 router = Router(name="games")
 logger = logging.getLogger("bot.games")
@@ -233,6 +234,68 @@ async def cmd_games(message: types.Message) -> None:
 @router.message(Command("guess"))
 async def cmd_guess(message: types.Message, bot: Bot, guess_game: GuessGameService) -> None:
     await _start_round(message.chat, bot, guess_game)
+
+
+def _parse_ship_args(
+    *,
+    text: str,
+    entities: list[types.MessageEntity] | None,
+) -> list[tuple[str, int] | tuple[str, str]]:
+    """Extract ship candidates from a /ship message.
+
+    Returns list of ("id", user_id) for text_mention, ("username", "@name") for mention.
+    Returns [] if the number of usable mentions is not exactly 2.
+    """
+    if not entities:
+        return []
+    candidates: list[tuple[str, int] | tuple[str, str]] = []
+    for ent in entities:
+        if ent.type == "text_mention" and ent.user is not None:
+            candidates.append(("id", ent.user.id))
+        elif ent.type == "mention":
+            raw = text[ent.offset : ent.offset + ent.length]
+            candidates.append(("username", raw))
+    if len(candidates) != 2:
+        return []
+    return candidates
+
+
+_SHIP_USAGE = (
+    "Использование: /ship @user1 @user2 — посчитаю совместимость.\n"
+    "Пример: /ship @kostuk @golikov"
+)
+
+
+@router.message(Command("ship"))
+async def cmd_ship(message: types.Message, bot: Bot, ship: ShipService) -> None:
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.reply("Игра для групповых чатов.")
+        return
+
+    candidates = _parse_ship_args(
+        text=message.text or "",
+        entities=list(message.entities or []),
+    )
+    if not candidates:
+        await message.reply(_SHIP_USAGE)
+        return
+
+    resolved: list[tuple[int, str]] = []
+    for cand in candidates:
+        res = await ship.resolve_candidate(chat_id=message.chat.id, candidate=cand)
+        if res is None:
+            missing = cand[1] if isinstance(cand[1], str) else f"id{cand[1]}"
+            await message.reply(f"Не нашёл такого: {missing}. " + _SHIP_USAGE)
+            return
+        resolved.append(res)
+
+    outcome = await ship.compute_or_cached(
+        chat_id=message.chat.id,
+        a=resolved[0],
+        b=resolved[1],
+        bot_id=bot.id,
+    )
+    await message.reply(outcome.rendered_text)
 
 
 @router.callback_query(F.data == "games:guess")
