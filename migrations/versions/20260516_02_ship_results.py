@@ -1,7 +1,7 @@
 """Add ship_results table for /ship compatibility cache
 
 Revision ID: 20260516_02_ship_results
-Revises: 20260516_01_dice_game
+Revises: 20260516_03_roast_runs
 Create Date: 2026-05-16 00:00:00.000000
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "20260516_02_ship_results"
-down_revision = "20260516_01_dice_game"
+down_revision = "20260516_03_roast_runs"
 branch_labels = None
 depends_on = None
 
