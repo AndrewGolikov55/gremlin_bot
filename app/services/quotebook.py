@@ -620,3 +620,46 @@ class QuotebookService:
             await self.bot.send_message(chat_id=chat_id, text=text)
         except TelegramAPIError:
             logger.exception("quotebook.winner send_message failed chat=%s", chat_id)
+
+    async def _is_chat_targetable(self, chat_id: int) -> bool:
+        async with self.sessionmaker() as session:
+            chat = await session.get(Chat, chat_id)
+            if chat is None or not chat.is_active:
+                return False
+        conf = await self.settings.get_all(chat_id)
+        return bool(conf.get("is_active", True))
+
+    async def process_chat(self, *, chat_id: int, now: datetime) -> None:
+        """Close-then-open within one per-chat lock.
+
+        Single-process deployment assumed (matches MonthlyChampionService).
+        """
+        async with self._get_lock(chat_id):
+            if not await self._is_chat_targetable(chat_id):
+                return
+            try:
+                await self.close_previous_round_if_any(chat_id=chat_id, now=now)
+            except Exception:
+                logger.exception(
+                    "quotebook.close_previous_round_if_any failed chat=%s", chat_id
+                )
+            try:
+                await self.open_new_round(chat_id=chat_id, now=now)
+            except Exception:
+                logger.exception("quotebook.open_new_round failed chat=%s", chat_id)
+
+    async def _list_candidate_chats(self) -> list[int]:
+        async with self.sessionmaker() as session:
+            stmt = select(Chat.id).where(Chat.is_active.is_(True))
+            return [row[0] for row in (await session.execute(stmt)).all()]
+
+    async def tick_all_chats(self) -> None:
+        """Cron entrypoint: process every active chat with per-chat rate limit."""
+        now = datetime.now(MoscowTZ).replace(tzinfo=None)
+        chat_ids = await self._list_candidate_chats()
+        for chat_id in chat_ids:
+            try:
+                await self.process_chat(chat_id=chat_id, now=now)
+            except Exception:
+                logger.exception("quotebook.process_chat failed chat=%s", chat_id)
+            await asyncio.sleep(PER_CHAT_SLEEP_SEC)

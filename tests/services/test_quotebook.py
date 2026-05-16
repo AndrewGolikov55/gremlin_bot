@@ -711,3 +711,140 @@ async def test_close_previous_runoff_on_tie(sessionmaker, monkeypatch):
         assert len(adj) == 1
         assert adj[0].user_id == 102
         assert adj[0].delta == 1
+
+
+@pytest.mark.asyncio
+async def test_process_chat_closes_then_opens(sessionmaker, monkeypatch):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        # Открытый раунд предыдущей недели
+        session.add(QuoteWeekRound(
+            chat_id=chat_id, week_start=date(2026, 5, 4),
+            poll_id="prev", poll_message_id=10,
+            options=[
+                {"text": "цитата прошлой недели", "author_user_id": 100, "source_message_id": 1},
+                {"text": "ещё одна цитата прошлой недели", "author_user_id": 101, "source_message_id": 2},
+            ],
+            opened_at=datetime(2026, 5, 10, 17, 0, 0),
+        ))
+        # Сообщения для нового раунда
+        for i in range(1, 5):
+            session.add(Message(
+                chat_id=chat_id, message_id=200 + i, user_id=100 + i,
+                text=f"новая цитата {i} длиннее двадцати символов",
+                is_bot=False, date=now - timedelta(days=1),
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.app_config.get_all = AsyncMock(return_value={})
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([0, 1]))
+    svc.bot.send_message = AsyncMock()
+    svc.bot.get_chat_member = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="x")  # type: ignore[arg-type]
+    )
+
+    new_poll = type("PM", (), {})()
+    new_poll.message_id = 555
+    new_poll.poll = type("P", (), {})()
+    new_poll.poll.id = "new-poll"
+    svc.bot.send_poll = AsyncMock(return_value=new_poll)
+
+    async def fake_gen(messages, **kw):
+        return "🏆 Объявление"
+    monkeypatch.setattr("app.services.quotebook.llm_generate", fake_gen)
+
+    await svc.process_chat(chat_id=chat_id, now=now)
+
+    # Закрытие: stop_poll по старому
+    svc.bot.stop_poll.assert_awaited_once_with(chat_id=chat_id, message_id=10)
+    # Публикация нового poll
+    svc.bot.send_poll.assert_awaited_once()
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        rows = (await session.execute(_s(QuoteWeekRound).order_by(QuoteWeekRound.opened_at))).scalars().all()
+        assert len(rows) == 2
+        # Старый закрыт
+        assert rows[0].poll_id == "prev"
+        assert rows[0].closed_at is not None
+        assert rows[0].winner_user_id == 101
+        # Новый открыт
+        assert rows[1].poll_id == "new-poll"
+        assert rows[1].closed_at is None
+
+
+@pytest.mark.asyncio
+async def test_process_chat_skips_inactive_chat(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=False))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"is_active": True})
+    svc.bot.stop_poll = AsyncMock()
+    svc.bot.send_poll = AsyncMock()
+    svc.bot.send_message = AsyncMock()
+
+    await svc.process_chat(chat_id=chat_id, now=datetime(2026, 5, 17, 20, 0, 0))
+
+    svc.bot.stop_poll.assert_not_awaited()
+    svc.bot.send_poll.assert_not_awaited()
+    svc.bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_chat_skips_when_settings_disabled(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.settings.get_all = AsyncMock(return_value={"is_active": False})
+    svc.bot.send_poll = AsyncMock()
+    svc.bot.send_message = AsyncMock()
+
+    await svc.process_chat(chat_id=chat_id, now=datetime(2026, 5, 17, 20, 0, 0))
+
+    svc.bot.send_poll.assert_not_awaited()
+    svc.bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tick_all_chats_iterates_active_with_isolation(sessionmaker, monkeypatch):
+    async with sessionmaker() as session:
+        session.add(Chat(id=1, title="A", is_active=True))
+        session.add(Chat(id=2, title="B", is_active=True))
+        session.add(Chat(id=3, title="C", is_active=False))  # пропустится
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    processed: list[int] = []
+
+    async def fake_process(*, chat_id, now):
+        processed.append(chat_id)
+        if chat_id == 1:
+            raise RuntimeError("simulated chat 1 failure")
+
+    monkeypatch.setattr(svc, "process_chat", fake_process)
+    monkeypatch.setattr("app.services.quotebook.PER_CHAT_SLEEP_SEC", 0)
+
+    fixed_now = datetime(2026, 5, 17, 20, 0, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+    import datetime as _real
+    class _DT:
+        now = staticmethod(lambda tz=None: fixed_now if tz else fixed_now.replace(tzinfo=None))
+        combine = staticmethod(_real.datetime.combine)
+        utcnow = staticmethod(_real.datetime.utcnow)
+    monkeypatch.setattr("app.services.quotebook.datetime", _DT)
+
+    # Не должно бросить
+    await svc.tick_all_chats()
+
+    # Оба активных чата попытаны (даже после исключения первого)
+    assert sorted(processed) == [1, 2]
