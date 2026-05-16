@@ -527,15 +527,35 @@ class QuotebookService:
             )
             return
 
-        # Tie — Task 10 wires runoff. Until then, deterministic min-index pick
-        # so the close-flow does not stall (will be replaced in Task 10).
-        winner_idx = winners_idx[0]
+        # Tie — drama runoff: 3 drama messages + final announcement via finalize.
+        tied_names: list[str] = []
+        for i in winners_idx:
+            uid = int(round_.options[i]["author_user_id"])
+            tied_names.append(
+                await self._resolve_author_name(chat_id=chat_id, user_id=uid)
+            )
+        await self._safe_send(
+            chat_id,
+            f"Ничья на вершине: {', '.join(tied_names)}. Бросаю кости...",
+        )
+        await asyncio.sleep(DRAMA_PAUSE_SEC)
+        await self._safe_send(chat_id, "🎲🎲🎲")
+        await asyncio.sleep(DRAMA_PAUSE_SEC)
+        winner_idx = random.choice(winners_idx)
+        await self._safe_send(chat_id, "Барабанная дробь... и победитель —")
+        await asyncio.sleep(DRAMA_PAUSE_SEC)
         await self._finalize_with_winner(
             round_=round_,
             voter_counts=voter_counts,
             winner_idx=winner_idx,
             chat_id=chat_id,
         )
+
+    async def _safe_send(self, chat_id: int, text: str) -> None:
+        try:
+            await self.bot.send_message(chat_id=chat_id, text=text)
+        except TelegramAPIError:
+            logger.exception("quotebook._safe_send failed chat=%s", chat_id)
 
     async def _finalize_no_winner(
         self,

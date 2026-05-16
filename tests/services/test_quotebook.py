@@ -657,3 +657,57 @@ async def test_close_previous_single_winner_adds_plus_one(sessionmaker, monkeypa
 
     # Одно объявление (LLM-рендер)
     svc.bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_previous_runoff_on_tie(sessionmaker, monkeypatch):
+    chat_id = 42
+    now = datetime(2026, 5, 17, 20, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(Chat(id=chat_id, title="T", is_active=True))
+        session.add(QuoteWeekRound(
+            chat_id=chat_id, week_start=date(2026, 5, 4),
+            poll_id="p1", poll_message_id=10,
+            options=[
+                {"text": "первый", "author_user_id": 100, "source_message_id": 1},
+                {"text": "второй", "author_user_id": 101, "source_message_id": 2},
+                {"text": "третий", "author_user_id": 102, "source_message_id": 3},
+            ],
+            opened_at=datetime(2026, 5, 10, 17, 0, 0),
+        ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    svc.app_config.get_all = AsyncMock(return_value={})
+    # Ничья на местах 0 и 2: counts = [3, 1, 3]
+    svc.bot.stop_poll = AsyncMock(return_value=_stub_stop_poll_result([3, 1, 3]))
+    svc.bot.send_message = AsyncMock()
+    svc.bot.get_chat_member = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="x")  # type: ignore[arg-type]
+    )
+
+    async def fake_gen(messages, **kw):
+        return "Финальное объявление в персоне."
+    monkeypatch.setattr("app.services.quotebook.llm_generate", fake_gen)
+    monkeypatch.setattr("app.services.quotebook.DRAMA_PAUSE_SEC", 0)
+    monkeypatch.setattr(
+        "app.services.quotebook.random.choice",
+        lambda seq: seq[-1],  # выбираем индекс 2
+    )
+
+    await svc.close_previous_round_if_any(chat_id=chat_id, now=now)
+
+    # 3 сообщения runoff + 1 финальное оглашение = 4
+    assert svc.bot.send_message.await_count == 4
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select as _s
+        row = (await session.execute(_s(QuoteWeekRound))).scalar_one()
+        assert row.winner_option_idx == 2
+        assert row.winner_user_id == 102
+
+        adj = (await session.execute(_s(RouletteScoreAdjustment))).scalars().all()
+        assert len(adj) == 1
+        assert adj[0].user_id == 102
+        assert adj[0].delta == 1
