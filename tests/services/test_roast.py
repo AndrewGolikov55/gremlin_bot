@@ -343,7 +343,9 @@ async def test_collect_target_context_includes_user_memory_profile(sessionmaker)
         await session.commit()
 
     bot = AsyncMock()
-    bot.get_chat_member = AsyncMock(side_effect=TelegramBadRequest(method="x", message="not found"))
+    bot.get_chat_member = AsyncMock(
+        side_effect=TelegramBadRequest(method=None, message="not found")  # type: ignore[arg-type]
+    )
 
     svc = _make_svc(sessionmaker, bot=bot)
     ctx = await svc._collect_target_context(chat_id=chat_id, user_id=target)
@@ -647,6 +649,7 @@ async def test_run_llm_failure_sends_fallback_and_skips_cooldown(sessionmaker):
     )
 
     import unittest.mock as um
+
     from app.services.llm.client import LLMError
 
     async def fake_gen(messages, **kwargs):

@@ -8,8 +8,14 @@ from app.bot.router_fun import cmd_roast
 from app.services.roast import RoastService
 
 
-def _msg(*, chat_type: str = "supergroup", text: str = "/roast", entities=None,
-         from_user_id: int = 200, chat_id: int = 42):
+def _msg(
+    *,
+    chat_type: str = "supergroup",
+    text: str = "/roast",
+    entities: list[MagicMock] | None = None,
+    from_user_id: int = 200,
+    chat_id: int = 42,
+) -> MagicMock:
     message = MagicMock()
     message.chat.id = chat_id
     message.chat.type = chat_type
