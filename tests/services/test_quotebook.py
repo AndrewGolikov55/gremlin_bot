@@ -223,3 +223,61 @@ def test_score_handles_zero_max_reply():
     # max_reply=0 — деление на ноль не должно случиться, reply-составляющая = 0
     s = score_candidate(c, max_reply=0, now=now)
     assert 0.0 <= s <= 1.0
+
+
+def _cand(i: int, *, replies: int = 0, length: int = 50, age_days: float = 1.0, now: datetime | None = None):
+    from app.services.quotebook import Candidate
+    base = now or datetime(2026, 5, 17, 20, 0, 0)
+    return Candidate(
+        message_id=i, user_id=100 + i, text="а" * length,
+        reply_count=replies, date=base - timedelta(days=age_days),
+    )
+
+
+@pytest.mark.asyncio
+async def test_select_options_skips_when_under_three(sessionmaker):
+    svc = _make_svc(sessionmaker)
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    candidates = [_cand(1, now=now), _cand(2, now=now)]
+    result = await svc.select_options(candidates, now=now)
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_select_options_returns_all_when_three_to_six_without_llm(sessionmaker, monkeypatch):
+    svc = _make_svc(sessionmaker)
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    candidates = [_cand(i, now=now, replies=i) for i in range(1, 6)]  # 5 кандидатов
+
+    called = False
+    async def fake_llm(*a, **kw):
+        nonlocal called
+        called = True
+        raise AssertionError("LLM must not be called for 3..6 candidates")
+
+    monkeypatch.setattr("app.services.quotebook.llm_generate", fake_llm)
+    result = await svc.select_options(candidates, now=now)
+
+    assert len(result) == 5
+    assert called is False
+    # Сортировка по score desc → id с большим reply_count раньше
+    assert result[0].source_message_id == 5
+    assert result[-1].source_message_id == 1
+
+
+@pytest.mark.asyncio
+async def test_select_options_more_than_six_returns_top_six_without_llm_for_now(sessionmaker, monkeypatch):
+    """Pre-LLM behaviour: > 6 candidates → heuristic top-6 (will be wrapped by LLM in next task)."""
+    svc = _make_svc(sessionmaker)
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    candidates = [_cand(i, now=now, replies=i) for i in range(1, 11)]  # 10 кандидатов
+
+    # В этой задаче LLM ещё не интегрирован — функция не должна звать его
+    async def boom(*a, **kw):
+        raise AssertionError("LLM not expected at Task 6")
+    monkeypatch.setattr("app.services.quotebook.llm_generate", boom)
+
+    result = await svc.select_options(candidates, now=now)
+    assert len(result) == 6
+    # Топ-6 по reply_count = 10,9,8,7,6,5
+    assert [opt.source_message_id for opt in result] == [10, 9, 8, 7, 6, 5]

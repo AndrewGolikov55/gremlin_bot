@@ -194,3 +194,48 @@ class QuotebookService:
                     date=m.date,
                 ))
             return candidates
+
+    @staticmethod
+    def _heuristic_top(
+        candidates: list[Candidate], *, now: datetime, limit: int
+    ) -> list[Candidate]:
+        if not candidates:
+            return []
+        max_reply = max((c.reply_count for c in candidates), default=0)
+        ranked = sorted(
+            candidates,
+            key=lambda c: score_candidate(c, max_reply=max_reply, now=now),
+            reverse=True,
+        )
+        return ranked[:limit]
+
+    @staticmethod
+    def _to_poll_option(c: Candidate) -> PollOption:
+        return PollOption(
+            text=c.text,
+            author_user_id=c.user_id,
+            source_message_id=c.message_id,
+        )
+
+    async def select_options(
+        self,
+        candidates: list[Candidate],
+        *,
+        now: datetime,
+        chat_id: int | None = None,
+    ) -> list[PollOption]:
+        """Threshold ladder.
+
+        - len < 3 → []  (caller skips the week)
+        - 3 <= len <= 6 → all candidates, ranked by heuristic score (no LLM)
+        - len > 6 → top-50 by score → LLM selects ≤6 (Task 7 wires LLM in;
+          for now returns heuristic top-6)
+        """
+        if len(candidates) < MIN_CANDIDATES:
+            return []
+        if len(candidates) <= MAX_POLL_OPTIONS:
+            ranked = self._heuristic_top(candidates, now=now, limit=MAX_POLL_OPTIONS)
+            return [self._to_poll_option(c) for c in ranked]
+        # > 6: top-6 by heuristic — Task 7 will override with LLM-selected ≤6
+        ranked = self._heuristic_top(candidates, now=now, limit=MAX_POLL_OPTIONS)
+        return [self._to_poll_option(c) for c in ranked]
