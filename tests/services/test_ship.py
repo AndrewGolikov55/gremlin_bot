@@ -105,3 +105,45 @@ async def test_compute_reply_rate_excludes_old_messages(sessionmaker):
         count, denom = await svc._reply_stats(session, chat_id=chat_id, a=a, b=b)
     assert count == 0
     assert denom == 0
+
+
+from app.models import RouletteParticipant
+
+
+@pytest.mark.asyncio
+async def test_compute_mention_rate_counts_at_username_occurrences(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        session.add(RouletteParticipant(chat_id=chat_id, user_id=a, username="alice"))
+        session.add(RouletteParticipant(chat_id=chat_id, user_id=b, username="bob"))
+        # A's messages mention @bob twice
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=1, text="привет @bob как ты")
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=2, text="@bob ещё раз")
+        # B's message mentions @alice once
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=3, text="@alice yo")
+        # Noise: someone mentions @bob — must NOT count (not from A)
+        await _seed_msg(session, chat_id=chat_id, user_id=999, msg_id=4, text="@bob noise")
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        count, denom = await svc._mention_stats(session, chat_id=chat_id, a=a, b=b)
+    assert count == 3  # 2 (A→@bob) + 1 (B→@alice)
+    # denom = A_total + B_total = 2 + 1 = 3
+    assert denom == 3
+
+
+@pytest.mark.asyncio
+async def test_compute_mention_rate_zero_when_no_usernames_known(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=1, text="@bob hi")
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        count, denom = await svc._mention_stats(session, chat_id=chat_id, a=a, b=b)
+    assert count == 0
+    assert denom == 1  # A_total=1, B_total=0

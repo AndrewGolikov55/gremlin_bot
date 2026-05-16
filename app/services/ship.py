@@ -132,3 +132,92 @@ class ShipService:
         reply_count = int((await session.execute(reply_stmt)).scalar() or 0)
         denom = min(a_total, b_total)
         return reply_count, denom
+
+    async def _resolve_username(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        user_id: int,
+    ) -> str | None:
+        """Best-effort current username for a chat participant. Returns lowercase username sans '@'."""
+        from sqlalchemy import select
+
+        from ..models import RouletteParticipant, User
+
+        stmt = (
+            select(RouletteParticipant.username)
+            .where(
+                RouletteParticipant.chat_id == chat_id,
+                RouletteParticipant.user_id == user_id,
+            )
+            .limit(1)
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row:
+            return str(row).lstrip("@").lower()
+
+        stmt2 = select(User.username).where(User.tg_id == user_id).limit(1)
+        row2 = (await session.execute(stmt2)).scalar_one_or_none()
+        if row2:
+            return str(row2).lstrip("@").lower()
+        return None
+
+    async def _mention_stats(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        a: int,
+        b: int,
+    ) -> tuple[int, int]:
+        """Return (cross_mention_count, denominator=A_total+B_total) over the 30d window."""
+        from sqlalchemy import func, select
+
+        from ..models import Message
+
+        cutoff = datetime.utcnow() - timedelta(days=WINDOW_DAYS)
+
+        totals_stmt = (
+            select(Message.user_id, func.count().label("cnt"))
+            .where(
+                Message.chat_id == chat_id,
+                Message.is_bot.is_(False),
+                Message.date >= cutoff,
+                Message.user_id.in_([a, b]),
+            )
+            .group_by(Message.user_id)
+        )
+        totals = dict((row.user_id, int(row.cnt)) for row in (await session.execute(totals_stmt)).all())
+        denom = totals.get(a, 0) + totals.get(b, 0)
+
+        name_a = await self._resolve_username(session, chat_id=chat_id, user_id=a)
+        name_b = await self._resolve_username(session, chat_id=chat_id, user_id=b)
+
+        count = 0
+        if name_b:
+            stmt = (
+                select(func.count())
+                .where(
+                    Message.chat_id == chat_id,
+                    Message.user_id == a,
+                    Message.is_bot.is_(False),
+                    Message.date >= cutoff,
+                    func.lower(Message.text).contains(f"@{name_b}"),
+                )
+            )
+            count += int((await session.execute(stmt)).scalar() or 0)
+        if name_a:
+            stmt = (
+                select(func.count())
+                .where(
+                    Message.chat_id == chat_id,
+                    Message.user_id == b,
+                    Message.is_bot.is_(False),
+                    Message.date >= cutoff,
+                    func.lower(Message.text).contains(f"@{name_a}"),
+                )
+            )
+            count += int((await session.execute(stmt)).scalar() or 0)
+
+        return count, denom
