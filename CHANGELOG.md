@@ -3,6 +3,32 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-05-16
+
+### Added
+
+- Команда `/roast` (и `/roast @user`) — бот в активной персоне чата делает
+  личный стендап-роаст на основе последних 30 сообщений цели и её профиля
+  из `UserMemoryProfile`. Кулдаун 1/день на чат
+- Промт-режим «острый, без сюсюканья, маты по делу, ничего не табу кроме
+  явной агрессии и того, что цель отметила в `boundaries` как скрытое».
+  Активная персона чата подмешивается сверху и усиливает/смягчает baseline
+- Защита: `/roast @bot` — отказ; `/roast` самого себя — отказ; цель без
+  сообщений за неделю — отказ; в личке — отказ
+
+### Internal
+
+- Новая таблица `roast_runs` + миграция `20260516_03_roast_runs`
+- Сервис `RoastService`: per-chat `asyncio.Lock`, two-provider LLM-fallback
+  через `_llm_call`, plain-text fallback при сбое всех провайдеров (кулдаун
+  тогда НЕ списывается), `boundaries` подмешиваются отдельным блоком
+  `Hidden topics` в user-промпт
+- Тесты: 33 новых кейса (унификация cooldown 7 дней, race serialization
+  через lock, проверка ROAST_RULES в системном промпте, выбор random
+  с исключением initiator/бота, и т.д.)
+- Single-process assumption задокументирован в коде (mirror того, что
+  сделано в `MonthlyChampionService`)
+
 ## [0.9.0] - 2026-05-16
 
 ### Added
