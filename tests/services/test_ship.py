@@ -435,9 +435,8 @@ async def test_render_falls_back_to_plain_text_on_llm_error(sessionmaker):
             chat_id=42, name_a="Алиса", name_b="Боб", score=73, metrics=metrics,
         )
 
-    assert "💞" in text
-    assert "Алиса" in text and "Боб" in text
-    assert "73" in text
+    # _render returns BODY only (no header/names/score); the header is added
+    # by compute_or_cached. Fallback body has shared interests + reply_count.
     assert "docker" in text
     assert "5" in text  # reply_count
 
@@ -653,7 +652,9 @@ async def test_compute_or_cached_full_run_persists_and_returns_text(sessionmaker
 
     assert outcome.cached is False
     assert outcome.score >= 0
-    assert outcome.rendered_text == "💞 рассчитано"
+    # rendered_text now has the deterministic header + LLM body
+    assert outcome.rendered_text.startswith("💞 Алиса ↔ Боб — совместимость ")
+    assert outcome.rendered_text.endswith("\n\n💞 рассчитано")
 
     async with sessionmaker() as session:
         from sqlalchemy import select
@@ -661,7 +662,7 @@ async def test_compute_or_cached_full_run_persists_and_returns_text(sessionmaker
     assert len(rows) == 1
     assert rows[0].user_id_a == min(a_id, b_id)
     assert rows[0].user_id_b == max(a_id, b_id)
-    assert rows[0].rendered_text == "💞 рассчитано"
+    assert rows[0].rendered_text == outcome.rendered_text
 
 
 @pytest.mark.asyncio

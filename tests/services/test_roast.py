@@ -548,16 +548,20 @@ async def test_run_happy_path_sends_and_persists(sessionmaker):
     async def fake_gen(messages, **kwargs):
         return "Жёстко прожарен."
 
-    with um.patch("app.services.roast.llm_generate", fake_gen):
+    with um.patch("app.services.roast.llm_generate", fake_gen), \
+         um.patch("app.services.roast.asyncio.sleep", AsyncMock()):
         await svc.run(
             chat_id=chat_id, initiator_id=initiator,
             target_arg="@andrew", now=now,
         )
 
-    bot.send_message.assert_awaited_once()
-    call = bot.send_message.call_args
-    sent_text = call.kwargs.get("text", call.args[1] if len(call.args) > 1 else None)
-    assert "Жёстко прожарен" in sent_text
+    # 2 messages: announcement + roast body
+    assert bot.send_message.await_count == 2
+    announce_text = bot.send_message.call_args_list[0].kwargs["text"]
+    body_text = bot.send_message.call_args_list[1].kwargs["text"]
+    assert announce_text.startswith("🔥 Жарю")
+    assert "@andrew" in announce_text
+    assert "Жёстко прожарен" in body_text
 
     async with sessionmaker() as session:
         rows = (await session.execute(select(RoastRun))).scalars().all()
@@ -655,16 +659,20 @@ async def test_run_llm_failure_sends_fallback_and_skips_cooldown(sessionmaker):
     async def fake_gen(messages, **kwargs):
         raise LLMError("all down")
 
-    with um.patch("app.services.roast.llm_generate", fake_gen):
+    with um.patch("app.services.roast.llm_generate", fake_gen), \
+         um.patch("app.services.roast.asyncio.sleep", AsyncMock()):
         await svc.run(
             chat_id=chat_id, initiator_id=initiator,
             target_arg="@andrew", now=now,
         )
 
-    bot.send_message.assert_awaited_once()
-    call = bot.send_message.call_args
-    sent_text = call.kwargs.get("text", call.args[1] if len(call.args) > 1 else None)
-    assert "LLM" in sent_text or "обмороке" in sent_text.lower() or "позже" in sent_text.lower()
+    # 2 messages: announcement + fallback
+    assert bot.send_message.await_count == 2
+    announce_text = bot.send_message.call_args_list[0].kwargs["text"]
+    fallback_text = bot.send_message.call_args_list[1].kwargs["text"]
+    assert announce_text.startswith("🔥 Жарю")
+    assert ("LLM" in fallback_text or "обмороке" in fallback_text.lower()
+            or "позже" in fallback_text.lower())
 
     # КУЛДАУН НЕ ЗАПИСАН
     async with sessionmaker() as session:
@@ -719,7 +727,8 @@ async def test_run_per_chat_lock_serializes_concurrent_calls(sessionmaker):
         return "Жёстко."
 
     async def runner():
-        with um.patch("app.services.roast.llm_generate", slow_gen):
+        with um.patch("app.services.roast.llm_generate", slow_gen), \
+             um.patch("app.services.roast.asyncio.sleep", AsyncMock()):
             await svc.run(
                 chat_id=chat_id, initiator_id=initiator,
                 target_arg="@andrew", now=now,
@@ -740,5 +749,5 @@ async def test_run_per_chat_lock_serializes_concurrent_calls(sessionmaker):
     async with sessionmaker() as session:
         rows = (await session.execute(select(RoastRun))).scalars().all()
     assert len(rows) == 1
-    # Two send_messages: one with roast text, one with cooldown refusal
-    assert bot.send_message.await_count == 2
+    # 3 send_messages: announcement + body from first call, cooldown refusal from second
+    assert bot.send_message.await_count == 3

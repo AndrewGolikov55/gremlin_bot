@@ -13,6 +13,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ..models import Message, RoastRun, User, UserMemoryProfile
+from ..utils.text import strip_markdown
 from .app_config import AppConfigService
 from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
 from .llm.client import generate as llm_generate
@@ -26,6 +27,7 @@ ACTIVE_WINDOW = timedelta(days=7)
 MAX_MESSAGES = 30
 LLM_MAX_TOKENS = 280
 LLM_TEMPERATURE = 0.95
+ANNOUNCE_DRAMA_PAUSE_SEC = 1.5
 
 ROAST_RULES = (
     "Ты делаешь прожарку. Правила:\n"
@@ -35,8 +37,17 @@ ROAST_RULES = (
     "- Бей по противоречиям, странным паттернам, повторяющимся темам.\n"
     "- Открытая площадка: религия, семья, болезни, нацпринадлежность — всё в игре, если это смешно.\n"
     "- Не призывай к насилию и не выдавай личной информации, которую цель явно прятала.\n"
-    "- 3-5 строк plain text, без приветствий и пояснений."
+    "- Никакого markdown — ни **, ни *, ни __, ни _, ни backticks. Только plain text.\n"
+    "- Не пиши вступлений вроде «Окей, погнали» или «Ну что, @user». Сразу к делу.\n"
+    "- 3-5 строк, без приветствий и пояснений."
 )
+
+
+def _format_target_mention(*, username: str | None, display_name: str) -> str:
+    """Mention string for the announcement: @username if available, otherwise display name."""
+    if username:
+        return f"@{username}"
+    return display_name
 
 # Single-process deployment assumed: per-chat asyncio.Lock guards concurrent
 # /roast invocations inside one Python process. With multi-replica deployment
@@ -383,6 +394,13 @@ class RoastService:
                 return
 
             ctx = await self._collect_target_context(chat_id=chat_id, user_id=target_uid)
+
+            # Announce the target first so chat sees "о ком вообще речь"
+            # even if the LLM takes 5-10s to generate the body.
+            mention = _format_target_mention(username=ctx.username, display_name=ctx.display_name)
+            await self._send(chat_id, f"🔥 Жарю {mention}...")
+            await asyncio.sleep(ANNOUNCE_DRAMA_PAUSE_SEC)
+
             system, user = await self._build_prompts(chat_id=chat_id, ctx=ctx)
             text = await self._llm_call(system=system, user=user)
 
@@ -391,7 +409,12 @@ class RoastService:
                 await self._send(chat_id, self._llm_failure_fallback())
                 return
 
-            await self._send(chat_id, text.strip())
+            body = strip_markdown(text).strip()
+            if not body:
+                await self._send(chat_id, self._llm_failure_fallback())
+                return
+
+            await self._send(chat_id, body)
             await self._persist_run(
                 chat_id=chat_id,
                 target_user_id=target_uid,

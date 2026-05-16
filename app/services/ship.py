@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ..utils.text import strip_markdown
 from .app_config import AppConfigService
 from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
 from .llm.client import generate as llm_generate
@@ -419,13 +420,23 @@ class ShipService:
                 )
 
     @staticmethod
-    def _fallback_text(*, name_a: str, name_b: str, score: int, metrics: ShipMetrics) -> str:
+    def _fallback_body(*, metrics: ShipMetrics) -> str:
         keywords = ", ".join(metrics.pref_overlap_keywords) if metrics.pref_overlap_keywords else "не нашлось"
         return (
-            f"💞 {name_a} и {name_b} — совместимость {score}/100.\n"
             f"Общие интересы: {keywords}. "
             f"Друг другу отвечают: {metrics.reply_count} раз."
         )
+
+    @staticmethod
+    def _build_header(*, name_a: str, name_b: str, score: int) -> str:
+        return f"💞 {name_a} ↔ {name_b} — совместимость {score}/100"
+
+    @staticmethod
+    def _assemble_message(*, header: str, body: str) -> str:
+        body = body.strip()
+        if not body:
+            return header
+        return f"{header}\n\n{body}"
 
     def _build_user_prompt(
         self,
@@ -437,20 +448,24 @@ class ShipService:
     ) -> str:
         intersect = ", ".join(metrics.pref_overlap_keywords) if metrics.pref_overlap_keywords else "почти нет"
         return (
-            f"Шипперинг двух участников чата: {name_a} и {name_b}.\n"
+            f"Шипперинг пары: {name_a} и {name_b}.\n"
+            f"Совместимость уже посчитана и будет выведена шапкой ВЫШЕ твоего ответа — её повторять НЕ нужно.\n"
+            f"Твоё дело: дать 2-3 строки острой аналитики пары в своей персоне.\n"
             f"\n"
-            f"Совместимость: {score}/100\n"
-            f"\n"
-            f"Сырые метрики:\n"
+            f"Сырые метрики для опоры:\n"
+            f"- Совместимость: {score}/100\n"
             f"- Друг другу отвечают: {metrics.reply_count} раз\n"
             f"- Упоминают друг друга: {metrics.mention_count} раз\n"
             f"- Совместные активные дни: {metrics.co_active_days}/{WINDOW_DAYS}\n"
             f"- Общие интересы из профилей: {intersect}\n"
             f"\n"
-            f"Сделай 3-4 строки «аналитики пары» в своей персоне.\n"
-            f"Опирайся на ЦИФРЫ выше и реальные пересечения, не выдумывай факты.\n"
-            f"Не сюсюкай. Plain text, без HTML/Markdown.\n"
-            f"Начни первой строкой с эмодзи 💞 и цифрой совместимости в шапке."
+            f"Правила:\n"
+            f"- Опирайся на ЦИФРЫ выше и реальные пересечения, не выдумывай факты.\n"
+            f"- Не повторяй имена в шапку — это уже сделано.\n"
+            f"- Не пиши число совместимости — оно уже в шапке.\n"
+            f"- Никакого markdown — ни **, ни *, ни __, ни _, ни backticks. Только plain text.\n"
+            f"- Не сюсюкай, маты по делу можно.\n"
+            f"- Только тело, 2-3 коротких строки. Никаких приветствий, никаких пояснений."
         )
 
     async def _render(
@@ -484,14 +499,14 @@ class ShipService:
             )
         except (LLMError, LLMRateLimitError):
             logger.exception("ship: LLM provider failed chat=%s", chat_id)
-            return self._fallback_text(name_a=name_a, name_b=name_b, score=score, metrics=metrics)
+            return self._fallback_body(metrics=metrics)
         except Exception:
             logger.exception("ship: unexpected LLM error chat=%s", chat_id)
-            return self._fallback_text(name_a=name_a, name_b=name_b, score=score, metrics=metrics)
+            return self._fallback_body(metrics=metrics)
 
         if not text or not text.strip():
-            return self._fallback_text(name_a=name_a, name_b=name_b, score=score, metrics=metrics)
-        return text.strip()
+            return self._fallback_body(metrics=metrics)
+        return strip_markdown(text).strip()
 
     async def resolve_candidate(
         self,
@@ -640,13 +655,15 @@ class ShipService:
             async with self.sessionmaker() as session:
                 metrics = await self._compute_metrics(session, chat_id=chat_id, a=a_id, b=b_id)
             score = self.aggregate_score(metrics)
-            rendered = await self._render(
+            body = await self._render(
                 chat_id=chat_id,
                 name_a=a_name,
                 name_b=b_name,
                 score=score,
                 metrics=metrics,
             )
+            header = self._build_header(name_a=a_name, name_b=b_name, score=score)
+            rendered = self._assemble_message(header=header, body=body)
             payload = {
                 "reply_count": metrics.reply_count,
                 "mention_count": metrics.mention_count,
