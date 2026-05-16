@@ -15,6 +15,7 @@ from ..services.spontaneity import SpontaneityPolicy
 from ..services.usage_limits import UsageLimiter
 from ..services.user_memory import UserMemoryService
 from ..services.guess_game import GuessGameService
+from ..services.dice_game import DiceGameService
 from ..services.monthly_champion import MonthlyChampionService
 
 
@@ -47,6 +48,7 @@ class ServicesMiddleware(BaseMiddleware):
         memory: UserMemoryService,
         policy: SpontaneityPolicy,
         guess_game: GuessGameService,
+        dice_game: DiceGameService,
         monthly_champion: MonthlyChampionService,
     ):
         self.settings = settings
@@ -60,6 +62,7 @@ class ServicesMiddleware(BaseMiddleware):
         self.memory = memory
         self.policy = policy
         self.guess_game = guess_game
+        self.dice_game = dice_game
         self.monthly_champion = monthly_champion
 
     async def __call__(
@@ -79,5 +82,6 @@ class ServicesMiddleware(BaseMiddleware):
         data["memory"] = self.memory
         data["policy"] = self.policy
         data["guess_game"] = self.guess_game
+        data["dice_game"] = self.dice_game
         data["monthly_champion"] = self.monthly_champion
         return await handler(event, data)
