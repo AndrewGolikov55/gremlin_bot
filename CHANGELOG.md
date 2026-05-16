@@ -3,6 +3,16 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.12.2] - 2026-05-16
+
+### Fixed
+
+- Хотфикс v0.12.1: имя миграции `20260516_05_truncate_ship_results` (33 символа)
+  не влезало в `alembic_version.version_num` `varchar(32)` — бот падал в
+  рестарт-цикле при upgrade. Переименовано в `20260516_05_ship_cache_clear`
+  (28 символов). Содержимое и down_revision не изменились — это та же
+  одноразовая чистка ship_results, просто с укороченным id
+
 ## [0.12.1] - 2026-05-16
 
 ### Fixed
@@ -31,7 +41,7 @@
   для happy-path и LLM-failure; для concurrent race — 3 сообщения)
 - Обновлены 2 теста `test_ship.py` (rendered_text теперь содержит
   детерминированную шапку + body)
-- Миграция `20260516_05_truncate_ship_results` — одноразовая чистка кэша
+- Миграция `20260516_05_ship_cache_clear` — одноразовая чистка кэша
 
 ## [0.12.0] - 2026-05-16
 
