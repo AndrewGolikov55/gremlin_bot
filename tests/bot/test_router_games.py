@@ -248,22 +248,34 @@ class TestBuildDiceKeyboard:
 
 
 class TestFormatDiceResult:
-    def test_win_single_pick(self) -> None:
+    def test_win_single_pick_says_jackpot(self) -> None:
         msg = format_dice_result(picks=[5], dice_value=5, delta=-2, mention="@andrey")
         assert "@andrey" in msg
         assert "5" in msg
-        assert "2 очка" in msg or "минус 2" in msg.lower()
+        assert "джекпот" in msg.lower()
+        assert "минус 2" in msg.lower() or "2 очка" in msg
 
     def test_win_double_pick(self) -> None:
         msg = format_dice_result(picks=[3, 5], dice_value=5, delta=-1, mention="@andrey")
         assert "@andrey" in msg
         assert "3" in msg and "5" in msg
-        assert "1 очко" in msg or "минус 1" in msg.lower()
+        assert "минус 1" in msg.lower() or "1 очко" in msg
+        assert "✨" in msg
 
-    def test_loss(self) -> None:
-        msg = format_dice_result(picks=[3], dice_value=4, delta=0, mention="@andrey")
+    def test_loss_single_pick_says_greed_punished(self) -> None:
+        msg = format_dice_result(picks=[5], dice_value=3, delta=2, mention="@andrey")
         assert "@andrey" in msg
-        assert "Мимо" in msg or "мимо" in msg
+        assert "5" in msg and "3" in msg
+        assert "жадность" in msg.lower()
+        assert "плюс 2" in msg.lower() or "+2" in msg
+        assert "💀" in msg
+
+    def test_loss_double_pick(self) -> None:
+        msg = format_dice_result(picks=[3, 5], dice_value=2, delta=1, mention="@andrey")
+        assert "@andrey" in msg
+        assert "мимо" in msg.lower()
+        assert "плюс 1" in msg.lower() or "+1" in msg
+        assert "😬" in msg
 
 
 from app.bot.router_games import _open_dice, format_dice_intro_text

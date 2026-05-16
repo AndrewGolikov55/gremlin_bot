@@ -140,12 +140,25 @@ def format_dice_intro_text() -> str:
 
 def format_dice_result(*, picks: list[int], dice_value: int, delta: int, mention: str) -> str:
     picks_str = format_dice_picks_text(picks)
-    if delta == 0:
-        return f"😶 {mention} поставил {picks_str} — выпало {dice_value}. Мимо."
-    points_word = "очка" if abs(delta) in (2, 3, 4) else "очко"
+    won = delta < 0
+    if won and len(picks) == 1:
+        return (
+            f"🎉 {mention} поставил {picks_str} — выпало {dice_value}! "
+            f"Сорвал джекпот, минус 2 очка в рулетке."
+        )
+    if won:
+        return (
+            f"✨ {mention} поставил {picks_str} — выпало {dice_value}! "
+            f"Минус 1 очко в рулетке."
+        )
+    if len(picks) == 1:
+        return (
+            f"💀 {mention} поставил {picks_str} — выпало {dice_value}. "
+            f"Жадность наказана: плюс 2 очка в рулетку."
+        )
     return (
-        f"🎯 {mention} поставил {picks_str} — выпало {dice_value}! "
-        f"Минус {abs(delta)} {points_word} в месячной рулетке."
+        f"😬 {mention} поставил {picks_str} — выпало {dice_value}. "
+        f"Мимо. Плюс 1 очко в рулетку."
     )
 
 
