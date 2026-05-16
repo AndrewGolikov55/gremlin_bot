@@ -7,7 +7,7 @@ import pytest
 from app.services.app_config import AppConfigService
 from app.services.persona import StylePromptService
 from app.services.settings import SettingsService
-from app.services.ship import ShipService
+from app.services.ship import ShipMetrics, ShipService
 
 
 def _make_service(sessionmaker):
@@ -251,3 +251,53 @@ async def test_pref_overlap_case_insensitive_and_dedup(sessionmaker):
     assert keywords == ["docker"]
     # union = {docker, vim} = 2; intersection = 1
     assert ratio == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_compute_metrics_returns_shipmetrics_dataclass(sessionmaker):
+    chat_id = 42
+    a, b = 100, 200
+    async with sessionmaker() as session:
+        # 1 reply pair: A→B
+        await _seed_msg(session, chat_id=chat_id, user_id=a, msg_id=1)
+        await _seed_msg(session, chat_id=chat_id, user_id=b, msg_id=2, reply_to=1)
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        metrics = await svc._compute_metrics(session, chat_id=chat_id, a=a, b=b)
+
+    assert metrics.reply_count == 1
+    assert 0.0 <= metrics.reply_rate <= 1.0
+    assert 0.0 <= metrics.mention_rate <= 1.0
+    assert 0.0 <= metrics.co_activity <= 1.0
+    assert 0.0 <= metrics.pref_overlap <= 1.0
+
+
+def test_aggregate_score_clamps_to_0_100():
+    metrics = ShipMetrics(
+        reply_count=10, mention_count=2, co_active_days=15,
+        pref_overlap_keywords=["x"],
+        reply_rate=1.0, mention_rate=1.0, co_activity=1.0, pref_overlap=1.0,
+    )
+    assert ShipService.aggregate_score(metrics) == 100
+
+
+def test_aggregate_score_zero_when_no_signal():
+    metrics = ShipMetrics(
+        reply_count=0, mention_count=0, co_active_days=0,
+        pref_overlap_keywords=[],
+        reply_rate=0.0, mention_rate=0.0, co_activity=0.0, pref_overlap=0.0,
+    )
+    assert ShipService.aggregate_score(metrics) == 0
+
+
+def test_aggregate_score_weighted_mid():
+    # reply=0.5*0.35 + mention=0.2*0.15 + co=0.4*0.25 + pref=0.6*0.25 = 0.175+0.03+0.10+0.15 ≈ 0.455
+    # Float-precision: 100*weighted == 45.49999999999999 → round() = 45
+    metrics = ShipMetrics(
+        reply_count=0, mention_count=0, co_active_days=0,
+        pref_overlap_keywords=[],
+        reply_rate=0.5, mention_rate=0.2, co_activity=0.4, pref_overlap=0.6,
+    )
+    assert ShipService.aggregate_score(metrics) == 45

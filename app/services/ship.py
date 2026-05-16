@@ -297,3 +297,41 @@ class ShipService:
         if not union:
             return [], 0.0
         return sorted(intersection), len(intersection) / len(union)
+
+    async def _compute_metrics(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        a: int,
+        b: int,
+    ) -> ShipMetrics:
+        reply_count, reply_denom = await self._reply_stats(session, chat_id=chat_id, a=a, b=b)
+        mention_count, mention_denom = await self._mention_stats(session, chat_id=chat_id, a=a, b=b)
+        co_days = await self._co_active_days(session, chat_id=chat_id, a=a, b=b)
+        keywords, pref_ratio = await self._pref_overlap(session, chat_id=chat_id, a=a, b=b)
+
+        reply_rate = min(1.0, reply_count / reply_denom) if reply_denom > 0 else 0.0
+        mention_rate = min(1.0, mention_count / mention_denom) if mention_denom > 0 else 0.0
+        co_activity = min(1.0, co_days / WINDOW_DAYS)
+
+        return ShipMetrics(
+            reply_count=reply_count,
+            mention_count=mention_count,
+            co_active_days=co_days,
+            pref_overlap_keywords=keywords,
+            reply_rate=reply_rate,
+            mention_rate=mention_rate,
+            co_activity=co_activity,
+            pref_overlap=pref_ratio,
+        )
+
+    @staticmethod
+    def aggregate_score(metrics: ShipMetrics) -> int:
+        weighted = (
+            WEIGHT_REPLY * metrics.reply_rate
+            + WEIGHT_MENTION * metrics.mention_rate
+            + WEIGHT_COACTIVITY * metrics.co_activity
+            + WEIGHT_PREF * metrics.pref_overlap
+        )
+        return max(0, min(100, round(100 * weighted)))
