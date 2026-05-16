@@ -85,3 +85,76 @@ async def test_cooldown_only_considers_this_chat(sessionmaker):
     svc = _make_svc(sessionmaker)
     remaining = await svc._remaining_cooldown(chat_id=42, now=datetime(2026, 5, 16, 12, 0, 0))
     assert remaining is None
+
+
+@pytest.mark.asyncio
+async def test_active_user_ids_returns_authors_with_text_in_7d(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        # In-window: user 100, 101
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=100, text="hi",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        session.add(Message(
+            chat_id=chat_id, message_id=2, user_id=101, text="yo",
+            reply_to_id=None, date=now - timedelta(days=6), is_bot=False,
+        ))
+        # Bot — excluded
+        session.add(Message(
+            chat_id=chat_id, message_id=3, user_id=999, text="i am a bot",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=True,
+        ))
+        # Out-of-window
+        session.add(Message(
+            chat_id=chat_id, message_id=4, user_id=102, text="old",
+            reply_to_id=None, date=now - timedelta(days=8), is_bot=False,
+        ))
+        # Other chat
+        session.add(Message(
+            chat_id=77, message_id=5, user_id=103, text="hey",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    ids = await svc._active_user_ids(chat_id=chat_id, now=now, exclude_user_id=None)
+    assert sorted(ids) == [100, 101]
+
+
+@pytest.mark.asyncio
+async def test_active_user_ids_excludes_initiator(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        for uid in (100, 101, 200):
+            session.add(Message(
+                chat_id=chat_id, message_id=uid, user_id=uid, text="hi",
+                reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    ids = await svc._active_user_ids(chat_id=chat_id, now=now, exclude_user_id=200)
+    assert sorted(ids) == [100, 101]
+
+
+@pytest.mark.asyncio
+async def test_active_user_ids_ignores_empty_text(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=100, text="",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        session.add(Message(
+            chat_id=chat_id, message_id=2, user_id=101, text="real",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    ids = await svc._active_user_ids(chat_id=chat_id, now=now, exclude_user_id=None)
+    assert ids == [101]

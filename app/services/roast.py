@@ -92,3 +92,33 @@ class RoastService:
         if remaining <= timedelta(0):
             return None
         return remaining
+
+    async def _active_user_ids(
+        self,
+        *,
+        chat_id: int,
+        now: datetime,
+        exclude_user_id: int | None,
+    ) -> list[int]:
+        """User IDs with at least one non-empty text message in the last 7 days.
+
+        Bots (`is_bot=True`) are excluded. `exclude_user_id` is removed from the result
+        if provided (used to drop the initiator for random target selection).
+        """
+        cutoff = now - ACTIVE_WINDOW
+        stmt = (
+            select(Message.user_id)
+            .where(
+                Message.chat_id == chat_id,
+                Message.is_bot.is_(False),
+                Message.date >= cutoff,
+                func.length(Message.text) > 0,
+            )
+            .group_by(Message.user_id)
+        )
+        async with self.sessionmaker() as session:
+            rows = (await session.execute(stmt)).all()
+        ids = [int(row[0]) for row in rows]
+        if exclude_user_id is not None:
+            ids = [uid for uid in ids if uid != exclude_user_id]
+        return ids
