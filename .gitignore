@@ -394,3 +394,4 @@ $RECYCLE.BIN/
 .mypy_cache/
 .ruff_cache/
 docs/superpowers/
+.claude/worktrees/
