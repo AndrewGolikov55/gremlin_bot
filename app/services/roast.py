@@ -71,3 +71,24 @@ class RoastService:
             lock = asyncio.Lock()
             self._chat_locks[chat_id] = lock
         return lock
+
+    async def _remaining_cooldown(
+        self, *, chat_id: int, now: datetime
+    ) -> timedelta | None:
+        """Return time left in the 24h cooldown, or None if a fresh roast is allowed."""
+        cutoff = now - COOLDOWN
+        async with self.sessionmaker() as session:
+            stmt = (
+                select(RoastRun.run_at)
+                .where(RoastRun.chat_id == chat_id, RoastRun.run_at >= cutoff)
+                .order_by(desc(RoastRun.run_at))
+                .limit(1)
+            )
+            last = (await session.execute(stmt)).scalar_one_or_none()
+        if last is None:
+            return None
+        elapsed = now - last
+        remaining = COOLDOWN - elapsed
+        if remaining <= timedelta(0):
+            return None
+        return remaining
