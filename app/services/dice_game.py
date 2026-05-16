@@ -72,7 +72,7 @@ class DiceGameService:
         Raises AlreadyPlayedTodayError if a roll for this (chat_id, user_id) already exists today.
         """
         delta = compute_delta(picks, dice_value)
-        won = delta != 0
+        won = delta < 0  # negative delta = score reduction = win
         midnight = _moscow_midnight(now)
 
         async with self.sessionmaker() as session:
@@ -100,12 +100,12 @@ class DiceGameService:
                 session.add(round_)
                 await session.flush()  # populate round_.id before adjustment refers to it
 
-                if won:
+                if delta != 0:
                     session.add(RouletteScoreAdjustment(
                         chat_id=chat_id,
                         user_id=user_id,
                         delta=delta,
-                        reason="dice_win",
+                        reason="dice_win" if won else "dice_loss",
                         source_id=round_.id,
                     ))
             await session.refresh(round_)
