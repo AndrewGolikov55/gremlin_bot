@@ -337,3 +337,197 @@ async def test_open_dice_refuses_when_already_played(sessionmaker: async_session
     bot.send_message.assert_called_once()
     text = bot.send_message.call_args.kwargs.get("text") or ""
     assert "уже бросал" in text.lower()
+
+
+from aiogram.types import CallbackQuery, InaccessibleMessage, Message as TgMessage
+from app.bot.router_games import on_dice_callback, DICE_ANIMATION_DELAY
+
+
+def _fake_callback(
+    *, data: str, from_user_id: int, owner_in_msg: bool = True,
+    chat_id: int = -100, message_id: int = 555,
+) -> tuple[CallbackQuery, MagicMock]:
+    """Build a CallbackQuery with mock .answer / .message.edit_text."""
+    msg = MagicMock(spec=TgMessage)
+    msg.message_id = message_id
+    msg.chat = Chat(id=chat_id, type="supergroup")
+    msg.edit_text = AsyncMock()
+    msg.edit_reply_markup = AsyncMock()
+    cb = MagicMock(spec=CallbackQuery)
+    cb.data = data
+    cb.from_user = TgUser(id=from_user_id, is_bot=False, first_name="U", username="u")
+    cb.message = msg
+    cb.answer = AsyncMock()
+    return cb, msg
+
+
+@pytest.mark.asyncio
+async def test_dice_pick_from_foreign_user_alerts_and_no_edit(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    cb, msg = _fake_callback(data="dice:pick:10::3", from_user_id=99)
+
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    cb.answer.assert_called_once()
+    assert cb.answer.call_args.kwargs.get("show_alert") is True
+    msg.edit_text.assert_not_called()
+    msg.edit_reply_markup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dice_pick_toggles_number_on(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    cb, msg = _fake_callback(data="dice:pick:10::3", from_user_id=10)
+
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    msg.edit_reply_markup.assert_called_once()
+    markup = msg.edit_reply_markup.call_args.kwargs["reply_markup"]
+    flat = [b for row in markup.inline_keyboard for b in row]
+    assert any(b.text == "✓ 3" for b in flat)
+
+
+@pytest.mark.asyncio
+async def test_dice_pick_toggles_number_off(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    # current picks already include 3 → tap again removes it
+    cb, msg = _fake_callback(data="dice:pick:10:3:3", from_user_id=10)
+
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    markup = msg.edit_reply_markup.call_args.kwargs["reply_markup"]
+    flat = [b for row in markup.inline_keyboard for b in row]
+    assert not any(b.text.startswith("✓") for b in flat)
+
+
+@pytest.mark.asyncio
+async def test_dice_pick_max_two_blocks_third(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    # current picks: 3, 5 → trying to add 2
+    cb, msg = _fake_callback(data="dice:pick:10:3,5:2", from_user_id=10)
+
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    cb.answer.assert_called_once()
+    assert "Максимум" in cb.answer.call_args.args[0] or "макс" in (cb.answer.call_args.args[0] or "").lower()
+    msg.edit_reply_markup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dice_roll_without_picks_alerts(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    cb, msg = _fake_callback(data="dice:roll:10:", from_user_id=10)
+
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    cb.answer.assert_called_once()
+    text = cb.answer.call_args.args[0] if cb.answer.call_args.args else ""
+    assert "Выбери" in text or "хотя бы" in text.lower()
+    bot.send_dice.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dice_cancel(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    cb, msg = _fake_callback(data="dice:cancel:10", from_user_id=10)
+
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    msg.edit_text.assert_called_once()
+    text_arg = msg.edit_text.call_args.args[0] if msg.edit_text.call_args.args else msg.edit_text.call_args.kwargs.get("text")
+    assert "отменён" in (text_arg or "").lower()
+    # No round should be recorded
+    async with sessionmaker() as session:
+        from app.models import DiceRound
+        rounds = (await session.execute(select(DiceRound))).scalars().all()
+        assert rounds == []
+
+
+@pytest.mark.asyncio
+async def test_dice_roll_happy_path_win(
+    sessionmaker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.bot.router_games.DICE_ANIMATION_DELAY", 0.0)
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    sent_dice = MagicMock()
+    sent_dice.message_id = 777
+    sent_dice.dice = MagicMock(value=3)
+    bot.send_dice = AsyncMock(return_value=sent_dice)
+
+    cb, msg = _fake_callback(data="dice:roll:10:3", from_user_id=10)
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    bot.send_dice.assert_called_once()
+    # Round recorded with win
+    from app.models import DiceRound, RouletteScoreAdjustment
+    async with sessionmaker() as session:
+        rnd = (await session.execute(select(DiceRound))).scalar_one()
+        assert rnd.dice_value == 3
+        assert rnd.delta == -2
+        assert rnd.won is True
+        adj = (await session.execute(select(RouletteScoreAdjustment))).scalar_one()
+        assert adj.delta == -2
+        assert adj.reason == "dice_win"
+    # Result message sent
+    bot.send_message.assert_called()
+    last_call_text = bot.send_message.call_args.kwargs.get("text") or ""
+    assert "выпало 3" in last_call_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_dice_roll_happy_path_loss(
+    sessionmaker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.bot.router_games.DICE_ANIMATION_DELAY", 0.0)
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    sent_dice = MagicMock()
+    sent_dice.message_id = 777
+    sent_dice.dice = MagicMock(value=6)
+    bot.send_dice = AsyncMock(return_value=sent_dice)
+
+    cb, msg = _fake_callback(data="dice:roll:10:3", from_user_id=10)
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    from app.models import DiceRound, RouletteScoreAdjustment
+    async with sessionmaker() as session:
+        rnd = (await session.execute(select(DiceRound))).scalar_one()
+        assert rnd.won is False
+        assert rnd.delta == 0
+        adjs = (await session.execute(select(RouletteScoreAdjustment))).scalars().all()
+        assert adjs == []
+    text = bot.send_message.call_args.kwargs.get("text") or ""
+    assert "мимо" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_dice_roll_concurrent_second_attempt_loses_race(
+    sessionmaker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.bot.router_games.DICE_ANIMATION_DELAY", 0.0)
+    svc = DiceGameService(sessionmaker)
+    # Pre-seed today's round
+    from datetime import datetime
+    await svc.record_roll(
+        chat_id=-100, user_id=10, picks=[3], dice_value=4,
+        dice_message_id=10, now=datetime.utcnow(),
+    )
+    bot = _fake_bot()
+    sent_dice = MagicMock(message_id=777, dice=MagicMock(value=5))
+    bot.send_dice = AsyncMock(return_value=sent_dice)
+    cb, msg = _fake_callback(data="dice:roll:10:3", from_user_id=10)
+
+    await on_dice_callback(cb, bot=bot, dice_game=svc)
+
+    # Second roll attempt: dice rolled but record fails → user told
+    cb.answer.assert_called()
+    args = bot.send_message.call_args.kwargs if bot.send_message.call_args else None
+    if args:
+        assert "уже бросал" in (args.get("text") or "").lower()

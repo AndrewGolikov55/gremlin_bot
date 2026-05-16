@@ -298,6 +298,150 @@ async def cb_games_dice(query: types.CallbackQuery, bot: Bot, dice_game: DiceGam
     )
 
 
+DICE_ANIMATION_DELAY = 2.0
+_DICE_ROLL_LOCKS: Dict[tuple[int, int], asyncio.Lock] = {}
+
+
+def _get_dice_lock(chat_id: int, user_id: int) -> asyncio.Lock:
+    key = (chat_id, user_id)
+    lock = _DICE_ROLL_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _DICE_ROLL_LOCKS[key] = lock
+    return lock
+
+
+def _mention_for(user: types.User) -> str:
+    if user.username:
+        return f"@{user.username}"
+    return escape(user.full_name or f"user{user.id}")
+
+
+@router.callback_query(F.data.startswith("dice:"))
+async def on_dice_callback(
+    query: types.CallbackQuery, bot: Bot, dice_game: DiceGameService,
+) -> None:
+    if query.data is None:
+        await query.answer()
+        return
+    parsed = parse_dice_callback(query.data)
+    if parsed is None:
+        await query.answer()
+        return
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        await query.answer()
+        return
+    if query.from_user.id != parsed.owner_id:
+        await query.answer("Это не твоя игра, вызови /dice сам", show_alert=True)
+        return
+
+    if parsed.action == "cancel":
+        try:
+            await query.message.edit_text("Бросок отменён.")
+        except TelegramBadRequest:
+            pass
+        await query.answer()
+        return
+
+    if parsed.action == "pick":
+        assert parsed.number is not None
+        picks = list(parsed.picks)
+        if parsed.number in picks:
+            picks.remove(parsed.number)
+        else:
+            if len(picks) >= DICE_MAX_PICKS:
+                await query.answer(f"Максимум {DICE_MAX_PICKS} числа")
+                return
+            picks.append(parsed.number)
+            picks.sort()
+        try:
+            await query.message.edit_reply_markup(
+                reply_markup=build_dice_keyboard(owner_id=parsed.owner_id, picks=picks),
+            )
+        except TelegramBadRequest:
+            pass
+        await query.answer()
+        return
+
+    # parsed.action == "roll"
+    if not parsed.picks:
+        await query.answer("Выбери хотя бы одно число")
+        return
+
+    chat_id = query.message.chat.id
+    user_id = parsed.owner_id
+
+    async with _get_dice_lock(chat_id, user_id):
+        await query.answer()
+        # Strip keyboard, show the stake
+        try:
+            await query.message.edit_text(f"Ставка: {format_dice_picks_text(parsed.picks)}")
+        except TelegramBadRequest:
+            pass
+
+        try:
+            dice_msg = await bot.send_dice(
+                chat_id=chat_id,
+                emoji="🎲",
+                reply_to_message_id=query.message.message_id,
+            )
+        except (TelegramBadRequest, TelegramForbiddenError):
+            logger.exception("dice.send_dice failed chat=%s user=%s", chat_id, user_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Не смог бросить кубик, попробуй ещё раз.",
+            )
+            return
+
+        if dice_msg.dice is None:
+            logger.warning("dice.send_dice returned no dice chat=%s", chat_id)
+            return
+        value = dice_msg.dice.value
+
+        try:
+            round_, delta = await dice_game.record_roll(
+                chat_id=chat_id, user_id=user_id, picks=parsed.picks,
+                dice_value=value, dice_message_id=dice_msg.message_id,
+                now=datetime.utcnow(),
+            )
+        except AlreadyPlayedTodayError:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="Ты уже бросал сегодня, приходи завтра.",
+                reply_to_message_id=dice_msg.message_id,
+            )
+            return
+        except Exception:
+            logger.exception("dice.record_roll failed chat=%s user=%s", chat_id, user_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"Кубик показал {value}, но не смог записать — день не сгорел.",
+                reply_to_message_id=dice_msg.message_id,
+            )
+            return
+
+        if DICE_ANIMATION_DELAY > 0:
+            await asyncio.sleep(DICE_ANIMATION_DELAY)
+
+        text = format_dice_result(
+            picks=parsed.picks, dice_value=value, delta=delta,
+            mention=_mention_for(query.from_user),
+        )
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_to_message_id=dice_msg.message_id,
+            )
+        except TelegramBadRequest:
+            await bot.send_message(chat_id=chat_id, text=text)
+
+        logger.info(
+            "dice.round chat=%s user=%s picks=%s value=%s delta=%s",
+            chat_id, user_id, parsed.picks, value, delta,
+        )
+
+
 @router.poll_answer()
 async def on_poll_answer(poll_answer: types.PollAnswer, bot: Bot, guess_game: GuessGameService) -> None:
     round_ = await guess_game.find_round_by_poll(poll_answer.poll_id)
