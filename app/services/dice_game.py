@@ -29,11 +29,12 @@ def _moscow_midnight(now: datetime) -> datetime:
 def compute_delta(picks: list[int], dice_value: int) -> int:
     """Return roulette score delta for a dice roll outcome.
 
-    -2 if single pick wins (1/6), -1 if double pick wins (2/6), else 0.
+    Win:  -2 if single pick (1/6), -1 if double pick (2/6).
+    Loss: +2 if single pick,        +1 if double pick.
     """
-    if dice_value not in picks:
-        return 0
-    return -2 if len(picks) == 1 else -1
+    win_amount = -2 if len(picks) == 1 else -1
+    loss_amount = 2 if len(picks) == 1 else 1
+    return win_amount if dice_value in picks else loss_amount
 
 
 class AlreadyPlayedTodayError(Exception):

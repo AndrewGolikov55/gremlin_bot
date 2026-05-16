@@ -16,16 +16,18 @@ def _utc(year: int, month: int, day: int, hour: int = 12) -> datetime:
 
 class TestComputeDelta:
     @pytest.mark.parametrize("picks,dice_value,expected", [
-        # 1 number — win: -2, lose: 0
+        # win 1-pick → -2
         ([3], 3, -2),
-        ([3], 4, 0),
         ([6], 6, -2),
-        ([1], 2, 0),
-        # 2 numbers — win: -1, lose: 0
+        # loss 1-pick → +2 (NEW)
+        ([3], 4, 2),
+        ([1], 2, 2),
+        # win 2-pick → -1
         ([1, 4], 1, -1),
         ([1, 4], 4, -1),
-        ([1, 4], 5, 0),
-        ([2, 5], 3, 0),
+        # loss 2-pick → +1 (NEW)
+        ([1, 4], 5, 1),
+        ([2, 5], 3, 1),
     ])
     def test_table(self, picks: list[int], dice_value: int, expected: int) -> None:
         assert compute_delta(picks, dice_value) == expected
