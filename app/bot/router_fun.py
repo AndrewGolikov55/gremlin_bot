@@ -25,6 +25,7 @@ from ..services.moderation import apply_moderation
 from ..services.persona import StylePromptService, DEFAULT_STYLE_KEY
 from ..services.app_config import AppConfigService
 from ..services.message_history import store_telegram_message
+from ..services.roast import RoastService
 from ..services.roulette import RouletteService
 from ..services.settings import SettingsService
 from ..services.usage_limits import UsageLimiter
@@ -649,3 +650,51 @@ def _relationship_kind_label(relation: RelationshipState | None) -> str:
     if rapport <= -0.35:
         return "отношения напряжённые"
     return "без выраженного отношения"
+
+
+def _extract_roast_target_arg(message: types.Message) -> str | None:
+    """Return '@username' if the command argument mentions a user, else None.
+
+    Supports both MENTION (text starts with @) and TEXT_MENTION (linked Telegram user
+    without a public username, where we have entity.user.username if any).
+    """
+    text = message.text or ""
+    entities = list(message.entities or [])
+    for entity in entities:
+        if entity.type == "mention":
+            mention_text = text[entity.offset : entity.offset + entity.length]
+            if mention_text.startswith("@") and len(mention_text) > 1:
+                return mention_text
+        if entity.type == "text_mention":
+            user = getattr(entity, "user", None)
+            if user is not None and getattr(user, "username", None):
+                return f"@{user.username}"
+    # Fallback: plain "/roast @name" without entities (some clients omit)
+    parts = text.split(maxsplit=1)
+    if len(parts) >= 2:
+        candidate = parts[1].strip().split()[0] if parts[1].strip() else ""
+        if candidate.startswith("@") and len(candidate) > 1:
+            return candidate
+    return None
+
+
+@router.message(Command("roast"))
+async def cmd_roast(
+    message: types.Message,
+    session: AsyncSession,
+    roast: RoastService,
+):
+    if not await _store_command_once(session, message):
+        return
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.reply("Команда доступна только в групповых чатах.")
+        return
+    if not message.from_user:
+        return
+
+    target_arg = _extract_roast_target_arg(message)
+    await roast.run(
+        chat_id=message.chat.id,
+        initiator_id=message.from_user.id,
+        target_arg=target_arg,
+    )
