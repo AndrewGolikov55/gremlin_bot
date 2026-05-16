@@ -321,3 +321,81 @@ class RoastService:
         except Exception:
             logger.exception("roast: unexpected LLM error")
             return None
+
+    @staticmethod
+    def _format_cooldown_refusal(remaining: timedelta) -> str:
+        total_seconds = int(remaining.total_seconds())
+        hours = max(1, (total_seconds + 1799) // 3600)  # round up, min 1
+        return (
+            f"Прожарка уже была сегодня, следующая через ~{hours} ч."
+        )
+
+    @staticmethod
+    def _llm_failure_fallback() -> str:
+        return "Прожарка не сложилась, LLM в обмороке. Попробуйте позже."
+
+    async def _send(self, chat_id: int, text: str) -> None:
+        await self.bot.send_message(chat_id=chat_id, text=text)
+
+    async def _persist_run(
+        self,
+        *,
+        chat_id: int,
+        target_user_id: int,
+        initiator_user_id: int,
+        target_username: str | None,
+        run_at: datetime,
+    ) -> None:
+        async with self.sessionmaker() as session:
+            session.add(RoastRun(
+                chat_id=chat_id,
+                target_user_id=target_user_id,
+                initiator_user_id=initiator_user_id,
+                target_username=target_username,
+                run_at=run_at,
+            ))
+            await session.commit()
+
+    async def run(
+        self,
+        *,
+        chat_id: int,
+        initiator_id: int,
+        target_arg: str | None,
+        now: datetime | None = None,
+    ) -> None:
+        """Run /roast for this chat. All side-effects (send_message, DB write) inside per-chat lock."""
+        if now is None:
+            now = datetime.utcnow()
+
+        async with self._get_lock(chat_id):
+            remaining = await self._remaining_cooldown(chat_id=chat_id, now=now)
+            if remaining is not None:
+                await self._send(chat_id, self._format_cooldown_refusal(remaining))
+                return
+
+            target_uid, refusal = await self._resolve_target(
+                chat_id=chat_id, initiator_id=initiator_id,
+                target_arg=target_arg, now=now,
+            )
+            if refusal is not None or target_uid is None:
+                await self._send(chat_id, refusal or "Не нашёл цель.")
+                return
+
+            ctx = await self._collect_target_context(chat_id=chat_id, user_id=target_uid)
+            system, user = await self._build_prompts(chat_id=chat_id, ctx=ctx)
+            text = await self._llm_call(system=system, user=user)
+
+            if not text or not text.strip():
+                # LLM down — do NOT consume cooldown.
+                await self._send(chat_id, self._llm_failure_fallback())
+                return
+
+            await self._send(chat_id, text.strip())
+            await self._persist_run(
+                chat_id=chat_id,
+                target_user_id=target_uid,
+                initiator_user_id=initiator_id,
+                target_username=ctx.username,
+                run_at=now,
+            )

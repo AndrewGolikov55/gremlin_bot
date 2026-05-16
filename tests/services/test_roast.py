@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, create_autospec
 import pytest
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
+from sqlalchemy import select
 
 from app.models import Message, RoastRun, User, UserMemoryProfile
 from app.services.app_config import AppConfigService
@@ -502,3 +503,239 @@ async def test_llm_call_returns_none_on_unexpected_error(sessionmaker):
     with um.patch("app.services.roast.llm_generate", fake_generate):
         text = await svc._llm_call(system="SYS", user="USR")
     assert text is None
+
+
+@pytest.mark.asyncio
+async def test_run_happy_path_sends_and_persists(sessionmaker):
+    chat_id = 42
+    initiator = 200
+    target = 100
+    now = datetime(2026, 5, 16, 12, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(User(tg_id=target, username="andrew"))
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=target, text="привет",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+
+    bot = AsyncMock()
+    member = type("M", (), {})()
+    member.status = ChatMemberStatus.MEMBER
+    member.user = type("U", (), {})()
+    member.user.first_name = "Андрей"
+    member.user.username = "andrew"
+    member.user.is_bot = False
+    bot.get_chat_member = AsyncMock(return_value=member)
+    bot.send_message = AsyncMock()
+
+    personas = create_autospec(StylePromptService, instance=True)
+    personas.get = AsyncMock(return_value="persona-prompt")
+    settings = create_autospec(SettingsService, instance=True)
+    settings.get_all = AsyncMock(return_value={"style": "gopnik"})
+    app_config = create_autospec(AppConfigService, instance=True)
+    app_config.get_all = AsyncMock(return_value={})
+
+    svc = _make_svc(
+        sessionmaker, bot=bot, personas=personas, settings=settings, app_config=app_config,
+    )
+
+    import unittest.mock as um
+
+    async def fake_gen(messages, **kwargs):
+        return "Жёстко прожарен."
+
+    with um.patch("app.services.roast.llm_generate", fake_gen):
+        await svc.run(
+            chat_id=chat_id, initiator_id=initiator,
+            target_arg="@andrew", now=now,
+        )
+
+    bot.send_message.assert_awaited_once()
+    call = bot.send_message.call_args
+    sent_text = call.kwargs.get("text", call.args[1] if len(call.args) > 1 else None)
+    assert "Жёстко прожарен" in sent_text
+
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(RoastRun))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].chat_id == chat_id
+    assert rows[0].target_user_id == target
+    assert rows[0].initiator_user_id == initiator
+    assert rows[0].target_username == "andrew"
+
+
+@pytest.mark.asyncio
+async def test_run_blocks_when_cooldown_active(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        session.add(RoastRun(
+            chat_id=chat_id, target_user_id=1, initiator_user_id=2,
+            target_username="prev", run_at=now - timedelta(hours=3),
+        ))
+        await session.commit()
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    svc = _make_svc(sessionmaker, bot=bot)
+
+    await svc.run(chat_id=chat_id, initiator_id=200, target_arg=None, now=now)
+
+    bot.send_message.assert_awaited_once()
+    call = bot.send_message.call_args
+    sent_text = call.kwargs.get("text", call.args[1] if len(call.args) > 1 else None)
+    assert "21" in sent_text  # 24h - 3h = 21h remaining
+    # Никакой новой записи
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(RoastRun))).scalars().all()
+    assert len(rows) == 1  # только предыдущая
+
+
+@pytest.mark.asyncio
+async def test_run_sends_refusal_when_target_unknown(sessionmaker):
+    bot = AsyncMock()
+    bot.send_message = AsyncMock()
+    svc = _make_svc(sessionmaker, bot=bot)
+
+    await svc.run(
+        chat_id=42, initiator_id=200, target_arg="@ghost",
+        now=datetime(2026, 5, 16, 12, 0, 0),
+    )
+
+    bot.send_message.assert_awaited_once()
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(RoastRun))).scalars().all()
+    assert rows == []  # отказ не съедает кулдаун
+
+
+@pytest.mark.asyncio
+async def test_run_llm_failure_sends_fallback_and_skips_cooldown(sessionmaker):
+    chat_id = 42
+    initiator = 200
+    target = 100
+    now = datetime(2026, 5, 16, 12, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(User(tg_id=target, username="andrew"))
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=target, text="hi",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+
+    bot = AsyncMock()
+    member = type("M", (), {})()
+    member.status = ChatMemberStatus.MEMBER
+    member.user = type("U", (), {})()
+    member.user.first_name = "Андрей"
+    member.user.username = "andrew"
+    member.user.is_bot = False
+    bot.get_chat_member = AsyncMock(return_value=member)
+    bot.send_message = AsyncMock()
+
+    personas = create_autospec(StylePromptService, instance=True)
+    personas.get = AsyncMock(return_value="persona")
+    settings = create_autospec(SettingsService, instance=True)
+    settings.get_all = AsyncMock(return_value={"style": "gopnik"})
+    app_config = create_autospec(AppConfigService, instance=True)
+    app_config.get_all = AsyncMock(return_value={})
+
+    svc = _make_svc(
+        sessionmaker, bot=bot, personas=personas, settings=settings, app_config=app_config,
+    )
+
+    import unittest.mock as um
+    from app.services.llm.client import LLMError
+
+    async def fake_gen(messages, **kwargs):
+        raise LLMError("all down")
+
+    with um.patch("app.services.roast.llm_generate", fake_gen):
+        await svc.run(
+            chat_id=chat_id, initiator_id=initiator,
+            target_arg="@andrew", now=now,
+        )
+
+    bot.send_message.assert_awaited_once()
+    call = bot.send_message.call_args
+    sent_text = call.kwargs.get("text", call.args[1] if len(call.args) > 1 else None)
+    assert "LLM" in sent_text or "обмороке" in sent_text.lower() or "позже" in sent_text.lower()
+
+    # КУЛДАУН НЕ ЗАПИСАН
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(RoastRun))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_run_per_chat_lock_serializes_concurrent_calls(sessionmaker):
+    """Second concurrent call sees the first run's RoastRun → cooldown refusal."""
+    chat_id = 42
+    initiator = 200
+    target = 100
+    now = datetime(2026, 5, 16, 12, 0, 0)
+
+    async with sessionmaker() as session:
+        session.add(User(tg_id=target, username="andrew"))
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=target, text="hi",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+
+    bot = AsyncMock()
+    member = type("M", (), {})()
+    member.status = ChatMemberStatus.MEMBER
+    member.user = type("U", (), {})()
+    member.user.first_name = "Андрей"
+    member.user.username = "andrew"
+    member.user.is_bot = False
+    bot.get_chat_member = AsyncMock(return_value=member)
+    bot.send_message = AsyncMock()
+
+    personas = create_autospec(StylePromptService, instance=True)
+    personas.get = AsyncMock(return_value="persona")
+    settings = create_autospec(SettingsService, instance=True)
+    settings.get_all = AsyncMock(return_value={"style": "gopnik"})
+    app_config = create_autospec(AppConfigService, instance=True)
+    app_config.get_all = AsyncMock(return_value={})
+
+    svc = _make_svc(
+        sessionmaker, bot=bot, personas=personas, settings=settings, app_config=app_config,
+    )
+
+    import unittest.mock as um
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def slow_gen(messages, **kwargs):
+        started.set()
+        await proceed.wait()
+        return "Жёстко."
+
+    async def runner():
+        with um.patch("app.services.roast.llm_generate", slow_gen):
+            await svc.run(
+                chat_id=chat_id, initiator_id=initiator,
+                target_arg="@andrew", now=now,
+            )
+
+    first = asyncio.create_task(runner())
+    await started.wait()
+    # Second call should queue on the same lock
+    second = asyncio.create_task(svc.run(
+        chat_id=chat_id, initiator_id=initiator,
+        target_arg="@andrew", now=now,
+    ))
+    # Let the first complete
+    proceed.set()
+    await asyncio.gather(first, second)
+
+    # Exactly one RoastRun row
+    async with sessionmaker() as session:
+        rows = (await session.execute(select(RoastRun))).scalars().all()
+    assert len(rows) == 1
+    # Two send_messages: one with roast text, one with cooldown refusal
+    assert bot.send_message.await_count == 2
