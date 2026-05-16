@@ -173,3 +173,53 @@ async def test_collect_candidates_counts_replies_within_window(sessionmaker):
     # Ответы (101, 102) тоже кандидаты, но их reply_count = 0
     assert by_id[101].reply_count == 0
     assert by_id[102].reply_count == 0
+
+
+def test_score_grows_with_replies():
+    from app.services.quotebook import Candidate, score_candidate
+
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    a = Candidate(message_id=1, user_id=10, text="а" * 100, reply_count=0,
+                  date=now - timedelta(days=1))
+    b = Candidate(message_id=2, user_id=10, text="а" * 100, reply_count=10,
+                  date=now - timedelta(days=1))
+    assert score_candidate(b, max_reply=10, now=now) > score_candidate(a, max_reply=10, now=now)
+
+
+def test_score_grows_with_length_until_cap():
+    from app.services.quotebook import Candidate, score_candidate
+
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    short = Candidate(message_id=1, user_id=10, text="а" * 30, reply_count=0,
+                      date=now - timedelta(days=1))
+    long_ = Candidate(message_id=2, user_id=10, text="а" * 180, reply_count=0,
+                      date=now - timedelta(days=1))
+    capped = Candidate(message_id=3, user_id=10, text="а" * 300, reply_count=0,
+                       date=now - timedelta(days=1))
+    s_short = score_candidate(short, max_reply=1, now=now)
+    s_long = score_candidate(long_, max_reply=1, now=now)
+    s_capped = score_candidate(capped, max_reply=1, now=now)
+    assert s_long > s_short
+    # длина свыше 200 кэпится, дальше не растёт сама по себе
+    assert abs(s_capped - s_long) < 0.05
+
+
+def test_score_decays_with_age():
+    from app.services.quotebook import Candidate, score_candidate
+
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    fresh = Candidate(message_id=1, user_id=10, text="а" * 100, reply_count=0,
+                      date=now - timedelta(hours=1))
+    old = Candidate(message_id=2, user_id=10, text="а" * 100, reply_count=0,
+                    date=now - timedelta(days=6, hours=23))
+    assert score_candidate(fresh, max_reply=1, now=now) > score_candidate(old, max_reply=1, now=now)
+
+
+def test_score_handles_zero_max_reply():
+    from app.services.quotebook import Candidate, score_candidate
+    now = datetime(2026, 5, 17, 20, 0, 0)
+    c = Candidate(message_id=1, user_id=10, text="а" * 100, reply_count=0,
+                  date=now - timedelta(days=1))
+    # max_reply=0 — деление на ноль не должно случиться, reply-составляющая = 0
+    s = score_candidate(c, max_reply=0, now=now)
+    assert 0.0 <= s <= 1.0

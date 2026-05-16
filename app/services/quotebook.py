@@ -95,6 +95,21 @@ class PollOption:
     source_message_id: int
 
 
+def score_candidate(c: Candidate, *, max_reply: int, now: datetime) -> float:
+    """Heuristic score in [0.0, 1.0] used for top-50 cut and LLM-fallback ranking.
+
+    Weights: 0.6 reply, 0.3 length (capped at 200), 0.1 recency (linear decay over 7d).
+    """
+    reply_norm = 0.0
+    if max_reply > 0:
+        reply_norm = min(c.reply_count, max_reply) / max_reply
+    length_norm = min(len(c.text), 200) / 200.0
+    age_seconds = (now - c.date).total_seconds()
+    window_seconds = WINDOW_DAYS * 24 * 3600
+    recency_norm = max(0.0, 1.0 - (age_seconds / window_seconds))
+    return 0.6 * reply_norm + 0.3 * length_norm + 0.1 * recency_norm
+
+
 class QuotebookService:
     def __init__(
         self,
