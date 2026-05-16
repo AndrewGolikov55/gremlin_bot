@@ -11,6 +11,7 @@ from aiogram import Bot, F, Router, types
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 
+from ..services.dice_game import AlreadyPlayedTodayError, DiceGameService
 from ..services.guess_game import GuessGameService, NoCandidatesError, PreparedRound
 
 router = Router(name="games")
@@ -33,6 +34,7 @@ def build_games_menu_markup() -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
+            [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
         ]
     )
 
@@ -241,6 +243,59 @@ async def cb_games_guess(query: types.CallbackQuery, bot: Bot, guess_game: Guess
     if isinstance(query.message, types.InaccessibleMessage):
         return
     await _start_round(query.message.chat, bot, guess_game)
+
+
+async def _open_dice(
+    *,
+    chat: types.Chat,
+    user: types.User,
+    reply_to_message_id: int | None,
+    bot: Bot,
+    dice_game: DiceGameService,
+) -> None:
+    if chat.type not in {"group", "supergroup"}:
+        await bot.send_message(
+            chat_id=chat.id,
+            text="Игра доступна только в групповых чатах.",
+        )
+        return
+
+    now = datetime.utcnow()
+    if not await dice_game.can_play_today(chat_id=chat.id, user_id=user.id, now=now):
+        await bot.send_message(
+            chat_id=chat.id,
+            text="Ты уже бросал сегодня, приходи завтра.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    await bot.send_message(
+        chat_id=chat.id,
+        text=format_dice_intro_text(),
+        reply_to_message_id=reply_to_message_id,
+        reply_markup=build_dice_keyboard(owner_id=user.id, picks=[]),
+    )
+
+
+@router.message(Command("dice"))
+async def cmd_dice(message: types.Message, bot: Bot, dice_game: DiceGameService) -> None:
+    if message.from_user is None:
+        return
+    await _open_dice(
+        chat=message.chat, user=message.from_user,
+        reply_to_message_id=message.message_id, bot=bot, dice_game=dice_game,
+    )
+
+
+@router.callback_query(F.data == "games:dice")
+async def cb_games_dice(query: types.CallbackQuery, bot: Bot, dice_game: DiceGameService) -> None:
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await _open_dice(
+        chat=query.message.chat, user=query.from_user,
+        reply_to_message_id=query.message.message_id, bot=bot, dice_game=dice_game,
+    )
 
 
 @router.poll_answer()

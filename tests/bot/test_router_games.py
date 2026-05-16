@@ -262,3 +262,78 @@ class TestFormatDiceResult:
         msg = format_dice_result(picks=[3], dice_value=4, delta=0, mention="@andrey")
         assert "@andrey" in msg
         assert "Мимо" in msg or "мимо" in msg
+
+
+from app.bot.router_games import _open_dice, format_dice_intro_text
+from app.services.dice_game import DiceGameService
+
+
+def test_build_games_menu_contains_dice_button() -> None:
+    markup = build_games_menu_markup()
+    flat = [btn for row in markup.inline_keyboard for btn in row]
+    assert any(btn.callback_data == "games:dice" for btn in flat)
+    assert any("Кости" in btn.text for btn in flat)
+
+
+def _fake_bot() -> MagicMock:
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=555))
+    bot.send_dice = AsyncMock()
+    return bot
+
+
+@pytest.mark.asyncio
+async def test_open_dice_in_non_group_chat_refuses(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    chat = Chat(id=42, type="private")
+    user = TgUser(id=10, is_bot=False, first_name="A")
+
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+
+    bot.send_message.assert_called_once()
+    text = bot.send_message.call_args.kwargs.get("text") or bot.send_message.call_args.args[1]
+    assert "групповых" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_open_dice_sends_keyboard_first_time(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    bot = _fake_bot()
+    chat = Chat(id=-100, type="supergroup")
+    user = TgUser(id=10, is_bot=False, first_name="A")
+
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+
+    bot.send_message.assert_called_once()
+    kwargs = bot.send_message.call_args.kwargs
+    assert kwargs["chat_id"] == -100
+    assert kwargs["reply_to_message_id"] == 1
+    assert format_dice_intro_text() in (kwargs["text"] or "")
+    markup = kwargs["reply_markup"]
+    assert markup is not None
+    flat = [btn for row in markup.inline_keyboard for btn in row]
+    assert any("Бросать" in b.text for b in flat)
+    # owner_id is the caller (user 10)
+    assert any(b.callback_data and "dice:roll:10:" in b.callback_data for b in flat)
+
+
+@pytest.mark.asyncio
+async def test_open_dice_refuses_when_already_played(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    svc = DiceGameService(sessionmaker)
+    # seed a round for today
+    from datetime import datetime
+    await svc.record_roll(
+        chat_id=-100, user_id=10, picks=[3], dice_value=4,
+        dice_message_id=999, now=datetime.utcnow(),
+    )
+
+    bot = _fake_bot()
+    chat = Chat(id=-100, type="supergroup")
+    user = TgUser(id=10, is_bot=False, first_name="A")
+
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+
+    bot.send_message.assert_called_once()
+    text = bot.send_message.call_args.kwargs.get("text") or ""
+    assert "уже бросал" in text.lower()
