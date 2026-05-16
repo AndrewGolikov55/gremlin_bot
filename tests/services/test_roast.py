@@ -8,7 +8,7 @@ import pytest
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
 
-from app.models import Message, RoastRun, UserMemoryProfile
+from app.models import Message, RoastRun, User, UserMemoryProfile
 from app.services.app_config import AppConfigService
 from app.services.persona import StylePromptService
 from app.services.roast import RoastService
@@ -158,3 +158,131 @@ async def test_active_user_ids_ignores_empty_text(sessionmaker):
     svc = _make_svc(sessionmaker)
     ids = await svc._active_user_ids(chat_id=chat_id, now=now, exclude_user_id=None)
     assert ids == [101]
+
+
+@pytest.mark.asyncio
+async def test_resolve_random_picks_among_active(sessionmaker, monkeypatch):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        for uid in (100, 101):
+            session.add(Message(
+                chat_id=chat_id, message_id=uid, user_id=uid, text="hey",
+                reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+            ))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+    monkeypatch.setattr(
+        "app.services.roast.random.choice",
+        lambda seq: 101 if 101 in seq else seq[0],
+    )
+
+    uid, refusal = await svc._resolve_target(
+        chat_id=chat_id, initiator_id=200, target_arg=None, now=now,
+    )
+    assert refusal is None
+    assert uid == 101
+
+
+@pytest.mark.asyncio
+async def test_resolve_random_no_active_users(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    svc = _make_svc(sessionmaker)
+    uid, refusal = await svc._resolve_target(
+        chat_id=chat_id, initiator_id=200, target_arg=None, now=now,
+    )
+    assert uid is None
+    assert refusal is not None
+    assert "тишина" in refusal.lower() or "некого" in refusal.lower()
+
+
+@pytest.mark.asyncio
+async def test_resolve_random_only_initiator_active(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=200, text="only me",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+    svc = _make_svc(sessionmaker)
+    uid, refusal = await svc._resolve_target(
+        chat_id=chat_id, initiator_id=200, target_arg=None, now=now,
+    )
+    assert uid is None
+    assert refusal is not None
+
+
+@pytest.mark.asyncio
+async def test_resolve_explicit_username_succeeds(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        session.add(User(tg_id=100, username="andrew"))
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=100, text="recent",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+    svc = _make_svc(sessionmaker)
+    uid, refusal = await svc._resolve_target(
+        chat_id=chat_id, initiator_id=200, target_arg="@andrew", now=now,
+    )
+    assert refusal is None
+    assert uid == 100
+
+
+@pytest.mark.asyncio
+async def test_resolve_explicit_username_unknown(sessionmaker):
+    svc = _make_svc(sessionmaker)
+    uid, refusal = await svc._resolve_target(
+        chat_id=42, initiator_id=200, target_arg="@ghost",
+        now=datetime(2026, 5, 16, 12, 0, 0),
+    )
+    assert uid is None
+    assert refusal is not None
+    assert "ghost" in refusal.lower() or "не знаю" in refusal.lower()
+
+
+@pytest.mark.asyncio
+async def test_resolve_explicit_username_inactive(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        session.add(User(tg_id=100, username="andrew"))
+        # Last activity > 7 days ago
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=100, text="old",
+            reply_to_id=None, date=now - timedelta(days=10), is_bot=False,
+        ))
+        await session.commit()
+    svc = _make_svc(sessionmaker)
+    uid, refusal = await svc._resolve_target(
+        chat_id=chat_id, initiator_id=200, target_arg="@andrew", now=now,
+    )
+    assert uid is None
+    assert refusal is not None
+    assert "след" in refusal.lower() or "неделю" in refusal.lower()
+
+
+@pytest.mark.asyncio
+async def test_resolve_explicit_username_self_refused(sessionmaker):
+    chat_id = 42
+    now = datetime(2026, 5, 16, 12, 0, 0)
+    async with sessionmaker() as session:
+        session.add(User(tg_id=200, username="me"))
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=200, text="self",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
+        await session.commit()
+    svc = _make_svc(sessionmaker)
+    uid, refusal = await svc._resolve_target(
+        chat_id=chat_id, initiator_id=200, target_arg="@me", now=now,
+    )
+    assert uid is None
+    assert refusal is not None
+    assert "сам" in refusal.lower()

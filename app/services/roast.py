@@ -12,7 +12,7 @@ from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ..models import Message, RoastRun, UserMemoryProfile
+from ..models import Message, RoastRun, User, UserMemoryProfile
 from .app_config import AppConfigService
 from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
 from .llm.client import generate as llm_generate
@@ -122,3 +122,62 @@ class RoastService:
         if exclude_user_id is not None:
             ids = [uid for uid in ids if uid != exclude_user_id]
         return ids
+
+    async def _resolve_target(
+        self,
+        *,
+        chat_id: int,
+        initiator_id: int,
+        target_arg: str | None,
+        now: datetime,
+    ) -> tuple[int | None, str | None]:
+        """Resolve the roast target.
+
+        Returns (user_id, refusal_text). If refusal_text is not None, abort with that text.
+        """
+        if target_arg is None:
+            candidates = await self._active_user_ids(
+                chat_id=chat_id, now=now, exclude_user_id=initiator_id,
+            )
+            if not candidates:
+                return None, "Некого жарить, в чате тишина."
+            chosen = random.choice(candidates)
+            return chosen, None
+
+        # Explicit @username — strip leading @ and case-fold for lookup
+        raw = target_arg.strip()
+        if raw.startswith("@"):
+            raw = raw[1:]
+        if not raw:
+            return None, "Дай нормальный @username, не пустоту."
+
+        # Lookup in users table
+        async with self.sessionmaker() as session:
+            stmt = select(User.tg_id).where(func.lower(User.username) == raw.lower())
+            target_uid = (await session.execute(stmt)).scalar_one_or_none()
+
+        if target_uid is None:
+            return None, f"Не знаю, кто такой @{raw}, в моей базе его нет."
+
+        if target_uid == initiator_id:
+            return None, "Сам себя не жарят, попроси кого-нибудь другого."
+
+        # Bot check via get_chat_member (best-effort; if API fails we still continue)
+        try:
+            member = await self.bot.get_chat_member(chat_id, target_uid)
+            user = getattr(member, "user", None)
+            if user is not None and getattr(user, "is_bot", False) is True:
+                return None, "Ботов не жарим, они и так перегреты."
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            logger.exception("roast: get_chat_member failed chat=%s user=%s", chat_id, target_uid)
+
+        # Activity check
+        active = await self._active_user_ids(
+            chat_id=chat_id, now=now, exclude_user_id=None,
+        )
+        if target_uid not in active:
+            return None, f"У @{raw} нет следов за неделю, нечего разбирать."
+
+        return target_uid, None
