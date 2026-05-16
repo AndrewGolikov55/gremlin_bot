@@ -279,6 +279,17 @@ class TestFormatDiceResult:
 
 
 from app.bot.router_games import _open_dice, format_dice_intro_text
+
+
+class TestFormatDiceIntroText:
+    def test_mentions_dice_emoji_and_payout_table(self) -> None:
+        text = format_dice_intro_text()
+        assert "🎲" in text
+        # payout summary
+        assert "−2" in text or "-2" in text
+        assert "+2" in text
+        assert "−1" in text or "-1" in text
+        assert "+1" in text
 from app.services.dice_game import DiceGameService
 
 
@@ -512,15 +523,17 @@ async def test_dice_roll_happy_path_loss(
     cb, msg, answer = _fake_callback(data="dice:roll:10:3", from_user_id=10)
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
+    # 1-pick loss now writes RouletteScoreAdjustment with delta=+2
     from app.models import DiceRound, RouletteScoreAdjustment
     async with sessionmaker() as session:
         rnd = (await session.execute(select(DiceRound))).scalar_one()
         assert rnd.won is False
-        assert rnd.delta == 0
-        adjs = (await session.execute(select(RouletteScoreAdjustment))).scalars().all()
-        assert adjs == []
+        assert rnd.delta == 2
+        adj = (await session.execute(select(RouletteScoreAdjustment))).scalar_one()
+        assert adj.delta == 2
+        assert adj.reason == "dice_loss"
     text = bot.send_message.call_args.kwargs.get("text") or ""
-    assert "мимо" in text.lower()
+    assert "жадность" in text.lower() or "+2" in text or "плюс 2" in text.lower()
 
 
 @pytest.mark.asyncio

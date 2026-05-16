@@ -135,7 +135,11 @@ def format_dice_picks_text(picks: list[int]) -> str:
 
 
 def format_dice_intro_text() -> str:
-    return "Выбери 1 или 2 числа (1 число = –2 очка, 2 числа = –1 очко)"
+    return (
+        "🎲 Кости — ставка на сегодня\n\n"
+        "🎯 1 число → −2 / +2  (шанс 1/6)\n"
+        "🎯 2 числа → −1 / +1  (шанс 1/3)"
+    )
 
 
 def format_dice_result(*, picks: list[int], dice_value: int, delta: int, mention: str) -> str:
@@ -333,7 +337,7 @@ async def _open_dice(
     if chat.type not in {"group", "supergroup"}:
         await bot.send_message(
             chat_id=chat.id,
-            text="Игра доступна только в групповых чатах.",
+            text="⛔ Игра только в групповых чатах.",
         )
         return
 
@@ -341,7 +345,7 @@ async def _open_dice(
     if not await dice_game.can_play_today(chat_id=chat.id, user_id=user.id, now=now):
         await bot.send_message(
             chat_id=chat.id,
-            text="Ты уже бросал сегодня, приходи завтра.",
+            text="⏳ Ты уже бросал сегодня, приходи завтра.",
             reply_to_message_id=reply_to_message_id,
         )
         return
@@ -409,12 +413,12 @@ async def on_dice_callback(
         await query.answer()
         return
     if query.from_user.id != parsed.owner_id:
-        await query.answer("Это не твоя игра, вызови /dice сам", show_alert=True)
+        await query.answer("🚫 Не твоя игра — позови /dice сам.", show_alert=True)
         return
 
     if parsed.action == "cancel":
         try:
-            await query.message.edit_text("Бросок отменён.")
+            await query.message.edit_text("❌ Бросок отменён.")
         except TelegramBadRequest:
             pass
         await query.answer()
@@ -427,7 +431,7 @@ async def on_dice_callback(
             picks.remove(parsed.number)
         else:
             if len(picks) >= DICE_MAX_PICKS:
-                await query.answer(f"Максимум {DICE_MAX_PICKS} числа")
+                await query.answer(f"🛑 Максимум {DICE_MAX_PICKS} числа.")
                 return
             picks.append(parsed.number)
             picks.sort()
@@ -442,7 +446,7 @@ async def on_dice_callback(
 
     # parsed.action == "roll"
     if not parsed.picks:
-        await query.answer("Выбери хотя бы одно число")
+        await query.answer("👇 Выбери хотя бы одно число.")
         return
 
     chat_id = query.message.chat.id
@@ -452,7 +456,7 @@ async def on_dice_callback(
         await query.answer()
         # Strip keyboard, show the stake
         try:
-            await query.message.edit_text(f"Ставка: {format_dice_picks_text(parsed.picks)}")
+            await query.message.edit_text(f"🎰 Ставка: {format_dice_picks_text(parsed.picks)}")
         except TelegramBadRequest:
             pass
 
@@ -466,7 +470,7 @@ async def on_dice_callback(
             logger.exception("dice.send_dice failed chat=%s user=%s", chat_id, user_id)
             await bot.send_message(
                 chat_id=chat_id,
-                text="Не смог бросить кубик, попробуй ещё раз.",
+                text="⚠️ Не смог бросить кубик, попробуй ещё раз.",
             )
             return
 
@@ -484,7 +488,7 @@ async def on_dice_callback(
         except AlreadyPlayedTodayError:
             await bot.send_message(
                 chat_id=chat_id,
-                text="Ты уже бросал сегодня, приходи завтра.",
+                text="⏳ Ты уже бросал сегодня, приходи завтра.",
                 reply_to_message_id=dice_msg.message_id,
             )
             return
@@ -492,7 +496,7 @@ async def on_dice_callback(
             logger.exception("dice.record_roll failed chat=%s user=%s", chat_id, user_id)
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"Кубик показал {value}, но не смог записать — день не сгорел.",
+                text=f"⚠️ Кубик показал {value}, но не смог записать — день не сгорел.",
                 reply_to_message_id=dice_msg.message_id,
             )
             return
