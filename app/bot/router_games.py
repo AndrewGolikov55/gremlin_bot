@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
-from typing import Dict
+from typing import Dict, Literal
 
 from aiogram import Bot, F, Router, types
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
@@ -33,6 +34,114 @@ def build_games_menu_markup() -> types.InlineKeyboardMarkup:
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
         ]
+    )
+
+
+# --- Dice game --------------------------------------------------------------
+
+DICE_MAX_PICKS = 2
+DICE_FACES = (1, 2, 3, 4, 5, 6)
+
+
+@dataclass(frozen=True)
+class DiceCallback:
+    action: Literal["pick", "roll", "cancel"]
+    owner_id: int
+    picks: list[int]
+    number: int | None
+
+
+def _parse_picks_csv(raw: str) -> list[int] | None:
+    if not raw:
+        return []
+    try:
+        out = [int(x) for x in raw.split(",")]
+    except ValueError:
+        return None
+    if any(n not in DICE_FACES for n in out):
+        return None
+    if len(out) > DICE_MAX_PICKS:
+        return None
+    if len(set(out)) != len(out):
+        return None
+    return out
+
+
+def parse_dice_callback(data: str) -> DiceCallback | None:
+    parts = data.split(":")
+    if len(parts) < 3 or parts[0] != "dice":
+        return None
+    action = parts[1]
+    try:
+        owner_id = int(parts[2])
+    except ValueError:
+        return None
+    if action == "cancel" and len(parts) == 3:
+        return DiceCallback(action="cancel", owner_id=owner_id, picks=[], number=None)
+    if action == "roll" and len(parts) == 4:
+        picks = _parse_picks_csv(parts[3])
+        if picks is None:
+            return None
+        return DiceCallback(action="roll", owner_id=owner_id, picks=picks, number=None)
+    if action == "pick" and len(parts) == 5:
+        picks = _parse_picks_csv(parts[3])
+        if picks is None:
+            return None
+        try:
+            number = int(parts[4])
+        except ValueError:
+            return None
+        if number not in DICE_FACES:
+            return None
+        return DiceCallback(action="pick", owner_id=owner_id, picks=picks, number=number)
+    return None
+
+
+def _picks_to_csv(picks: list[int]) -> str:
+    return ",".join(str(n) for n in picks)
+
+
+def build_dice_keyboard(owner_id: int, picks: list[int]) -> types.InlineKeyboardMarkup:
+    csv = _picks_to_csv(picks)
+    selected = set(picks)
+    rows: list[list[types.InlineKeyboardButton]] = []
+    for row_nums in ((1, 2, 3), (4, 5, 6)):
+        rows.append([
+            types.InlineKeyboardButton(
+                text=(f"✓ {n}" if n in selected else str(n)),
+                callback_data=f"dice:pick:{owner_id}:{csv}:{n}",
+            )
+            for n in row_nums
+        ])
+    rows.append([
+        types.InlineKeyboardButton(
+            text="🎲 Бросать",
+            callback_data=f"dice:roll:{owner_id}:{csv}",
+        ),
+        types.InlineKeyboardButton(
+            text="Отмена",
+            callback_data=f"dice:cancel:{owner_id}",
+        ),
+    ])
+    return types.InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def format_dice_picks_text(picks: list[int]) -> str:
+    return ", ".join(str(n) for n in picks)
+
+
+def format_dice_intro_text() -> str:
+    return "Выбери 1 или 2 числа (1 число = –2 очка, 2 числа = –1 очко)"
+
+
+def format_dice_result(*, picks: list[int], dice_value: int, delta: int, mention: str) -> str:
+    picks_str = format_dice_picks_text(picks)
+    if delta == 0:
+        return f"😶 {mention} поставил {picks_str} — выпало {dice_value}. Мимо."
+    points_word = "очка" if abs(delta) in (2, 3, 4) else "очко"
+    return (
+        f"🎯 {mention} поставил {picks_str} — выпало {dice_value}! "
+        f"Минус {abs(delta)} {points_word} в месячной рулетке."
     )
 
 
