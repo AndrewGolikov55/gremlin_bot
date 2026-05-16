@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiogram.types import Chat, PollAnswer
+from aiogram.types import CallbackQuery, Chat, PollAnswer
+from aiogram.types import Message as TgMessage
 from aiogram.types import User as TgUser
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -13,6 +14,7 @@ from app.bot.router_games import (
     _start_round,
     build_games_menu_markup,
     format_first_winner_message,
+    on_dice_callback,
     on_poll_answer,
 )
 from app.models import GuessRound, Message, RouletteScoreAdjustment
@@ -339,10 +341,6 @@ async def test_open_dice_refuses_when_already_played(sessionmaker: async_session
     assert "уже бросал" in text.lower()
 
 
-from aiogram.types import CallbackQuery, InaccessibleMessage, Message as TgMessage
-from app.bot.router_games import on_dice_callback, DICE_ANIMATION_DELAY
-
-
 def _fake_callback(
     *, data: str, from_user_id: int, owner_in_msg: bool = True,
     chat_id: int = -100, message_id: int = 555,
@@ -526,8 +524,8 @@ async def test_dice_roll_concurrent_second_attempt_loses_race(
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
-    # Second roll attempt: dice rolled but record fails → user told
+    # Second roll attempt: dice rolled but record fails → user told it didn't burn the day
     cb.answer.assert_called()
-    args = bot.send_message.call_args.kwargs if bot.send_message.call_args else None
-    if args:
-        assert "уже бросал" in (args.get("text") or "").lower()
+    bot.send_message.assert_called()
+    text = bot.send_message.call_args.kwargs.get("text") or ""
+    assert "уже бросал" in text.lower()
