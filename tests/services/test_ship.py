@@ -464,3 +464,72 @@ async def test_render_fallback_when_keywords_empty(sessionmaker):
         )
 
     assert "не нашлось" in text or "не нашло" in text or "почти нет" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_resolve_candidate_by_username_from_roulette_participant(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(RouletteParticipant(chat_id=chat_id, user_id=100, username="alice"))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    res = await svc.resolve_candidate(chat_id=chat_id, candidate=("username", "alice"))
+    assert res is not None
+    user_id, display = res
+    assert user_id == 100
+    assert display == "alice"
+
+
+@pytest.mark.asyncio
+async def test_resolve_candidate_by_username_case_insensitive_and_with_at(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(RouletteParticipant(chat_id=chat_id, user_id=100, username="Alice"))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    res = await svc.resolve_candidate(chat_id=chat_id, candidate=("username", "@ALICE"))
+    assert res is not None
+    assert res[0] == 100
+
+
+@pytest.mark.asyncio
+async def test_resolve_candidate_by_username_falls_back_to_users_table(sessionmaker):
+    from app.models import User
+    async with sessionmaker() as session:
+        session.add(User(tg_id=100, username="alice"))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    res = await svc.resolve_candidate(chat_id=42, candidate=("username", "alice"))
+    assert res is not None
+    assert res[0] == 100
+
+
+@pytest.mark.asyncio
+async def test_resolve_candidate_returns_none_for_unknown_username(sessionmaker):
+    svc = _make_service(sessionmaker)
+    res = await svc.resolve_candidate(chat_id=42, candidate=("username", "ghost"))
+    assert res is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_candidate_by_id_returns_username_when_known(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(RouletteParticipant(chat_id=chat_id, user_id=100, username="alice"))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    res = await svc.resolve_candidate(chat_id=chat_id, candidate=("id", 100))
+    assert res is not None
+    assert res == (100, "alice")
+
+
+@pytest.mark.asyncio
+async def test_resolve_candidate_by_id_returns_id_string_when_unknown(sessionmaker):
+    svc = _make_service(sessionmaker)
+    res = await svc.resolve_candidate(chat_id=42, candidate=("id", 100))
+    assert res is not None
+    assert res == (100, "id100")

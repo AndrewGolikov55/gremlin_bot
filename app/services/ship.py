@@ -492,3 +492,68 @@ class ShipService:
         if not text or not text.strip():
             return self._fallback_text(name_a=name_a, name_b=name_b, score=score, metrics=metrics)
         return text.strip()
+
+    async def resolve_candidate(
+        self,
+        *,
+        chat_id: int,
+        candidate: tuple[str, int] | tuple[str, str],
+    ) -> tuple[int, str] | None:
+        """Convert a parsed handler candidate into (user_id, display_name).
+
+        candidate is one of:
+        - ("id", <user_id>) — already known (e.g. from text_mention entity)
+        - ("username", "@alice" | "alice")
+        Returns None iff candidate cannot be resolved in this chat.
+        """
+        from sqlalchemy import func, select
+
+        from ..models import RouletteParticipant, User
+
+        kind, value = candidate
+        async with self.sessionmaker() as session:
+            if kind == "id":
+                user_id = int(value)
+                stmt = (
+                    select(RouletteParticipant.username)
+                    .where(
+                        RouletteParticipant.chat_id == chat_id,
+                        RouletteParticipant.user_id == user_id,
+                    )
+                    .limit(1)
+                )
+                name = (await session.execute(stmt)).scalar_one_or_none()
+                if name:
+                    return user_id, str(name)
+                stmt2 = select(User.username).where(User.tg_id == user_id).limit(1)
+                name2 = (await session.execute(stmt2)).scalar_one_or_none()
+                if name2:
+                    return user_id, str(name2)
+                return user_id, f"id{user_id}"
+
+            if kind == "username":
+                needle = str(value).lstrip("@").lower()
+                if not needle:
+                    return None
+                stmt = (
+                    select(RouletteParticipant.user_id, RouletteParticipant.username)
+                    .where(
+                        RouletteParticipant.chat_id == chat_id,
+                        func.lower(RouletteParticipant.username) == needle,
+                    )
+                    .limit(1)
+                )
+                row = (await session.execute(stmt)).first()
+                if row is not None:
+                    return int(row.user_id), str(row.username)
+                stmt2 = (
+                    select(User.tg_id, User.username)
+                    .where(func.lower(User.username) == needle)
+                    .limit(1)
+                )
+                row2 = (await session.execute(stmt2)).first()
+                if row2 is not None:
+                    return int(row2.tg_id), str(row2.username)
+                return None
+
+            return None
