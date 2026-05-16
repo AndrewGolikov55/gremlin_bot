@@ -301,3 +301,71 @@ def test_aggregate_score_weighted_mid():
         reply_rate=0.5, mention_rate=0.2, co_activity=0.4, pref_overlap=0.6,
     )
     assert ShipService.aggregate_score(metrics) == 45
+
+
+from app.models import ShipResult  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_load_cached_returns_recent_row(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(ShipResult(
+            chat_id=chat_id, user_id_a=100, user_id_b=200,
+            score=73, payload={"reply_count": 5},
+            rendered_text="💞 73/100. Любовь да и только.",
+            computed_at=datetime.utcnow() - timedelta(hours=1),
+        ))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        cached = await svc._load_cached(session, chat_id=chat_id, a=100, b=200)
+    assert cached is not None
+    assert cached.score == 73
+
+
+@pytest.mark.asyncio
+async def test_load_cached_returns_none_when_stale(sessionmaker):
+    chat_id = 42
+    async with sessionmaker() as session:
+        session.add(ShipResult(
+            chat_id=chat_id, user_id_a=100, user_id_b=200,
+            score=73, payload={}, rendered_text="old",
+            computed_at=datetime.utcnow() - timedelta(hours=30),
+        ))
+        await session.commit()
+
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        cached = await svc._load_cached(session, chat_id=chat_id, a=100, b=200)
+    assert cached is None
+
+
+@pytest.mark.asyncio
+async def test_load_cached_returns_none_when_missing(sessionmaker):
+    svc = _make_service(sessionmaker)
+    async with sessionmaker() as session:
+        cached = await svc._load_cached(session, chat_id=42, a=100, b=200)
+    assert cached is None
+
+
+@pytest.mark.asyncio
+async def test_persist_inserts_then_updates_same_pair(sessionmaker):
+    svc = _make_service(sessionmaker)
+    await svc._persist(
+        chat_id=42, a=100, b=200,
+        score=50, payload={"v": 1}, rendered_text="first",
+    )
+    await svc._persist(
+        chat_id=42, a=100, b=200,
+        score=80, payload={"v": 2}, rendered_text="second",
+    )
+
+    async with sessionmaker() as session:
+        from sqlalchemy import select
+        rows = (await session.execute(select(ShipResult))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].score == 80
+    assert rows[0].rendered_text == "second"
+    assert rows[0].payload["v"] == 2

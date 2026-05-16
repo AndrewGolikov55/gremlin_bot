@@ -5,12 +5,17 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from typing import TYPE_CHECKING
+
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .app_config import AppConfigService
 from .persona import StylePromptService
 from .settings import SettingsService
+
+if TYPE_CHECKING:
+    from ..models import ShipResult
 
 logger = logging.getLogger(__name__)
 
@@ -335,3 +340,78 @@ class ShipService:
             + WEIGHT_PREF * metrics.pref_overlap
         )
         return max(0, min(100, round(100 * weighted)))
+
+    async def _load_cached(
+        self,
+        session: AsyncSession,
+        *,
+        chat_id: int,
+        a: int,
+        b: int,
+    ) -> ShipResult | None:
+        """Return cached ShipResult for pair (must be canonicalized) iff computed_at within 24h."""
+        from sqlalchemy import select
+
+        from ..models import ShipResult as ShipResultModel
+
+        cutoff = datetime.utcnow() - CACHE_TTL
+        stmt = (
+            select(ShipResultModel)
+            .where(
+                ShipResultModel.chat_id == chat_id,
+                ShipResultModel.user_id_a == a,
+                ShipResultModel.user_id_b == b,
+                ShipResultModel.computed_at >= cutoff,
+            )
+            .limit(1)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def _persist(
+        self,
+        *,
+        chat_id: int,
+        a: int,
+        b: int,
+        score: int,
+        payload: dict,
+        rendered_text: str,
+    ) -> None:
+        """Upsert ShipResult row for the canonicalized pair."""
+        from sqlalchemy import select
+        from sqlalchemy.exc import IntegrityError
+
+        from ..models import ShipResult as ShipResultModel
+
+        async with self.sessionmaker() as session:
+            stmt = select(ShipResultModel).where(
+                ShipResultModel.chat_id == chat_id,
+                ShipResultModel.user_id_a == a,
+                ShipResultModel.user_id_b == b,
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            now = datetime.utcnow()
+            if existing is None:
+                session.add(ShipResultModel(
+                    chat_id=chat_id,
+                    user_id_a=a,
+                    user_id_b=b,
+                    score=score,
+                    payload=payload,
+                    rendered_text=rendered_text,
+                    computed_at=now,
+                ))
+            else:
+                existing.score = score
+                existing.payload = payload
+                existing.rendered_text = rendered_text
+                existing.computed_at = now
+            try:
+                await session.commit()
+            except IntegrityError:
+                # Race: another worker inserted concurrently — that's fine, we keep theirs.
+                await session.rollback()
+                logger.info(
+                    "ship: integrity race on persist chat=%s pair=(%s,%s)",
+                    chat_id, a, b,
+                )
