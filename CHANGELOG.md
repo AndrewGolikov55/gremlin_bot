@@ -5,6 +5,8 @@
 
 ## [0.13.0] - 2026-05-18
 
+> Автор: [@folexz](https://github.com/folexz) — PR [#3](https://github.com/AndrewGolikov55/gremlin_bot/pull/3).
+
 ### Added
 
 - 6 новых игр:
@@ -75,7 +77,7 @@
 - Новый `QuickGameService` инкапсулирует pattern из `roast.py`; пакет
   `app/services/games/` для stateful-игр; `app/utils/locks.py` — общий
   per-chat lock helper. `RoundStatus` пополнен значением `finalising`.
-- Тесты: 454 проходят (было 426). Покрыты `rapbattle`, `storychain`,
+- Тесты: 445 проходят (было 426). Покрыты `rapbattle`, `storychain`,
   concurrent `/akinator_ask`, recover_stale всех сервисов, owner-check
   меню, нормализация `ё→е`, разбор LLM-токенов akinator.
 
