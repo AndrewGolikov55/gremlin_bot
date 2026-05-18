@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Bot, Router, types
+from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 
+from ..services.games.spy import SpyService
 from ..services.quick_games import QuickGameService
 
 router = Router(name="games_extra")
@@ -96,3 +97,61 @@ async def cmd_predict(
     await quick_games.run_predict(
         chat_id=chat.id, initiator_id=user.id, target_arg=target,
     )
+
+
+# ---------------- /spy ----------------
+
+def _require_group(message: types.Message) -> bool:
+    return message.chat.type in {"group", "supergroup"} and message.from_user is not None
+
+
+@router.message(Command("spy"))
+async def cmd_spy(message: types.Message, spy: SpyService) -> None:
+    if not _require_group(message):
+        await message.answer("Игра доступна только в групповых чатах.")
+        return
+    await spy.start_lobby(chat_id=message.chat.id, initiator_id=message.from_user.id)
+
+
+@router.message(Command("spy_join"))
+async def cmd_spy_join(message: types.Message, spy: SpyService) -> None:
+    if not _require_group(message):
+        return
+    await spy.join(chat_id=message.chat.id, user_id=message.from_user.id)
+
+
+@router.message(Command("spy_start"))
+async def cmd_spy_start(message: types.Message, spy: SpyService) -> None:
+    if not _require_group(message):
+        return
+    await spy.start_round(chat_id=message.chat.id, initiator_id=message.from_user.id)
+
+
+@router.message(Command("spy_vote"))
+async def cmd_spy_vote(message: types.Message, spy: SpyService) -> None:
+    if not _require_group(message):
+        return
+    await spy.start_vote(chat_id=message.chat.id, initiator_id=message.from_user.id)
+
+
+@router.message(Command("spy_abort"))
+async def cmd_spy_abort(message: types.Message, spy: SpyService) -> None:
+    if not _require_group(message):
+        return
+    await spy.abort(chat_id=message.chat.id, initiator_id=message.from_user.id)
+
+
+@router.callback_query(F.data.startswith("spy:reveal:"))
+async def cb_spy_reveal(query: types.CallbackQuery, spy: SpyService) -> None:
+    try:
+        round_id = int(query.data.split(":", 2)[2])
+    except (ValueError, IndexError):
+        await query.answer("Неверная кнопка.", show_alert=True)
+        return
+    if query.message is None or query.from_user is None:
+        await query.answer("Что-то пошло не так.", show_alert=True)
+        return
+    text, _found = await spy.reveal_role(
+        chat_id=query.message.chat.id, user_id=query.from_user.id, round_id=round_id,
+    )
+    await query.answer(text, show_alert=True)
