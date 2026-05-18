@@ -25,6 +25,7 @@ from .bot.router_triggers import router as triggers_router
 from .bot.router_fun import router as fun_router
 from .bot.router_interjector import router as interjector_router
 from .bot.router_games import router as games_router
+from .bot.router_games_extra import router as games_extra_router
 from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
 from .admin import create_admin_router
 
@@ -48,6 +49,12 @@ from .services.ship import ShipService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
 from .services.roast import RoastService
 from .services.quotebook import QuotebookService
+from .services.quick_games import QuickGameService
+from .services.games.spy import SpyService
+from .services.games.akinator import AkinatorService
+from .services.games.wordchain import WordchainService
+from .services.games.rapbattle import RapbattleService
+from .services.games.storychain import StorychainService
 from .services.release_broadcast import ReleaseBroadcaster
 from .utils.version import get_version
 from zoneinfo import ZoneInfo
@@ -167,12 +174,39 @@ quotebook_service = QuotebookService(
     settings=settings_service,
     app_config=app_config_service,
 )
+quick_games_service = QuickGameService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    personas=persona_service,
+    settings=settings_service,
+    app_config=app_config_service,
+)
+spy_service = SpyService(sessionmaker=async_sessionmaker, bot=bot)
+akinator_service = AkinatorService(
+    sessionmaker=async_sessionmaker, bot=bot, app_config=app_config_service,
+)
+wordchain_service = WordchainService(sessionmaker=async_sessionmaker, bot=bot)
+rapbattle_service = RapbattleService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    personas=persona_service,
+    settings=settings_service,
+    app_config=app_config_service,
+)
+storychain_service = StorychainService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    personas=persona_service,
+    settings=settings_service,
+    app_config=app_config_service,
+)
 
 # Routers — order matters: command routers MUST be registered before triggers_router,
 # which has a catch-all @router.message(F.text) that consumes any text message.
 dp.include_router(admin_router)
 dp.include_router(fun_router)
 dp.include_router(games_router)
+dp.include_router(games_extra_router)
 dp.include_router(triggers_router)
 dp.include_router(interjector_router)
 
@@ -211,6 +245,12 @@ dp.update.middleware(
         roast_service,
         ship_service,
         quotebook_service,
+        quick_games_service,
+        spy_service,
+        akinator_service,
+        wordchain_service,
+        rapbattle_service,
+        storychain_service,
     )
 )
 scheduler = get_scheduler()
@@ -461,7 +501,17 @@ async def configure_bot_commands(bot: Bot) -> None:
         BotCommand(command="roll", description="Запустить рулетку"),
         BotCommand(command="rollstats_montly", description="Статистика рулетки за месяц"),
         BotCommand(command="rollstats_total", description="Статистика рулетки за всё время"),
-        BotCommand(command="games", description="Меню игр (кости, угадайка, шипперинг)"),
+        BotCommand(command="games", description="Меню игр"),
+        BotCommand(command="truth", description="Правда или действие"),
+        BotCommand(command="horoscope", description="Гороскоп"),
+        BotCommand(command="fortune", description="Печенье с предсказанием"),
+        BotCommand(command="wisdom", description="Фейк-афоризм участника"),
+        BotCommand(command="predict", description="Предсказание для участника"),
+        BotCommand(command="spy", description="Шпион (Spyfall)"),
+        BotCommand(command="akinator", description="Угадай загаданного"),
+        BotCommand(command="wordchain", description="Цепочка слов"),
+        BotCommand(command="rapbattle", description="Рэп-баттл"),
+        BotCommand(command="storychain", description="Совместная история"),
         BotCommand(command="summary", description="Сводка обсуждения"),
         BotCommand(command="reg", description="Зарегистрироваться в рулетке"),
         BotCommand(command="unreg", description="Выйти из рулетки"),

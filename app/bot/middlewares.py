@@ -20,6 +20,12 @@ from ..services.monthly_champion import MonthlyChampionService
 from ..services.roast import RoastService
 from ..services.ship import ShipService
 from ..services.quotebook import QuotebookService
+from ..services.quick_games import QuickGameService
+from ..services.games.spy import SpyService
+from ..services.games.akinator import AkinatorService
+from ..services.games.wordchain import WordchainService
+from ..services.games.rapbattle import RapbattleService
+from ..services.games.storychain import StorychainService
 
 
 class DbSessionMiddleware(BaseMiddleware):
@@ -56,6 +62,12 @@ class ServicesMiddleware(BaseMiddleware):
         roast: RoastService,
         ship: ShipService,
         quotebook: QuotebookService,
+        quick_games: QuickGameService,
+        spy: SpyService,
+        akinator: AkinatorService,
+        wordchain: WordchainService,
+        rapbattle: RapbattleService,
+        storychain: StorychainService,
     ):
         self.settings = settings
         self.context = context
@@ -73,6 +85,12 @@ class ServicesMiddleware(BaseMiddleware):
         self.roast = roast
         self.ship = ship
         self.quotebook = quotebook
+        self.quick_games = quick_games
+        self.spy = spy
+        self.akinator = akinator
+        self.wordchain = wordchain
+        self.rapbattle = rapbattle
+        self.storychain = storychain
 
     async def __call__(
         self,
@@ -96,4 +114,10 @@ class ServicesMiddleware(BaseMiddleware):
         data["roast"] = self.roast
         data["ship"] = self.ship
         data["quotebook"] = self.quotebook
+        data["quick_games"] = self.quick_games
+        data["spy"] = self.spy
+        data["akinator"] = self.akinator
+        data["wordchain"] = self.wordchain
+        data["rapbattle"] = self.rapbattle
+        data["storychain"] = self.storychain
         return await handler(event, data)

@@ -34,9 +34,38 @@ QUESTION_LIMIT = 300
 def build_games_menu_markup() -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
+            [types.InlineKeyboardButton(text="🎲 Быстрые игры", callback_data="games:cat:quick")],
+            [types.InlineKeyboardButton(text="🎭 Совместные игры", callback_data="games:cat:multi")],
+        ]
+    )
+
+
+def build_quick_submenu_markup() -> types.InlineKeyboardMarkup:
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
             [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
             [types.InlineKeyboardButton(text="💞 Шипперинг (рандом)", callback_data="games:ship_random")],
+            [types.InlineKeyboardButton(text="🔥 Прожарка (/roast)", callback_data="games:noop:roast")],
+            [types.InlineKeyboardButton(text="🎭 Truth (/truth)", callback_data="games:noop:truth")],
+            [types.InlineKeyboardButton(text="🔮 Horoscope (/horoscope)", callback_data="games:noop:horoscope")],
+            [types.InlineKeyboardButton(text="🥠 Fortune (/fortune)", callback_data="games:noop:fortune")],
+            [types.InlineKeyboardButton(text="📜 Wisdom (/wisdom)", callback_data="games:noop:wisdom")],
+            [types.InlineKeyboardButton(text="🌌 Predict (/predict)", callback_data="games:noop:predict")],
+            [types.InlineKeyboardButton(text="🔙 Назад", callback_data="games:cat:root")],
+        ]
+    )
+
+
+def build_multi_submenu_markup() -> types.InlineKeyboardMarkup:
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
+            [types.InlineKeyboardButton(text="🎯 Шпион (/spy)", callback_data="games:noop:spy")],
+            [types.InlineKeyboardButton(text="🤔 Akinator (/akinator)", callback_data="games:noop:akinator")],
+            [types.InlineKeyboardButton(text="🔗 Wordchain (/wordchain)", callback_data="games:noop:wordchain")],
+            [types.InlineKeyboardButton(text="🎤 Рэп-баттл (/rapbattle)", callback_data="games:noop:rapbattle")],
+            [types.InlineKeyboardButton(text="📖 Storychain (/storychain)", callback_data="games:noop:storychain")],
+            [types.InlineKeyboardButton(text="🔙 Назад", callback_data="games:cat:root")],
         ]
     )
 
@@ -311,6 +340,56 @@ async def cmd_ship(message: types.Message, bot: Bot, ship: ShipService) -> None:
         bot_id=bot.id,
     )
     await message.reply(outcome.rendered_text)
+
+
+@router.callback_query(F.data == "games:cat:root")
+async def cb_games_cat_root(query: types.CallbackQuery) -> None:
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await query.message.edit_text("🎮 Выбери игру:", reply_markup=build_games_menu_markup())
+
+
+@router.callback_query(F.data == "games:cat:quick")
+async def cb_games_cat_quick(query: types.CallbackQuery) -> None:
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await query.message.edit_text(
+        "🎲 Быстрые игры:", reply_markup=build_quick_submenu_markup(),
+    )
+
+
+@router.callback_query(F.data == "games:cat:multi")
+async def cb_games_cat_multi(query: types.CallbackQuery) -> None:
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await query.message.edit_text(
+        "🎭 Совместные игры:", reply_markup=build_multi_submenu_markup(),
+    )
+
+
+_NOOP_HINTS = {
+    "roast": "Вызови команду /roast (можно с @username или в реплае).",
+    "truth": "Вызови команду /truth (можно с @username или в реплае).",
+    "horoscope": "Вызови команду /horoscope (можно с @username или в реплае).",
+    "fortune": "Вызови команду /fortune.",
+    "wisdom": "Вызови команду /wisdom.",
+    "predict": "Вызови команду /predict (можно с @username или в реплае).",
+    "spy": "Старт через /spy, далее /spy_join, /spy_start.",
+    "akinator": "Старт через /akinator, далее /akinator_ask <вопрос>.",
+    "wordchain": "Старт через /wordchain, ходы — /wordchain_play <слово>.",
+    "rapbattle": "Вызови /rapbattle @opponent.",
+    "storychain": "Старт через /storychain, вклад — /storychain_add <текст>.",
+}
+
+
+@router.callback_query(F.data.startswith("games:noop:"))
+async def cb_games_noop(query: types.CallbackQuery) -> None:
+    key = query.data.split(":", 2)[2] if query.data else ""
+    hint = _NOOP_HINTS.get(key, "Эта игра запускается отдельной командой.")
+    await query.answer(hint, show_alert=True)
 
 
 @router.callback_query(F.data == "games:guess")
