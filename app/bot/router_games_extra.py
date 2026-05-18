@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router, types
+from aiogram import Bot, F, Router, types
 from aiogram.filters import Command, CommandObject
 
 from ..services.games.akinator import AkinatorService
@@ -110,6 +110,14 @@ async def cmd_akinator_guess(
     )
 
 
+@router.message(Command("akinator_stop"))
+async def cmd_akinator_stop(message: types.Message, akinator: AkinatorService) -> None:
+    if not _require_group(message):
+        await _refuse_private(message)
+        return
+    await akinator.stop(chat_id=message.chat.id)
+
+
 # ---------------- /wordchain ----------------
 
 @router.message(Command("wordchain"))
@@ -208,3 +216,79 @@ async def cmd_storychain_stop(message: types.Message, storychain: StorychainServ
         await _refuse_private(message)
         return
     await storychain.stop(chat_id=message.chat.id)
+
+
+# ---------------- Menu callbacks: start games from /games inline keyboard ----------------
+#
+# These mirror the slash-commands above but for callback_query buttons in the
+# /games menu. Games that need arguments (/rapbattle @opponent) stay as
+# noop-hints in router_games.py — there's no way to type a username from a
+# callback. Games that auto-resolve target/random (/akinator, /wordchain,
+# /storychain, /truth, /wisdom) are wired here as one-click starters.
+
+
+async def _ensure_group_cb(query: types.CallbackQuery, bot: Bot) -> types.Chat | None:
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return None
+    chat = query.message.chat
+    if chat.type not in {"group", "supergroup"}:
+        await bot.send_message(chat.id, GROUP_ONLY_REFUSAL)
+        return None
+    return chat
+
+
+@router.callback_query(F.data == "games:akinator")
+async def cb_games_akinator(
+    query: types.CallbackQuery, bot: Bot, akinator: AkinatorService,
+) -> None:
+    await query.answer()
+    chat = await _ensure_group_cb(query, bot)
+    if chat is None or query.from_user is None:
+        return
+    await akinator.start(chat_id=chat.id, initiator_id=query.from_user.id)
+
+
+@router.callback_query(F.data == "games:wordchain")
+async def cb_games_wordchain(
+    query: types.CallbackQuery, bot: Bot, wordchain: WordchainService,
+) -> None:
+    await query.answer()
+    chat = await _ensure_group_cb(query, bot)
+    if chat is None:
+        return
+    await wordchain.start(chat_id=chat.id)
+
+
+@router.callback_query(F.data == "games:storychain")
+async def cb_games_storychain(
+    query: types.CallbackQuery, bot: Bot, storychain: StorychainService,
+) -> None:
+    await query.answer()
+    chat = await _ensure_group_cb(query, bot)
+    if chat is None:
+        return
+    await storychain.start(chat_id=chat.id)
+
+
+@router.callback_query(F.data == "games:truth")
+async def cb_games_truth(
+    query: types.CallbackQuery, bot: Bot, quick_games: QuickGameService,
+) -> None:
+    await query.answer()
+    chat = await _ensure_group_cb(query, bot)
+    if chat is None or query.from_user is None:
+        return
+    await quick_games.run_truth_or_dare(
+        chat_id=chat.id, initiator_id=query.from_user.id, target_arg=None,
+    )
+
+
+@router.callback_query(F.data == "games:wisdom")
+async def cb_games_wisdom(
+    query: types.CallbackQuery, bot: Bot, quick_games: QuickGameService,
+) -> None:
+    await query.answer()
+    chat = await _ensure_group_cb(query, bot)
+    if chat is None or query.from_user is None:
+        return
+    await quick_games.run_wisdom(chat_id=chat.id, initiator_id=query.from_user.id)

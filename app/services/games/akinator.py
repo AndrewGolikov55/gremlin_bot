@@ -118,14 +118,54 @@ class AkinatorService:
                         )
                         session.add(round_)
             except IntegrityError:
-                await self.bot.send_message(chat_id, "В чате уже идёт раунд Акинатора.")
+                await self._report_active_round(chat_id)
                 return
         await self.bot.send_message(
             chat_id,
             f"🤔 Я загадал участника этого чата.\n"
             f"Задавайте вопросы yes/no через /akinator_ask «вопрос».\n"
             f"Угадывайте через /akinator_guess @username.\n"
-            f"Лимит — {MAX_QUESTIONS} вопросов.",
+            f"Закрыть раунд — /akinator_stop. Лимит — {MAX_QUESTIONS} вопросов.",
+        )
+
+    async def _report_active_round(self, chat_id: int) -> None:
+        """Send a helpful message when /akinator is called but a round is already running."""
+        async with self.sessionmaker() as session:
+            active = await self._fetch_active(session, chat_id)
+        if active is None:
+            # Race: round was just closed between the failed insert and our select.
+            await self.bot.send_message(
+                chat_id, "🤔 Раунд только что закрылся, попробуйте /akinator ещё раз.",
+            )
+            return
+        await self.bot.send_message(
+            chat_id,
+            f"🤔 Раунд Акинатора уже идёт — задано "
+            f"{active.questions_asked}/{MAX_QUESTIONS} вопросов.\n"
+            f"Спрашивайте через /akinator_ask «вопрос», угадывайте через "
+            f"/akinator_guess @username или закройте через /akinator_stop.",
+        )
+
+    async def stop(self, *, chat_id: int) -> None:
+        async with self._lock(chat_id):
+            async with self.sessionmaker() as session:
+                round_ = await self._fetch_active(session, chat_id)
+                if round_ is None:
+                    await self.bot.send_message(chat_id, "Раунд Акинатора не идёт.")
+                    return
+                target_uid = round_.target_user_id
+                questions_asked = round_.questions_asked
+                await session.execute(
+                    update(AkinatorRound)
+                    .where(AkinatorRound.id == round_.id)
+                    .values(status=RoundStatus.ABORTED.value, finished_at=datetime.utcnow())
+                )
+                await session.commit()
+        display, _ = await self._resolve_display(chat_id=chat_id, user_id=target_uid)
+        await self.bot.send_message(
+            chat_id,
+            f"🤔 Раунд закрыт после {questions_asked}/{MAX_QUESTIONS} вопросов. "
+            f"Был загадан {escape(display)}.",
         )
 
     async def _llm_answer(self, *, system: str, user: str) -> str:

@@ -195,6 +195,54 @@ async def test_llm_answer_parses_first_token_exactly(sessionmaker):
 
 
 @pytest.mark.asyncio
+async def test_stop_aborts_active_round(sessionmaker):
+    svc = _make_svc(sessionmaker)
+    await _seed_profile(sessionmaker)
+    await svc.start(chat_id=42, initiator_id=200)
+    await svc.stop(chat_id=42)
+    async with sessionmaker() as session:
+        row = (await session.execute(select(AkinatorRound))).scalar_one()
+    assert row.status == "aborted"
+    assert row.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_stop_noop_when_no_active_round(sessionmaker):
+    svc = _make_svc(sessionmaker)
+    await svc.stop(chat_id=42)
+    # bot was called once with the "Раунд не идёт" refusal
+    bot = svc.bot
+    assert bot.send_message.await_count == 1
+    text = bot.send_message.await_args_list[0].args[1]
+    assert "не идёт" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_start_when_active_reports_progress_not_generic(sessionmaker):
+    """Regression for UX: second /akinator must mention question count and how to abort."""
+    svc = _make_svc(sessionmaker)
+    await _seed_profile(sessionmaker)
+    await svc.start(chat_id=42, initiator_id=200)
+    # Ask one question so the report shows N=1
+    with um.patch("app.services.games.akinator.llm_generate", AsyncMock(return_value="yes")):
+        await svc.ask(chat_id=42, asker_id=200, question="q1")
+
+    svc.bot.send_message.reset_mock()
+    # Second /akinator while one is already running.
+    # The partial unique index that triggers IntegrityError is Postgres-only —
+    # on SQLite we need to drive the IntegrityError path manually. So call the
+    # reporter directly to test its content.
+    await svc._report_active_round(42)
+
+    bot = svc.bot
+    assert bot.send_message.await_count == 1
+    msg = bot.send_message.await_args_list[0].args[1]
+    assert "1/" in msg and "20" in msg  # счётчик X/MAX
+    assert "/akinator_stop" in msg
+    assert "/akinator_guess" in msg
+
+
+@pytest.mark.asyncio
 async def test_recover_stale_expires_old_active(sessionmaker):
     from datetime import datetime, timedelta
 

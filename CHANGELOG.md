@@ -3,6 +3,40 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.13.2] - 2026-05-18
+
+### Added
+
+- Команда `/akinator_stop` — закрывает идущий раунд Акинатора и
+  показывает, кто был загадан и сколько вопросов успели задать. Раньше
+  завершить раунд можно было только угадав или дожив до 20 вопросов;
+  если игроки уходили, раунд висел `active`, блокировал новый старт и
+  ждал `recover_stale` через 24ч.
+- Прямой запуск игр из меню `/games`: кнопки «Akinator», «Wordchain»,
+  «Storychain», «Truth», «Wisdom» теперь действительно стартуют игру по
+  клику, а не показывают подсказку «вызови команду». Игры, которым нужны
+  аргументы (`/roast @user`, `/rapbattle @opponent`), остались
+  подсказками в меню — username из callback'а не передать.
+
+### Changed
+
+- Сообщение `/akinator` при уже идущем раунде: вместо безликого
+  «В чате уже идёт раунд Акинатора.» теперь
+  «Раунд Акинатора уже идёт — задано 3/20 вопросов. Спрашивайте через
+  /akinator_ask «вопрос», угадывайте через /akinator_guess @username или
+  закройте через /akinator_stop.»
+- Подсказка в `/akinator` start-сообщении тоже упоминает `/akinator_stop`.
+
+### Internal
+
+- `AkinatorRound` теперь переходит в статус `aborted` через `/akinator_stop`
+  (раньше использовался только `won` / `lost` / `expired`). Partial unique
+  index `status = 'active'` корректно пропускает `aborted`, так что новый
+  раунд можно сразу запустить.
+- Регресс-тесты на новые экраны: `test_stop_aborts_active_round`,
+  `test_stop_noop_when_no_active_round`,
+  `test_start_when_active_reports_progress_not_generic`.
+
 ## [0.13.1] - 2026-05-18
 
 ### Fixed

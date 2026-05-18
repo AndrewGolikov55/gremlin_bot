@@ -45,9 +45,10 @@ def build_quick_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
             [types.InlineKeyboardButton(text="💞 Шипперинг (рандом)", callback_data="games:ship_random")],
-            [types.InlineKeyboardButton(text="🔥 Прожарка (/roast)", callback_data="games:noop:roast")],
-            [types.InlineKeyboardButton(text="🎭 Truth (/truth)", callback_data="games:noop:truth")],
-            [types.InlineKeyboardButton(text="📜 Wisdom (/wisdom)", callback_data="games:noop:wisdom")],
+            [types.InlineKeyboardButton(text="🎭 Truth", callback_data="games:truth")],
+            [types.InlineKeyboardButton(text="📜 Wisdom", callback_data="games:wisdom")],
+            # /roast опционально принимает @user — оставляем подсказку команды
+            [types.InlineKeyboardButton(text="🔥 Прожарка (/roast @user)", callback_data="games:noop:roast")],
             [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"games:cat:root:{opener_id}")],
         ]
     )
@@ -57,10 +58,11 @@ def build_multi_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
-            [types.InlineKeyboardButton(text="🤔 Akinator (/akinator)", callback_data="games:noop:akinator")],
-            [types.InlineKeyboardButton(text="🔗 Wordchain (/wordchain)", callback_data="games:noop:wordchain")],
-            [types.InlineKeyboardButton(text="🎤 Рэп-баттл (/rapbattle)", callback_data="games:noop:rapbattle")],
-            [types.InlineKeyboardButton(text="📖 Storychain (/storychain)", callback_data="games:noop:storychain")],
+            [types.InlineKeyboardButton(text="🤔 Akinator", callback_data="games:akinator")],
+            [types.InlineKeyboardButton(text="🔗 Wordchain", callback_data="games:wordchain")],
+            [types.InlineKeyboardButton(text="📖 Storychain", callback_data="games:storychain")],
+            # /rapbattle требует @opponent — из callback'а username не передать
+            [types.InlineKeyboardButton(text="🎤 Рэп-баттл (/rapbattle @opponent)", callback_data="games:noop:rapbattle")],
             [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"games:cat:root:{opener_id}")],
         ]
     )
@@ -412,14 +414,13 @@ async def cb_games_cat_multi(query: types.CallbackQuery) -> None:
     )
 
 
+# Only games that require typed arguments (a @username or similar) stay as
+# noop-hints — callback_data can't carry a username typed by the user. The
+# rest (akinator/wordchain/storychain/truth/wisdom) are now wired directly
+# in router_games_extra as `games:<name>` callbacks.
 _NOOP_HINTS = {
-    "roast": "Вызови команду /roast (можно с @username или в реплае).",
-    "truth": "Вызови команду /truth (можно с @username или в реплае).",
-    "wisdom": "Вызови команду /wisdom.",
-    "akinator": "Старт через /akinator, далее /akinator_ask «вопрос».",
-    "wordchain": "Старт через /wordchain, ходы — /wordchain_play «слово».",
-    "rapbattle": "Вызови /rapbattle @opponent.",
-    "storychain": "Старт через /storychain, вклад — /storychain_add «текст».",
+    "roast": "Вызови команду /roast — можно с @username или в реплае.",
+    "rapbattle": "Вызови /rapbattle @opponent (или в реплае на оппонента).",
 }
 
 
