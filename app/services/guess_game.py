@@ -377,16 +377,6 @@ class GuessGameService:
             selection_mode=selection_mode,
         )
 
-    async def can_start_today(self, *, chat_id: int, now: datetime) -> bool:
-        midnight = _moscow_midnight(now)
-        async with self.sessionmaker() as session:
-            existing = (await session.execute(
-                select(GuessRound.id)
-                .where(GuessRound.chat_id == chat_id, GuessRound.started_at >= midnight)
-                .limit(1)
-            )).scalar_one_or_none()
-        return existing is None
-
     async def persist_round(
         self,
         prepared: PreparedRound,

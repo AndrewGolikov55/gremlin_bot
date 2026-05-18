@@ -11,7 +11,7 @@ from aiogram import Bot, F, Router, types
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 
-from ..services.dice_game import AlreadyPlayedTodayError, DiceGameService
+from ..services.dice_game import DiceGameService
 from ..services.guess_game import GuessGameService, NoCandidatesError, PreparedRound
 from ..services.ship import ShipService
 
@@ -31,14 +31,52 @@ def _get_guess_lock(chat_id: int) -> asyncio.Lock:
 QUESTION_LIMIT = 300
 
 
-def build_games_menu_markup() -> types.InlineKeyboardMarkup:
+def build_games_menu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎲 Быстрые игры", callback_data=f"games:cat:quick:{opener_id}")],
+            [types.InlineKeyboardButton(text="🎭 Совместные игры", callback_data=f"games:cat:multi:{opener_id}")],
+        ]
+    )
+
+
+def build_quick_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
+            [types.InlineKeyboardButton(text="💞 Шипперинг (рандом)", callback_data="games:ship_random")],
+            [types.InlineKeyboardButton(text="🔥 Прожарка (/roast)", callback_data="games:noop:roast")],
+            [types.InlineKeyboardButton(text="🎭 Truth (/truth)", callback_data="games:noop:truth")],
+            [types.InlineKeyboardButton(text="📜 Wisdom (/wisdom)", callback_data="games:noop:wisdom")],
+            [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"games:cat:root:{opener_id}")],
+        ]
+    )
+
+
+def build_multi_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
-            [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
-            [types.InlineKeyboardButton(text="💞 Шипперинг (рандом)", callback_data="games:ship_random")],
+            [types.InlineKeyboardButton(text="🤔 Akinator (/akinator)", callback_data="games:noop:akinator")],
+            [types.InlineKeyboardButton(text="🔗 Wordchain (/wordchain)", callback_data="games:noop:wordchain")],
+            [types.InlineKeyboardButton(text="🎤 Рэп-баттл (/rapbattle)", callback_data="games:noop:rapbattle")],
+            [types.InlineKeyboardButton(text="📖 Storychain (/storychain)", callback_data="games:noop:storychain")],
+            [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"games:cat:root:{opener_id}")],
         ]
     )
+
+
+def _parse_menu_opener(data: str | None) -> int | None:
+    """Extract opener_id from a 'games:cat:<section>:<opener_id>' callback string."""
+    if not data:
+        return None
+    parts = data.split(":")
+    if len(parts) != 4:
+        return None
+    try:
+        return int(parts[3])
+    except ValueError:
+        return None
 
 
 # --- Dice game --------------------------------------------------------------
@@ -189,9 +227,6 @@ async def _start_round(
 
     async with _get_guess_lock(chat.id):
         now = datetime.utcnow()
-        if not await guess_game.can_start_today(chat_id=chat.id, now=now):
-            await bot.send_message(chat.id, "На сегодня уже играли, приходите завтра.")
-            return
 
         try:
             prepared: PreparedRound = await guess_game.prepare_round(chat_id=chat.id, now=now)
@@ -246,7 +281,12 @@ async def cmd_games(message: types.Message) -> None:
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Меню игр доступно только в групповых чатах.")
         return
-    await message.reply("🎮 Выбери игру:", reply_markup=build_games_menu_markup())
+    if message.from_user is None:
+        return
+    await message.reply(
+        "🎮 Выбери игру:",
+        reply_markup=build_games_menu_markup(opener_id=message.from_user.id),
+    )
 
 
 @router.message(Command("guess"))
@@ -316,6 +356,80 @@ async def cmd_ship(message: types.Message, bot: Bot, ship: ShipService) -> None:
     await message.reply(outcome.rendered_text)
 
 
+async def _guard_menu_opener(query: types.CallbackQuery) -> int | None:
+    """Validate that the click is from the user who opened the menu.
+
+    Returns the opener_id on success. Sends an alert and returns None otherwise.
+    """
+    opener_id = _parse_menu_opener(query.data)
+    if opener_id is None:
+        await query.answer()
+        return None
+    if query.from_user.id != opener_id:
+        await query.answer(
+            "🚫 Не твоё меню — открой своё через /games.", show_alert=True,
+        )
+        return None
+    return opener_id
+
+
+@router.callback_query(F.data.startswith("games:cat:root:"))
+async def cb_games_cat_root(query: types.CallbackQuery) -> None:
+    opener_id = await _guard_menu_opener(query)
+    if opener_id is None:
+        return
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await query.message.edit_text(
+        "🎮 Выбери игру:", reply_markup=build_games_menu_markup(opener_id=opener_id),
+    )
+
+
+@router.callback_query(F.data.startswith("games:cat:quick:"))
+async def cb_games_cat_quick(query: types.CallbackQuery) -> None:
+    opener_id = await _guard_menu_opener(query)
+    if opener_id is None:
+        return
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await query.message.edit_text(
+        "🎲 Быстрые игры:", reply_markup=build_quick_submenu_markup(opener_id=opener_id),
+    )
+
+
+@router.callback_query(F.data.startswith("games:cat:multi:"))
+async def cb_games_cat_multi(query: types.CallbackQuery) -> None:
+    opener_id = await _guard_menu_opener(query)
+    if opener_id is None:
+        return
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await query.message.edit_text(
+        "🎭 Совместные игры:", reply_markup=build_multi_submenu_markup(opener_id=opener_id),
+    )
+
+
+_NOOP_HINTS = {
+    "roast": "Вызови команду /roast (можно с @username или в реплае).",
+    "truth": "Вызови команду /truth (можно с @username или в реплае).",
+    "wisdom": "Вызови команду /wisdom.",
+    "akinator": "Старт через /akinator, далее /akinator_ask <вопрос>.",
+    "wordchain": "Старт через /wordchain, ходы — /wordchain_play <слово>.",
+    "rapbattle": "Вызови /rapbattle @opponent.",
+    "storychain": "Старт через /storychain, вклад — /storychain_add <текст>.",
+}
+
+
+@router.callback_query(F.data.startswith("games:noop:"))
+async def cb_games_noop(query: types.CallbackQuery) -> None:
+    key = query.data.split(":", 2)[2] if query.data else ""
+    hint = _NOOP_HINTS.get(key, "Эта игра запускается отдельной командой.")
+    await query.answer(hint, show_alert=True)
+
+
 @router.callback_query(F.data == "games:guess")
 async def cb_games_guess(query: types.CallbackQuery, bot: Bot, guess_game: GuessGameService) -> None:
     await query.answer()
@@ -332,21 +446,11 @@ async def _open_dice(
     user: types.User,
     reply_to_message_id: int | None,
     bot: Bot,
-    dice_game: DiceGameService,
 ) -> None:
     if chat.type not in {"group", "supergroup"}:
         await bot.send_message(
             chat_id=chat.id,
             text="⛔ Игра только в групповых чатах.",
-        )
-        return
-
-    now = datetime.utcnow()
-    if not await dice_game.can_play_today(chat_id=chat.id, user_id=user.id, now=now):
-        await bot.send_message(
-            chat_id=chat.id,
-            text="⏳ Ты уже бросал сегодня, приходи завтра.",
-            reply_to_message_id=reply_to_message_id,
         )
         return
 
@@ -359,23 +463,23 @@ async def _open_dice(
 
 
 @router.message(Command("dice"))
-async def cmd_dice(message: types.Message, bot: Bot, dice_game: DiceGameService) -> None:
+async def cmd_dice(message: types.Message, bot: Bot) -> None:
     if message.from_user is None:
         return
     await _open_dice(
         chat=message.chat, user=message.from_user,
-        reply_to_message_id=message.message_id, bot=bot, dice_game=dice_game,
+        reply_to_message_id=message.message_id, bot=bot,
     )
 
 
 @router.callback_query(F.data == "games:dice")
-async def cb_games_dice(query: types.CallbackQuery, bot: Bot, dice_game: DiceGameService) -> None:
+async def cb_games_dice(query: types.CallbackQuery, bot: Bot) -> None:
     await query.answer()
     if query.message is None or isinstance(query.message, types.InaccessibleMessage):
         return
     await _open_dice(
         chat=query.message.chat, user=query.from_user,
-        reply_to_message_id=query.message.message_id, bot=bot, dice_game=dice_game,
+        reply_to_message_id=query.message.message_id, bot=bot,
     )
 
 
@@ -485,18 +589,11 @@ async def on_dice_callback(
                 dice_value=value, dice_message_id=dice_msg.message_id,
                 now=datetime.utcnow(),
             )
-        except AlreadyPlayedTodayError:
-            await bot.send_message(
-                chat_id=chat_id,
-                text="⏳ Ты уже бросал сегодня, приходи завтра.",
-                reply_to_message_id=dice_msg.message_id,
-            )
-            return
         except Exception:
             logger.exception("dice.record_roll failed chat=%s user=%s", chat_id, user_id)
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ Кубик показал {value}, но не смог записать — день не сгорел.",
+                text=f"⚠️ Кубик показал {value}, но не смог записать.",
                 reply_to_message_id=dice_msg.message_id,
             )
             return

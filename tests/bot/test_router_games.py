@@ -21,11 +21,12 @@ from app.models import GuessRound, Message, RouletteScoreAdjustment
 from app.services.guess_game import GuessGameService, LLMPick
 
 
-def test_build_games_menu_returns_inline_keyboard_with_guess() -> None:
-    markup = build_games_menu_markup()
+def test_build_games_menu_returns_inline_keyboard_with_categories() -> None:
+    markup = build_games_menu_markup(opener_id=42)
     flat = [btn for row in markup.inline_keyboard for btn in row]
-    assert any(btn.callback_data == "games:guess" for btn in flat)
-    assert any("Угадай" in btn.text for btn in flat)
+    callback_data = [btn.callback_data for btn in flat]
+    assert "games:cat:quick:42" in callback_data
+    assert "games:cat:multi:42" in callback_data
 
 
 def test_format_first_winner_message_mentions_user_and_penalty() -> None:
@@ -155,24 +156,25 @@ async def test_second_correct_vote_no_extra_adjustment(sessionmaker: async_sessi
 
 
 @pytest.mark.asyncio
-async def test_daily_limit_blocks_second_start(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+async def test_two_rounds_in_same_day_both_succeed(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    """Daily cap removed: starting /guess twice in the same chat now creates two rounds."""
     chat_id = -402
     await _seed_messages(sessionmaker, chat_id)
     svc = _make_svc(sessionmaker)
-    bot = _fake_bot_with_poll("POLL-3")
+
+    # Each call returns a fresh poll_id — guess_rounds has UNIQUE(poll_id)
+    bot = MagicMock()
+    polls = [MagicMock(message_id=999, poll=MagicMock(id=f"POLL-{i}")) for i in range(2)]
+    bot.send_poll = AsyncMock(side_effect=polls)
+    bot.send_message = AsyncMock()
 
     chat = Chat(id=chat_id, type="supergroup")
     await _start_round(chat, bot, svc)
-    bot.send_message.reset_mock()
-    bot.send_poll.reset_mock()
-
     await _start_round(chat, bot, svc)
 
-    bot.send_poll.assert_not_called()
-    bot.send_message.assert_called_once()
-    args, kwargs = bot.send_message.call_args
-    text = kwargs.get("text") or (args[1] if len(args) > 1 else "")
-    assert "уже играли" in text.lower()
+    async with sessionmaker() as session:
+        rounds = (await session.execute(select(GuessRound))).scalars().all()
+    assert len(rounds) == 2
 
 
 from app.bot.router_games import (
@@ -293,11 +295,63 @@ class TestFormatDiceIntroText:
 from app.services.dice_game import DiceGameService
 
 
-def test_build_games_menu_contains_dice_button() -> None:
-    markup = build_games_menu_markup()
+def test_build_games_menu_has_two_categories() -> None:
+    """Top-level /games menu now only has Quick / Multi entries; specific games live in submenus."""
+    markup = build_games_menu_markup(opener_id=7)
     flat = [btn for row in markup.inline_keyboard for btn in row]
-    assert any(btn.callback_data == "games:dice" for btn in flat)
-    assert any("Кости" in btn.text for btn in flat)
+    assert len(flat) == 2
+    callback_data = [btn.callback_data for btn in flat]
+    assert "games:cat:quick:7" in callback_data
+    assert "games:cat:multi:7" in callback_data
+
+
+def test_parse_menu_opener_extracts_id() -> None:
+    from app.bot.router_games import _parse_menu_opener
+    assert _parse_menu_opener("games:cat:root:42") == 42
+    assert _parse_menu_opener("games:cat:quick:7") == 7
+    # No opener encoded → None
+    assert _parse_menu_opener("games:cat:root") is None
+    assert _parse_menu_opener("games:cat:root:abc") is None
+    assert _parse_menu_opener(None) is None
+
+
+@pytest.mark.asyncio
+async def test_cb_games_cat_quick_rejects_foreign_clicker() -> None:
+    """Submenu navigation by a non-opener must be alerted and ignored."""
+    from app.bot.router_games import cb_games_cat_quick
+
+    answer = AsyncMock()
+    msg = MagicMock(spec=TgMessage)
+    msg.edit_text = AsyncMock()
+    cb = MagicMock(spec=CallbackQuery)
+    cb.data = "games:cat:quick:42"
+    cb.from_user = TgUser(id=99, is_bot=False, first_name="X")
+    cb.message = msg
+    cb.answer = answer
+
+    await cb_games_cat_quick(cb)
+
+    answer.assert_called_once()
+    assert answer.call_args.kwargs.get("show_alert") is True
+    msg.edit_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cb_games_cat_quick_accepts_opener() -> None:
+    from app.bot.router_games import cb_games_cat_quick
+
+    answer = AsyncMock()
+    msg = MagicMock(spec=TgMessage)
+    msg.edit_text = AsyncMock()
+    msg.chat = Chat(id=-1, type="supergroup")
+    cb = MagicMock(spec=CallbackQuery)
+    cb.data = "games:cat:quick:42"
+    cb.from_user = TgUser(id=42, is_bot=False, first_name="O")
+    cb.message = msg
+    cb.answer = answer
+
+    await cb_games_cat_quick(cb)
+    msg.edit_text.assert_awaited_once()
 
 
 def _fake_bot() -> MagicMock:
@@ -309,12 +363,11 @@ def _fake_bot() -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_open_dice_in_non_group_chat_refuses(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
     chat = Chat(id=42, type="private")
     user = TgUser(id=10, is_bot=False, first_name="A")
 
-    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot)
 
     bot.send_message.assert_called_once()
     text = bot.send_message.call_args.kwargs.get("text") or bot.send_message.call_args.args[1]
@@ -323,12 +376,11 @@ async def test_open_dice_in_non_group_chat_refuses(sessionmaker: async_sessionma
 
 @pytest.mark.asyncio
 async def test_open_dice_sends_keyboard_first_time(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
     chat = Chat(id=-100, type="supergroup")
     user = TgUser(id=10, is_bot=False, first_name="A")
 
-    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot)
 
     bot.send_message.assert_called_once()
     kwargs = bot.send_message.call_args.kwargs
@@ -344,9 +396,11 @@ async def test_open_dice_sends_keyboard_first_time(sessionmaker: async_sessionma
 
 
 @pytest.mark.asyncio
-async def test_open_dice_refuses_when_already_played(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+async def test_open_dice_after_existing_roll_still_sends_keyboard(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Daily cap removed: a prior roll today does not refuse a fresh /dice open."""
     svc = DiceGameService(sessionmaker)
-    # seed a round for today
     from datetime import datetime
     await svc.record_roll(
         chat_id=-100, user_id=10, picks=[3], dice_value=4,
@@ -357,11 +411,13 @@ async def test_open_dice_refuses_when_already_played(sessionmaker: async_session
     chat = Chat(id=-100, type="supergroup")
     user = TgUser(id=10, is_bot=False, first_name="A")
 
-    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot)
 
     bot.send_message.assert_called_once()
-    text = bot.send_message.call_args.kwargs.get("text") or ""
-    assert "уже бросал" in text.lower()
+    kwargs = bot.send_message.call_args.kwargs
+    markup = kwargs["reply_markup"]
+    flat = [btn for row in markup.inline_keyboard for btn in row]
+    assert any("Бросать" in b.text for b in flat)
 
 
 def _fake_callback(
@@ -537,12 +593,12 @@ async def test_dice_roll_happy_path_loss(
 
 
 @pytest.mark.asyncio
-async def test_dice_roll_concurrent_second_attempt_loses_race(
+async def test_dice_roll_after_existing_roll_persists_second(
     sessionmaker: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Daily cap removed: a second roll on the same day persists another DiceRound."""
     monkeypatch.setattr("app.bot.router_games.DICE_ANIMATION_DELAY", 0.0)
     svc = DiceGameService(sessionmaker)
-    # Pre-seed today's round
     from datetime import datetime
     await svc.record_roll(
         chat_id=-100, user_id=10, picks=[3], dice_value=4,
@@ -551,12 +607,12 @@ async def test_dice_roll_concurrent_second_attempt_loses_race(
     bot = _fake_bot()
     sent_dice = MagicMock(message_id=777, dice=MagicMock(value=5))
     bot.send_dice = AsyncMock(return_value=sent_dice)
-    cb, msg, answer = _fake_callback(data="dice:roll:10:3", from_user_id=10)
+    cb, _msg, answer = _fake_callback(data="dice:roll:10:3", from_user_id=10)
 
     await on_dice_callback(cb, bot=bot, dice_game=svc)
 
-    # Second roll attempt: dice rolled but record fails → user told it didn't burn the day
     answer.assert_called()
-    bot.send_message.assert_called()
-    text = bot.send_message.call_args.kwargs.get("text") or ""
-    assert "уже бросал" in text.lower()
+    from app.models import DiceRound
+    async with sessionmaker() as session:
+        rounds = (await session.execute(select(DiceRound))).scalars().all()
+    assert len(rounds) == 2

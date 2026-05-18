@@ -37,58 +37,6 @@ def test_get_lock_returns_same_instance(sessionmaker):
 
 
 @pytest.mark.asyncio
-async def test_cooldown_returns_none_when_no_runs(sessionmaker):
-    svc = _make_svc(sessionmaker)
-    remaining = await svc._remaining_cooldown(chat_id=42, now=datetime(2026, 5, 16, 12, 0, 0))
-    assert remaining is None
-
-
-@pytest.mark.asyncio
-async def test_cooldown_returns_none_when_last_run_older_than_24h(sessionmaker):
-    chat_id = 42
-    async with sessionmaker() as session:
-        session.add(RoastRun(
-            chat_id=chat_id, target_user_id=100, initiator_user_id=200,
-            target_username="andrew",
-            run_at=datetime(2026, 5, 15, 11, 0, 0),  # 25h ago
-        ))
-        await session.commit()
-    svc = _make_svc(sessionmaker)
-    remaining = await svc._remaining_cooldown(chat_id=chat_id, now=datetime(2026, 5, 16, 12, 0, 0))
-    assert remaining is None
-
-
-@pytest.mark.asyncio
-async def test_cooldown_returns_remaining_when_within_24h(sessionmaker):
-    chat_id = 42
-    async with sessionmaker() as session:
-        session.add(RoastRun(
-            chat_id=chat_id, target_user_id=100, initiator_user_id=200,
-            target_username="andrew",
-            run_at=datetime(2026, 5, 16, 10, 0, 0),  # 2h ago
-        ))
-        await session.commit()
-    svc = _make_svc(sessionmaker)
-    remaining = await svc._remaining_cooldown(chat_id=chat_id, now=datetime(2026, 5, 16, 12, 0, 0))
-    assert remaining is not None
-    # 24h - 2h = 22h
-    assert remaining == timedelta(hours=22)
-
-
-@pytest.mark.asyncio
-async def test_cooldown_only_considers_this_chat(sessionmaker):
-    async with sessionmaker() as session:
-        session.add(RoastRun(
-            chat_id=99, target_user_id=1, initiator_user_id=2,
-            target_username="x", run_at=datetime(2026, 5, 16, 11, 0, 0),
-        ))
-        await session.commit()
-    svc = _make_svc(sessionmaker)
-    remaining = await svc._remaining_cooldown(chat_id=42, now=datetime(2026, 5, 16, 12, 0, 0))
-    assert remaining is None
-
-
-@pytest.mark.asyncio
 async def test_active_user_ids_returns_authors_with_text_in_7d(sessionmaker):
     chat_id = 42
     now = datetime(2026, 5, 16, 12, 0, 0)
@@ -573,30 +521,59 @@ async def test_run_happy_path_sends_and_persists(sessionmaker):
 
 
 @pytest.mark.asyncio
-async def test_run_blocks_when_cooldown_active(sessionmaker):
+async def test_run_proceeds_even_after_recent_run(sessionmaker):
+    """Daily cooldown removed: a recent run does not block a fresh /roast."""
     chat_id = 42
+    initiator = 200
+    target = 100
     now = datetime(2026, 5, 16, 12, 0, 0)
+
     async with sessionmaker() as session:
         session.add(RoastRun(
             chat_id=chat_id, target_user_id=1, initiator_user_id=2,
             target_username="prev", run_at=now - timedelta(hours=3),
         ))
+        session.add(User(tg_id=target, username="andrew"))
+        session.add(Message(
+            chat_id=chat_id, message_id=1, user_id=target, text="hi",
+            reply_to_id=None, date=now - timedelta(days=1), is_bot=False,
+        ))
         await session.commit()
 
     bot = AsyncMock()
+    member = type("M", (), {})()
+    member.status = ChatMemberStatus.MEMBER
+    member.user = type("U", (), {})()
+    member.user.first_name = "Андрей"
+    member.user.username = "andrew"
+    member.user.is_bot = False
+    bot.get_chat_member = AsyncMock(return_value=member)
     bot.send_message = AsyncMock()
-    svc = _make_svc(sessionmaker, bot=bot)
 
-    await svc.run(chat_id=chat_id, initiator_id=200, target_arg=None, now=now)
+    personas = create_autospec(StylePromptService, instance=True)
+    personas.get = AsyncMock(return_value="persona")
+    settings = create_autospec(SettingsService, instance=True)
+    settings.get_all = AsyncMock(return_value={"style": "gopnik"})
+    app_config = create_autospec(AppConfigService, instance=True)
+    app_config.get_all = AsyncMock(return_value={})
 
-    bot.send_message.assert_awaited_once()
-    call = bot.send_message.call_args
-    sent_text = call.kwargs.get("text", call.args[1] if len(call.args) > 1 else None)
-    assert "21" in sent_text  # 24h - 3h = 21h remaining
-    # Никакой новой записи
+    svc = _make_svc(
+        sessionmaker, bot=bot, personas=personas, settings=settings, app_config=app_config,
+    )
+
+    import unittest.mock as um
+
+    async def fake_gen(messages, **kwargs):
+        return "Жёстко."
+
+    with um.patch("app.services.roast.llm_generate", fake_gen), \
+         um.patch("app.services.roast.asyncio.sleep", AsyncMock()):
+        await svc.run(chat_id=chat_id, initiator_id=initiator, target_arg="@andrew", now=now)
+
+    # New run persisted alongside the old one
     async with sessionmaker() as session:
         rows = (await session.execute(select(RoastRun))).scalars().all()
-    assert len(rows) == 1  # только предыдущая
+    assert len(rows) == 2
 
 
 @pytest.mark.asyncio
@@ -617,7 +594,7 @@ async def test_run_sends_refusal_when_target_unknown(sessionmaker):
 
 
 @pytest.mark.asyncio
-async def test_run_llm_failure_sends_fallback_and_skips_cooldown(sessionmaker):
+async def test_run_llm_failure_sends_fallback_and_skips_persist(sessionmaker):
     chat_id = 42
     initiator = 200
     target = 100
@@ -674,7 +651,7 @@ async def test_run_llm_failure_sends_fallback_and_skips_cooldown(sessionmaker):
     assert ("LLM" in fallback_text or "обмороке" in fallback_text.lower()
             or "позже" in fallback_text.lower())
 
-    # КУЛДАУН НЕ ЗАПИСАН
+    # LLM-failure path doesn't persist a run row
     async with sessionmaker() as session:
         rows = (await session.execute(select(RoastRun))).scalars().all()
     assert rows == []
@@ -682,7 +659,7 @@ async def test_run_llm_failure_sends_fallback_and_skips_cooldown(sessionmaker):
 
 @pytest.mark.asyncio
 async def test_run_per_chat_lock_serializes_concurrent_calls(sessionmaker):
-    """Second concurrent call sees the first run's RoastRun → cooldown refusal."""
+    """Per-chat lock serialises concurrent /roast calls; both now succeed (no daily cap)."""
     chat_id = 42
     initiator = 200
     target = 100
@@ -722,32 +699,30 @@ async def test_run_per_chat_lock_serializes_concurrent_calls(sessionmaker):
     proceed = asyncio.Event()
 
     async def slow_gen(messages, **kwargs):
-        started.set()
-        await proceed.wait()
+        # First call signals + waits; subsequent calls return immediately
+        if not started.is_set():
+            started.set()
+            await proceed.wait()
         return "Жёстко."
 
-    async def runner():
-        with um.patch("app.services.roast.llm_generate", slow_gen), \
-             um.patch("app.services.roast.asyncio.sleep", AsyncMock()):
-            await svc.run(
-                chat_id=chat_id, initiator_id=initiator,
-                target_arg="@andrew", now=now,
-            )
+    with um.patch("app.services.roast.llm_generate", slow_gen), \
+         um.patch("app.services.roast.asyncio.sleep", AsyncMock()):
+        first = asyncio.create_task(svc.run(
+            chat_id=chat_id, initiator_id=initiator,
+            target_arg="@andrew", now=now,
+        ))
+        await started.wait()
+        # Second call should queue on the same per-chat lock
+        second = asyncio.create_task(svc.run(
+            chat_id=chat_id, initiator_id=initiator,
+            target_arg="@andrew", now=now,
+        ))
+        # Let the first complete
+        proceed.set()
+        await asyncio.gather(first, second)
 
-    first = asyncio.create_task(runner())
-    await started.wait()
-    # Second call should queue on the same lock
-    second = asyncio.create_task(svc.run(
-        chat_id=chat_id, initiator_id=initiator,
-        target_arg="@andrew", now=now,
-    ))
-    # Let the first complete
-    proceed.set()
-    await asyncio.gather(first, second)
-
-    # Exactly one RoastRun row
+    # Both calls completed: 2 RoastRun rows + 4 messages (announcement + body × 2)
     async with sessionmaker() as session:
         rows = (await session.execute(select(RoastRun))).scalars().all()
-    assert len(rows) == 1
-    # 3 send_messages: announcement + body from first call, cooldown refusal from second
-    assert bot.send_message.await_count == 3
+    assert len(rows) == 2
+    assert bot.send_message.await_count == 4

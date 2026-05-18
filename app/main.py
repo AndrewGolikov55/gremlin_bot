@@ -25,6 +25,7 @@ from .bot.router_triggers import router as triggers_router
 from .bot.router_fun import router as fun_router
 from .bot.router_interjector import router as interjector_router
 from .bot.router_games import router as games_router
+from .bot.router_games_extra import router as games_extra_router
 from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
 from .admin import create_admin_router
 
@@ -48,6 +49,11 @@ from .services.ship import ShipService
 from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
 from .services.roast import RoastService
 from .services.quotebook import QuotebookService
+from .services.quick_games import QuickGameService
+from .services.games.akinator import AkinatorService
+from .services.games.wordchain import WordchainService
+from .services.games.rapbattle import RapbattleService
+from .services.games.storychain import StorychainService
 from .services.release_broadcast import ReleaseBroadcaster
 from .utils.version import get_version
 from zoneinfo import ZoneInfo
@@ -167,12 +173,38 @@ quotebook_service = QuotebookService(
     settings=settings_service,
     app_config=app_config_service,
 )
+quick_games_service = QuickGameService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    personas=persona_service,
+    settings=settings_service,
+    app_config=app_config_service,
+)
+akinator_service = AkinatorService(
+    sessionmaker=async_sessionmaker, bot=bot, app_config=app_config_service,
+)
+wordchain_service = WordchainService(sessionmaker=async_sessionmaker, bot=bot)
+rapbattle_service = RapbattleService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    personas=persona_service,
+    settings=settings_service,
+    app_config=app_config_service,
+)
+storychain_service = StorychainService(
+    sessionmaker=async_sessionmaker,
+    bot=bot,
+    personas=persona_service,
+    settings=settings_service,
+    app_config=app_config_service,
+)
 
 # Routers — order matters: command routers MUST be registered before triggers_router,
 # which has a catch-all @router.message(F.text) that consumes any text message.
 dp.include_router(admin_router)
 dp.include_router(fun_router)
 dp.include_router(games_router)
+dp.include_router(games_extra_router)
 dp.include_router(triggers_router)
 dp.include_router(interjector_router)
 
@@ -195,22 +227,27 @@ interjector_service = InterjectorService(
 )
 dp.update.middleware(
     ServicesMiddleware(
-        settings_service,
-        context_service,
-        interjector_service,
-        persona_service,
-        app_config_service,
-        reaction_service,
-        roulette_service,
-        usage_limits_service,
-        user_memory_service,
-        spontaneity_policy,
-        guess_game_service,
-        dice_game_service,
-        monthly_champion_service,
-        roast_service,
-        ship_service,
-        quotebook_service,
+        settings=settings_service,
+        context=context_service,
+        interjector=interjector_service,
+        personas=persona_service,
+        app_config=app_config_service,
+        reactions=reaction_service,
+        roulette=roulette_service,
+        usage_limits=usage_limits_service,
+        memory=user_memory_service,
+        policy=spontaneity_policy,
+        guess_game=guess_game_service,
+        dice_game=dice_game_service,
+        monthly_champion=monthly_champion_service,
+        roast=roast_service,
+        ship=ship_service,
+        quotebook=quotebook_service,
+        quick_games=quick_games_service,
+        akinator=akinator_service,
+        wordchain=wordchain_service,
+        rapbattle=rapbattle_service,
+        storychain=storychain_service,
     )
 )
 scheduler = get_scheduler()
@@ -269,6 +306,7 @@ async def _process_update_in_background(update_obj: Update) -> None:
 async def on_startup():
     await persona_service.ensure_defaults()
     await configure_bot_commands(bot)
+    await _recover_stale_game_rounds()
 
     if PUBLIC_BASE_URL and not USE_POLLING:
         # Configure webhook with secret header. allowed_updates must be passed explicitly:
@@ -454,14 +492,41 @@ def inc_messages():
     METRIC_MESSAGES.inc()
 
 
+async def _recover_stale_game_rounds() -> None:
+    """Sweep open game rounds left dangling by an unexpected bot restart.
+
+    Per-process orchestration (asyncio.create_task timers) doesn't survive a
+    restart, so any LOBBY/ACTIVE/VOTING/GENERATING/FINALISING row whose timer
+    is gone would block new rounds via the partial unique indexes. Each
+    service decides its own staleness threshold.
+    """
+    services = (
+        ("storychain", storychain_service),
+        ("wordchain", wordchain_service),
+        ("akinator", akinator_service),
+        ("rapbattle", rapbattle_service),
+    )
+    for name, svc in services:
+        try:
+            recovered = await svc.recover_stale()
+            if recovered:
+                logger.info("recover_stale.%s expired=%s", name, recovered)
+        except Exception:
+            logger.exception("recover_stale.%s failed", name)
+
+
 async def configure_bot_commands(bot: Bot) -> None:
+    # Convention (CHANGELOG v0.12.4): only /games is exposed in the autocomplete
+    # popup. All individual game commands (/dice, /guess, /ship, /truth,
+    # /wisdom, /akinator, /wordchain, /rapbattle, /storychain) remain invokable
+    # but are reachable through the /games menu to keep the suggestion list short.
     commands = [
         BotCommand(command="settings", description="Панель настроек"),
         BotCommand(command="relationships", description="Отношения к участникам"),
         BotCommand(command="roll", description="Запустить рулетку"),
         BotCommand(command="rollstats_montly", description="Статистика рулетки за месяц"),
         BotCommand(command="rollstats_total", description="Статистика рулетки за всё время"),
-        BotCommand(command="games", description="Меню игр (кости, угадайка, шипперинг)"),
+        BotCommand(command="games", description="Меню игр (кости, угадайка, акинатор и др.)"),
         BotCommand(command="summary", description="Сводка обсуждения"),
         BotCommand(command="reg", description="Зарегистрироваться в рулетке"),
         BotCommand(command="unreg", description="Выйти из рулетки"),
