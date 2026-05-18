@@ -3,6 +3,29 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] - 2026-05-18
+
+### Fixed
+
+- Хотфикс v0.13.0: `/akinator` падал на старте раунда с
+  `TelegramBadRequest: can't parse entities: Unsupported start tag "вопрос"`,
+  потому что в подсказке `«Задавайте вопросы yes/no через /akinator_ask
+  <вопрос>»` Telegram парсил `<вопрос>` как открывающий HTML-тег (бот
+  работает с глобальным `parse_mode=HTML`). Раунд при этом записывался в
+  БД (`active`) и блокировал новые попытки. Те же `<...>` шаблоны были и в
+  `/wordchain` (`<слово>`) и `/storychain` (`<предложение>`) — тоже
+  чинились бы тем же способом. Заменено на «...»-кавычки в шаблонах + по
+  всем стейтфул-играм (akinator/storychain/wordchain/rapbattle) обёрнут
+  `html.escape()` вокруг динамических вставок (display name, seed,
+  contribution text, finale, опасные имена пользователей) — пользователь
+  с `<` в `first_name` или LLM с `<` в seed/финале больше не валит
+  сообщение.
+
+### Internal
+
+- Регрессионный тест `test_start_announcement_has_no_unescaped_angle_brackets`
+  — ловит шаблоны вида `<слово>` в исходящих сообщениях стейтфул-игр.
+
 ## [0.13.0] - 2026-05-18
 
 > Автор: [@folexz](https://github.com/folexz) — PR [#3](https://github.com/AndrewGolikov55/gremlin_bot/pull/3).

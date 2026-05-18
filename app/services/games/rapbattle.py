@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from html import escape
 
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
@@ -163,7 +164,8 @@ class RapbattleService:
         a_display, _ = await self._resolve(chat_id=chat_id, user_id=initiator_id)
         b_display, _ = await self._resolve(chat_id=chat_id, user_id=opponent_uid)
         await self.bot.send_message(
-            chat_id, f"🎤 Рэп-баттл: <b>{a_display}</b> vs <b>{b_display}</b>. Поехали!",
+            chat_id,
+            f"🎤 Рэп-баттл: <b>{escape(a_display)}</b> vs <b>{escape(b_display)}</b>. Поехали!",
         )
 
         persona = await self._persona_prompt(chat_id)
@@ -201,7 +203,8 @@ class RapbattleService:
                 verses.append({"round": round_no, "by": side, "text": text})
                 display = a_display if side == "a" else b_display
                 await self.bot.send_message(
-                    chat_id, f"🎤 <b>{display}</b> (раунд {round_no}):\n\n{text}",
+                    chat_id,
+                    f"🎤 <b>{escape(display)}</b> (раунд {round_no}):\n\n{escape(text)}",
                 )
                 await asyncio.sleep(1.0)
 
@@ -288,10 +291,10 @@ class RapbattleService:
             outcome_text = "🤝 Ничья!"
             winner_id: int | None = None
         elif counts[0] > counts[1]:
-            outcome_text = f"🏆 Победил {a_display}! +1 к рулетке."
+            outcome_text = f"🏆 Победил {escape(a_display)}! +1 к рулетке."
             winner_id = a_id
         else:
-            outcome_text = f"🏆 Победил {b_display}! +1 к рулетке."
+            outcome_text = f"🏆 Победил {escape(b_display)}! +1 к рулетке."
             winner_id = b_id
 
         async with self.sessionmaker() as session:

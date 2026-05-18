@@ -5,6 +5,7 @@ import logging
 import random
 import re
 from datetime import datetime, timedelta
+from html import escape
 
 from aiogram import Bot
 from sqlalchemy import select, update
@@ -85,9 +86,9 @@ class WordchainService:
         await self.bot.send_message(
             chat_id,
             f"🔗 Цепочка слов начата!\n"
-            f"Стартовое слово: <b>{seed}</b>\n"
+            f"Стартовое слово: <b>{escape(seed)}</b>\n"
             f"Каждое следующее слово — существительное в им. падеже, начинается на «{_meaningful_last_letter(seed).upper()}», "
-            f"без повторов. Играйте: /wordchain_play <слово>.\n"
+            f"без повторов. Играйте: /wordchain_play «слово».\n"
             f"На ход {TURN_TIMEOUT_SECONDS} сек.",
         )
         self._reset_timer(chat_id=chat_id, round_id=round_id)
@@ -137,7 +138,7 @@ class WordchainService:
                     round_id = round_.id
         await self.bot.send_message(
             chat_id,
-            f"✅ <b>{word}</b> — следующее на «{_meaningful_last_letter(word).upper()}».",
+            f"✅ <b>{escape(word)}</b> — следующее на «{_meaningful_last_letter(word).upper()}».",
         )
         self._reset_timer(chat_id=chat_id, round_id=round_id)
 
@@ -189,7 +190,7 @@ class WordchainService:
                 last_word = round_.last_word
         await self.bot.send_message(
             chat_id,
-            f"⌛ Время вышло. Последнее слово: <b>{last_word}</b>. Цепочка закрыта.",
+            f"⌛ Время вышло. Последнее слово: <b>{escape(last_word or '')}</b>. Цепочка закрыта.",
         )
 
     async def recover_stale(self, *, now: datetime | None = None) -> int:

@@ -416,10 +416,10 @@ _NOOP_HINTS = {
     "roast": "Вызови команду /roast (можно с @username или в реплае).",
     "truth": "Вызови команду /truth (можно с @username или в реплае).",
     "wisdom": "Вызови команду /wisdom.",
-    "akinator": "Старт через /akinator, далее /akinator_ask <вопрос>.",
-    "wordchain": "Старт через /wordchain, ходы — /wordchain_play <слово>.",
+    "akinator": "Старт через /akinator, далее /akinator_ask «вопрос».",
+    "wordchain": "Старт через /wordchain, ходы — /wordchain_play «слово».",
     "rapbattle": "Вызови /rapbattle @opponent.",
-    "storychain": "Старт через /storychain, вклад — /storychain_add <текст>.",
+    "storychain": "Старт через /storychain, вклад — /storychain_add «текст».",
 }
 
 

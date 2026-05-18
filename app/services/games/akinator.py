@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime, timedelta
+from html import escape
 
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
@@ -122,7 +123,7 @@ class AkinatorService:
         await self.bot.send_message(
             chat_id,
             f"🤔 Я загадал участника этого чата.\n"
-            f"Задавайте вопросы yes/no через /akinator_ask <вопрос>.\n"
+            f"Задавайте вопросы yes/no через /akinator_ask «вопрос».\n"
             f"Угадывайте через /akinator_guess @username.\n"
             f"Лимит — {MAX_QUESTIONS} вопросов.",
         )
@@ -264,7 +265,7 @@ class AkinatorService:
                 )
             ).scalar_one_or_none()
         if target_uid is None:
-            await self.bot.send_message(chat_id, f"Не знаю @{raw}.")
+            await self.bot.send_message(chat_id, f"Не знаю @{escape(raw)}.")
             return
 
         async with self._lock(chat_id):
@@ -292,12 +293,15 @@ class AkinatorService:
             asker_display, asker_username = await self._resolve_display(
                 chat_id=chat_id, user_id=asker_id,
             )
-            mention = f"@{asker_username}" if asker_username else asker_display
+            mention = (
+                f"@{escape(asker_username)}" if asker_username else escape(asker_display)
+            )
             await self.bot.send_message(
-                chat_id, f"🎉 В точку! Был загадан {display}. Угадал — {mention}.",
+                chat_id,
+                f"🎉 В точку! Был загадан {escape(display)}. Угадал — {mention}.",
             )
         else:
-            await self.bot.send_message(chat_id, f"❌ Нет, не @{raw}.")
+            await self.bot.send_message(chat_id, f"❌ Нет, не @{escape(raw)}.")
 
     async def _finish_lost(self, *, chat_id: int) -> None:
         async with self.sessionmaker() as session:
@@ -314,7 +318,7 @@ class AkinatorService:
         display, _ = await self._resolve_display(chat_id=chat_id, user_id=target_uid)
         await self.bot.send_message(
             chat_id,
-            f"⏱ Вопросы кончились. Был загадан {display}. Команда проиграла.",
+            f"⏱ Вопросы кончились. Был загадан {escape(display)}. Команда проиграла.",
         )
 
     async def recover_stale(self, *, now: datetime | None = None) -> int:

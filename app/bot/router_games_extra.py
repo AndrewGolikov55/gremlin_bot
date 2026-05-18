@@ -129,7 +129,7 @@ async def cmd_wordchain_play(
         return
     arg = (command.args or "").strip().split()
     if not arg:
-        await message.answer("Скажи одно слово: /wordchain_play кот")
+        await message.answer("Скажи одно слово: /wordchain_play «кот»")
         return
     await wordchain.play(
         chat_id=message.chat.id, user_id=message.from_user.id, raw_word=arg[0],

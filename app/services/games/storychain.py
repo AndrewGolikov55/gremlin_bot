@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from html import escape
 
 from aiogram import Bot
 from sqlalchemy import func, select, update
@@ -117,8 +118,8 @@ class StorychainService:
         msg = await self.bot.send_message(
             chat_id,
             f"📖 Сторичейн начат! Цель — {target} вкладов.\n\n"
-            f"<i>{seed}</i>\n\n"
-            f"Продолжайте по очереди через /storychain_add <предложение>.",
+            f"<i>{escape(seed)}</i>\n\n"
+            f"Продолжайте по очереди через /storychain_add «предложение».",
         )
         async with self.sessionmaker() as session:
             await session.execute(
@@ -154,7 +155,7 @@ class StorychainService:
             # but no row leaks; if DB fails after publish, the chat sees the line and
             # we log — better than holding a connection open across a Telegram call.
             try:
-                msg = await self.bot.send_message(chat_id, f"➕ <i>{text}</i>")
+                msg = await self.bot.send_message(chat_id, f"➕ <i>{escape(text)}</i>")
             except Exception:
                 logger.exception("storychain: send_message failed chat=%s", chat_id)
                 return
@@ -227,7 +228,7 @@ class StorychainService:
             )
             await session.commit()
 
-        await self.bot.send_message(chat_id, f"📖 <b>Финал</b>:\n\n{finale}")
+        await self.bot.send_message(chat_id, f"📖 <b>Финал</b>:\n\n{escape(finale)}")
 
     async def stop(self, *, chat_id: int) -> None:
         async with self._lock(chat_id):

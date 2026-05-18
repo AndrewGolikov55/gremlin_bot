@@ -68,6 +68,29 @@ async def test_start_creates_active_round(sessionmaker):
 
 
 @pytest.mark.asyncio
+async def test_start_announcement_has_no_unescaped_angle_brackets(sessionmaker):
+    """Regression for v0.13.0 bug: '<вопрос>' in announcement was parsed as
+    an HTML tag by Telegram (parse_mode=HTML globally) and crashed send_message."""
+    svc = _make_svc(sessionmaker)
+    await _seed_profile(sessionmaker)
+    await svc.start(chat_id=42, initiator_id=200)
+
+    # Find the announcement send_message call (the one that mentions the user how to ask)
+    bot = svc.bot
+    calls = bot.send_message.await_args_list
+    announcements = [
+        c for c in calls
+        if "akinator_ask" in (c.args[1] if len(c.args) > 1 else c.kwargs.get("text", ""))
+    ]
+    assert announcements, "expected start announcement to be sent"
+    text = announcements[0].args[1] if len(announcements[0].args) > 1 else announcements[0].kwargs["text"]
+    # No raw <...word...> tags that Telegram would try to parse
+    import re as _re
+    bad = _re.findall(r"<[а-яёА-ЯЁ_]+>", text)
+    assert not bad, f"unescaped angle-bracket tags would crash HTML parser: {bad}"
+
+
+@pytest.mark.asyncio
 async def test_ask_increments_counter_and_persists_answer(sessionmaker):
     svc = _make_svc(sessionmaker)
     await _seed_profile(sessionmaker)
