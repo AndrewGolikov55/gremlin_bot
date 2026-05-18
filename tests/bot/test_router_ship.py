@@ -165,11 +165,11 @@ from app.bot.router_games import (  # noqa: E402
 
 
 def test_ship_random_button_now_lives_in_quick_submenu() -> None:
-    top = build_games_menu_markup()
+    top = build_games_menu_markup(opener_id=1)
     top_callbacks = [b.callback_data for row in top.inline_keyboard for b in row]
     assert "games:ship_random" not in top_callbacks  # moved out of root
 
-    quick = build_quick_submenu_markup()
+    quick = build_quick_submenu_markup(opener_id=1)
     flat = [b for row in quick.inline_keyboard for b in row]
     assert any(b.callback_data == "games:ship_random" for b in flat)
     assert any("Шипперинг" in b.text for b in flat)

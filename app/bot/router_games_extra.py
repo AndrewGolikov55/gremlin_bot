@@ -105,14 +105,23 @@ async def cmd_predict(
 
 # ---------------- /spy ----------------
 
+GROUP_ONLY_REFUSAL = "Игра доступна только в групповых чатах."
+
+
 def _require_group(message: types.Message) -> bool:
     return message.chat.type in {"group", "supergroup"} and message.from_user is not None
+
+
+async def _refuse_private(message: types.Message) -> None:
+    """Reply with a clear refusal when a group-only command is used in DM."""
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.answer(GROUP_ONLY_REFUSAL)
 
 
 @router.message(Command("spy"))
 async def cmd_spy(message: types.Message, spy: SpyService) -> None:
     if not _require_group(message):
-        await message.answer("Игра доступна только в групповых чатах.")
+        await _refuse_private(message)
         return
     await spy.start_lobby(chat_id=message.chat.id, initiator_id=message.from_user.id)
 
@@ -120,6 +129,7 @@ async def cmd_spy(message: types.Message, spy: SpyService) -> None:
 @router.message(Command("spy_join"))
 async def cmd_spy_join(message: types.Message, spy: SpyService) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     await spy.join(chat_id=message.chat.id, user_id=message.from_user.id)
 
@@ -127,6 +137,7 @@ async def cmd_spy_join(message: types.Message, spy: SpyService) -> None:
 @router.message(Command("spy_start"))
 async def cmd_spy_start(message: types.Message, spy: SpyService) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     await spy.start_round(chat_id=message.chat.id, initiator_id=message.from_user.id)
 
@@ -134,6 +145,7 @@ async def cmd_spy_start(message: types.Message, spy: SpyService) -> None:
 @router.message(Command("spy_vote"))
 async def cmd_spy_vote(message: types.Message, spy: SpyService) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     await spy.start_vote(chat_id=message.chat.id, initiator_id=message.from_user.id)
 
@@ -141,6 +153,7 @@ async def cmd_spy_vote(message: types.Message, spy: SpyService) -> None:
 @router.message(Command("spy_abort"))
 async def cmd_spy_abort(message: types.Message, spy: SpyService) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     await spy.abort(chat_id=message.chat.id, initiator_id=message.from_user.id)
 
@@ -166,7 +179,7 @@ async def cb_spy_reveal(query: types.CallbackQuery, spy: SpyService) -> None:
 @router.message(Command("akinator"))
 async def cmd_akinator(message: types.Message, akinator: AkinatorService) -> None:
     if not _require_group(message):
-        await message.answer("Игра доступна только в групповых чатах.")
+        await _refuse_private(message)
         return
     await akinator.start(chat_id=message.chat.id, initiator_id=message.from_user.id)
 
@@ -176,6 +189,7 @@ async def cmd_akinator_ask(
     message: types.Message, command: CommandObject, akinator: AkinatorService,
 ) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     question = (command.args or "").strip()
     await akinator.ask(
@@ -188,6 +202,7 @@ async def cmd_akinator_guess(
     message: types.Message, command: CommandObject, akinator: AkinatorService,
 ) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     arg = (command.args or "").strip().split()
     target = arg[0] if arg else None
@@ -205,7 +220,7 @@ async def cmd_akinator_guess(
 @router.message(Command("wordchain"))
 async def cmd_wordchain(message: types.Message, wordchain: WordchainService) -> None:
     if not _require_group(message):
-        await message.answer("Игра доступна только в групповых чатах.")
+        await _refuse_private(message)
         return
     await wordchain.start(chat_id=message.chat.id)
 
@@ -215,6 +230,7 @@ async def cmd_wordchain_play(
     message: types.Message, command: CommandObject, wordchain: WordchainService,
 ) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     arg = (command.args or "").strip().split()
     if not arg:
@@ -228,6 +244,7 @@ async def cmd_wordchain_play(
 @router.message(Command("wordchain_stop"))
 async def cmd_wordchain_stop(message: types.Message, wordchain: WordchainService) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     await wordchain.stop(chat_id=message.chat.id)
 
@@ -239,7 +256,7 @@ async def cmd_rapbattle(
     message: types.Message, command: CommandObject, rapbattle: RapbattleService,
 ) -> None:
     if not _require_group(message):
-        await message.answer("Игра доступна только в групповых чатах.")
+        await _refuse_private(message)
         return
     opponent_reply_id: int | None = None
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -261,14 +278,19 @@ async def cmd_storychain(
     message: types.Message, command: CommandObject, storychain: StorychainService,
 ) -> None:
     if not _require_group(message):
-        await message.answer("Игра доступна только в групповых чатах.")
+        await _refuse_private(message)
         return
     target: int | None = None
     if command.args:
+        raw = command.args.strip().split()[0]
         try:
-            target = int(command.args.strip().split()[0])
+            target = int(raw)
         except ValueError:
-            target = None
+            await message.answer(
+                f"Ожидал число вкладов (3–12), а получил «{raw}». "
+                "Запускаю без аргумента, чтобы не угадывать.",
+            )
+            return
     await storychain.start(chat_id=message.chat.id, target_contributions=target)
 
 
@@ -277,6 +299,7 @@ async def cmd_storychain_add(
     message: types.Message, command: CommandObject, storychain: StorychainService,
 ) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     text = (command.args or "").strip()
     await storychain.add(
@@ -287,5 +310,6 @@ async def cmd_storychain_add(
 @router.message(Command("storychain_stop"))
 async def cmd_storychain_stop(message: types.Message, storychain: StorychainService) -> None:
     if not _require_group(message):
+        await _refuse_private(message)
         return
     await storychain.stop(chat_id=message.chat.id)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
@@ -22,6 +22,15 @@ from .common import RoundStatus
 logger = logging.getLogger(__name__)
 
 MAX_QUESTIONS = 20
+MAX_ROUND_AGE = timedelta(hours=24)
+MAX_MESSAGE_CHARS = 240
+
+
+def _truncate(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
+    s = str(text)
+    if len(s) <= limit:
+        return s
+    return s[: limit - 1] + "…"
 
 SYSTEM_PROMPT = (
     "Ты ведущий игры «Акинатор». Бот загадал участника чата по его профилю и сообщениям.\n"
@@ -134,10 +143,18 @@ class AkinatorService:
         except (LLMError, LLMRateLimitError):
             logger.exception("akinator: LLM failed")
             return "unknown"
+        # Take the first alphabetic run, match exactly. Avoids substring traps:
+        # "not really" → first token "not" → unknown (instead of false "no");
+        # "approximately yes" → "approximately" → unknown (instead of false "yes").
         normalised = (text or "").strip().lower()
-        for token in ("yes", "no", "maybe", "unknown"):
-            if token in normalised:
-                return token
+        first = ""
+        for ch in normalised:
+            if ch.isalpha():
+                first += ch
+            elif first:
+                break
+        if first in {"yes", "no", "maybe", "unknown"}:
+            return first
         return "unknown"
 
     async def ask(self, *, chat_id: int, asker_id: int, question: str) -> None:
@@ -146,31 +163,34 @@ class AkinatorService:
             await self.bot.send_message(chat_id, "Задай вопрос текстом после команды.")
             return
 
-        async with self._lock(chat_id):
-            async with self.sessionmaker() as session:
-                round_ = await self._fetch_active(session, chat_id)
-                if round_ is None:
-                    await self.bot.send_message(chat_id, "Раунд Акинатора не идёт. /akinator чтобы запустить.")
-                    return
-                if round_.questions_asked >= MAX_QUESTIONS:
-                    return  # Should not happen; handled by closer
-                # Build LLM user prompt with target profile + messages
-                target_uid = round_.target_user_id
-                stmt = (
-                    select(Message.text)
-                    .where(
-                        Message.chat_id == chat_id,
-                        Message.user_id == target_uid,
-                        Message.is_bot.is_(False),
-                        func.length(Message.text) > 0,
-                    )
-                    .order_by(Message.date.desc())
-                    .limit(25)
-                )
-                rows = (await session.execute(stmt)).all()
-                profile = await session.get(UserMemoryProfile, (chat_id, target_uid))
+        # Atomically claim a question slot: increment counter only if there's
+        # capacity left. Returns the round + new counter value, or None if the
+        # round is gone / already at MAX_QUESTIONS.
+        claim = await self._claim_question_slot(chat_id)
+        if claim is None:
+            await self.bot.send_message(
+                chat_id, "Раунд Акинатора не идёт или вопросы кончились.",
+            )
+            return
+        round_id, target_uid, new_count = claim
 
-        messages_block = "\n".join(f"- {row[0]}" for row in rows) or "(нет сообщений)"
+        # Load target context outside any lock (read-only, can be slow)
+        async with self.sessionmaker() as session:
+            stmt = (
+                select(Message.text)
+                .where(
+                    Message.chat_id == chat_id,
+                    Message.user_id == target_uid,
+                    Message.is_bot.is_(False),
+                    func.length(Message.text) > 0,
+                )
+                .order_by(Message.date.desc())
+                .limit(25)
+            )
+            rows = (await session.execute(stmt)).all()
+            profile = await session.get(UserMemoryProfile, (chat_id, target_uid))
+
+        messages_block = "\n".join(f"- {_truncate(row[0])}" for row in rows) or "(нет сообщений)"
         identity = ", ".join(profile.identity or []) if profile else ""
         prefs = ", ".join(profile.preferences or []) if profile else ""
         projects = ", ".join(profile.projects or []) if profile else ""
@@ -189,25 +209,46 @@ class AkinatorService:
         answer = await self._llm_answer(system=SYSTEM_PROMPT, user=user_prompt)
 
         async with self.sessionmaker() as session:
-            async with session.begin():
-                round_ = await self._fetch_active(session, chat_id)
-                if round_ is None:
-                    return
-                session.add(AkinatorQuestion(
-                    round_id=round_.id,
-                    asker_user_id=asker_id,
-                    question=question,
-                    answer=answer,
-                ))
-                round_.questions_asked = round_.questions_asked + 1
-                await session.flush()
-                exhausted = round_.questions_asked >= MAX_QUESTIONS
+            session.add(AkinatorQuestion(
+                round_id=round_id,
+                asker_user_id=asker_id,
+                question=question,
+                answer=answer,
+            ))
+            await session.commit()
 
         emoji = {"yes": "✅", "no": "❌", "maybe": "🤷", "unknown": "❓"}.get(answer, "❓")
-        await self.bot.send_message(chat_id, f"{emoji} {answer} (вопросов: {round_.questions_asked}/{MAX_QUESTIONS})")
+        await self.bot.send_message(
+            chat_id, f"{emoji} {answer} (вопросов: {new_count}/{MAX_QUESTIONS})",
+        )
 
-        if exhausted:
+        if new_count >= MAX_QUESTIONS:
             await self._finish_lost(chat_id=chat_id)
+
+    async def _claim_question_slot(
+        self, chat_id: int,
+    ) -> tuple[int, int, int] | None:
+        """Atomically increment questions_asked if room is left.
+
+        Returns (round_id, target_user_id, new_counter_value) on success, None otherwise.
+        Single SQL statement → safe under concurrent /akinator_ask.
+        """
+        async with self.sessionmaker() as session:
+            async with session.begin():
+                result = await session.execute(
+                    update(AkinatorRound)
+                    .where(
+                        AkinatorRound.chat_id == chat_id,
+                        AkinatorRound.status == RoundStatus.ACTIVE.value,
+                        AkinatorRound.questions_asked < MAX_QUESTIONS,
+                    )
+                    .values(questions_asked=AkinatorRound.questions_asked + 1)
+                    .returning(AkinatorRound.id, AkinatorRound.target_user_id, AkinatorRound.questions_asked)
+                )
+                row = result.first()
+        if row is None:
+            return None
+        return int(row[0]), int(row[1]), int(row[2])
 
     async def guess(self, *, chat_id: int, asker_id: int, target_username: str | None) -> None:
         if not target_username:
@@ -248,7 +289,13 @@ class AkinatorService:
                     await session.commit()
         if correct:
             display, _ = await self._resolve_display(chat_id=chat_id, user_id=target_uid)
-            await self.bot.send_message(chat_id, f"🎉 В точку! Был загадан {display}. Угадал — {asker_id}.")
+            asker_display, asker_username = await self._resolve_display(
+                chat_id=chat_id, user_id=asker_id,
+            )
+            mention = f"@{asker_username}" if asker_username else asker_display
+            await self.bot.send_message(
+                chat_id, f"🎉 В точку! Был загадан {display}. Угадал — {mention}.",
+            )
         else:
             await self.bot.send_message(chat_id, f"❌ Нет, не @{raw}.")
 
@@ -269,6 +316,23 @@ class AkinatorService:
             chat_id,
             f"⏱ Вопросы кончились. Был загадан {display}. Команда проиграла.",
         )
+
+    async def recover_stale(self, *, now: datetime | None = None) -> int:
+        """Expire ACTIVE rounds older than MAX_ROUND_AGE (called at startup)."""
+        if now is None:
+            now = datetime.utcnow()
+        cutoff = now - MAX_ROUND_AGE
+        async with self.sessionmaker() as session:
+            result = await session.execute(
+                update(AkinatorRound)
+                .where(
+                    AkinatorRound.status == RoundStatus.ACTIVE.value,
+                    AkinatorRound.started_at < cutoff,
+                )
+                .values(status=RoundStatus.EXPIRED.value, finished_at=now)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     @staticmethod
     async def _fetch_active(session: AsyncSession, chat_id: int) -> AkinatorRound | None:

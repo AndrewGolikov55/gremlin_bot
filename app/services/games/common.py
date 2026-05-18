@@ -13,6 +13,7 @@ class RoundStatus(str, Enum):
     ABORTED = "aborted"
     WON = "won"
     LOST = "lost"
+    FINALISING = "finalising"
     FINALISED = "finalised"
 
 

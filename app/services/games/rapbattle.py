@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
@@ -30,6 +30,15 @@ from .common import RoundStatus
 logger = logging.getLogger(__name__)
 
 VOTE_OPEN_PERIOD = 60  # seconds
+ROUND_MAX_AGE = timedelta(minutes=30)
+MAX_MESSAGE_CHARS = 240
+
+
+def _truncate(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
+    s = str(text)
+    if len(s) <= limit:
+        return s
+    return s[: limit - 1] + "…"
 
 RAP_RULES = (
     "Жанр: рэп-баттл двух соперников. Сгенерируй ЧЕТЫРЕ строки рифмованного"
@@ -104,7 +113,7 @@ class RapbattleService:
                 .limit(15)
             )
             rows = (await session.execute(stmt)).all()
-        messages = [str(row[0]) for row in rows]
+        messages = [_truncate(row[0]) for row in rows]
         identity = list(profile.identity or []) if profile else []
         preferences = list(profile.preferences or []) if profile else []
         summary = (profile.summary if profile else None) or "—"
@@ -224,6 +233,26 @@ class RapbattleService:
             a_id=initiator_id, b_id=opponent_uid,
             a_display=a_display, b_display=b_display,
         ))
+
+    async def recover_stale(self, *, now: datetime | None = None) -> int:
+        """Mark GENERATING/VOTING rounds older than ROUND_MAX_AGE as finished w/o winner."""
+        if now is None:
+            now = datetime.utcnow()
+        cutoff = now - ROUND_MAX_AGE
+        async with self.sessionmaker() as session:
+            result = await session.execute(
+                update(RapbattleRound)
+                .where(
+                    RapbattleRound.status.in_([
+                        RoundStatus.GENERATING.value,
+                        RoundStatus.VOTING.value,
+                    ]),
+                    RapbattleRound.started_at < cutoff,
+                )
+                .values(status=RoundStatus.FINISHED.value, finished_at=now)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def _llm(self, *, system: str, user: str) -> str | None:
         conf = await self.app_config.get_all()

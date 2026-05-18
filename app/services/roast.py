@@ -50,10 +50,9 @@ def _format_target_mention(*, username: str | None, display_name: str) -> str:
 
 # Single-process deployment assumed: per-chat asyncio.Lock guards concurrent
 # /roast invocations inside one Python process. With multi-replica deployment
-# this lock does not synchronise — two replicas could simultaneously pass the
-# cooldown check, run two LLM calls and insert two roast_runs rows. If we ever
-# move to multi-replica, switch to a Postgres advisory lock or Redis-based
-# per-chat lock here.
+# this lock does not synchronise — two replicas could simultaneously run two
+# LLM calls and insert two roast_runs rows. If we ever move to multi-replica,
+# switch to a Postgres advisory lock or Redis-based per-chat lock here.
 
 
 @dataclass(frozen=True)
@@ -370,7 +369,7 @@ class RoastService:
             text = await self._llm_call(system=system, user=user)
 
             if not text or not text.strip():
-                # LLM down — do NOT consume cooldown.
+                # LLM down — do not persist a roast_runs row, just report.
                 await self._send(chat_id, self._llm_failure_fallback())
                 return
 

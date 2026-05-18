@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 
 revision = "20260518_01_new_games"
 down_revision = "20260516_05_ship_cache_clear"
@@ -135,7 +136,12 @@ def upgrade() -> None:
         sa.Column("chat_id", sa.BigInteger(), nullable=False),
         sa.Column("challenger_a_id", sa.BigInteger(), nullable=False),
         sa.Column("challenger_b_id", sa.BigInteger(), nullable=False),
-        sa.Column("verses", sa.JSON(), nullable=False, server_default="[]"),
+        sa.Column(
+            "verses",
+            postgresql.JSONB().with_variant(sa.JSON(), "sqlite"),
+            nullable=False,
+            server_default="[]",
+        ),
         sa.Column("poll_id", sa.String(length=64), nullable=True),
         sa.Column("poll_message_id", sa.BigInteger(), nullable=True),
         sa.Column("status", sa.String(length=16), nullable=False),
@@ -173,7 +179,7 @@ def upgrade() -> None:
         "storychain_rounds",
         ["chat_id"],
         unique=True,
-        postgresql_where=text("status = 'active'"),
+        postgresql_where=text("status IN ('active','finalising')"),
     )
     op.create_table(
         "storychain_contributions",

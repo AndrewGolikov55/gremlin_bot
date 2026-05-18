@@ -22,11 +22,11 @@ from app.services.guess_game import GuessGameService, LLMPick
 
 
 def test_build_games_menu_returns_inline_keyboard_with_categories() -> None:
-    markup = build_games_menu_markup()
+    markup = build_games_menu_markup(opener_id=42)
     flat = [btn for row in markup.inline_keyboard for btn in row]
     callback_data = [btn.callback_data for btn in flat]
-    assert "games:cat:quick" in callback_data
-    assert "games:cat:multi" in callback_data
+    assert "games:cat:quick:42" in callback_data
+    assert "games:cat:multi:42" in callback_data
 
 
 def test_format_first_winner_message_mentions_user_and_penalty() -> None:
@@ -297,12 +297,61 @@ from app.services.dice_game import DiceGameService
 
 def test_build_games_menu_has_two_categories() -> None:
     """Top-level /games menu now only has Quick / Multi entries; specific games live in submenus."""
-    markup = build_games_menu_markup()
+    markup = build_games_menu_markup(opener_id=7)
     flat = [btn for row in markup.inline_keyboard for btn in row]
     assert len(flat) == 2
     callback_data = [btn.callback_data for btn in flat]
-    assert "games:cat:quick" in callback_data
-    assert "games:cat:multi" in callback_data
+    assert "games:cat:quick:7" in callback_data
+    assert "games:cat:multi:7" in callback_data
+
+
+def test_parse_menu_opener_extracts_id() -> None:
+    from app.bot.router_games import _parse_menu_opener
+    assert _parse_menu_opener("games:cat:root:42") == 42
+    assert _parse_menu_opener("games:cat:quick:7") == 7
+    # No opener encoded → None
+    assert _parse_menu_opener("games:cat:root") is None
+    assert _parse_menu_opener("games:cat:root:abc") is None
+    assert _parse_menu_opener(None) is None
+
+
+@pytest.mark.asyncio
+async def test_cb_games_cat_quick_rejects_foreign_clicker() -> None:
+    """Submenu navigation by a non-opener must be alerted and ignored."""
+    from app.bot.router_games import cb_games_cat_quick
+
+    answer = AsyncMock()
+    msg = MagicMock(spec=TgMessage)
+    msg.edit_text = AsyncMock()
+    cb = MagicMock(spec=CallbackQuery)
+    cb.data = "games:cat:quick:42"
+    cb.from_user = TgUser(id=99, is_bot=False, first_name="X")
+    cb.message = msg
+    cb.answer = answer
+
+    await cb_games_cat_quick(cb)
+
+    answer.assert_called_once()
+    assert answer.call_args.kwargs.get("show_alert") is True
+    msg.edit_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cb_games_cat_quick_accepts_opener() -> None:
+    from app.bot.router_games import cb_games_cat_quick
+
+    answer = AsyncMock()
+    msg = MagicMock(spec=TgMessage)
+    msg.edit_text = AsyncMock()
+    msg.chat = Chat(id=-1, type="supergroup")
+    cb = MagicMock(spec=CallbackQuery)
+    cb.data = "games:cat:quick:42"
+    cb.from_user = TgUser(id=42, is_bot=False, first_name="O")
+    cb.message = msg
+    cb.answer = answer
+
+    await cb_games_cat_quick(cb)
+    msg.edit_text.assert_awaited_once()
 
 
 def _fake_bot() -> MagicMock:
@@ -314,12 +363,11 @@ def _fake_bot() -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_open_dice_in_non_group_chat_refuses(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
     chat = Chat(id=42, type="private")
     user = TgUser(id=10, is_bot=False, first_name="A")
 
-    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot)
 
     bot.send_message.assert_called_once()
     text = bot.send_message.call_args.kwargs.get("text") or bot.send_message.call_args.args[1]
@@ -328,12 +376,11 @@ async def test_open_dice_in_non_group_chat_refuses(sessionmaker: async_sessionma
 
 @pytest.mark.asyncio
 async def test_open_dice_sends_keyboard_first_time(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
     bot = _fake_bot()
     chat = Chat(id=-100, type="supergroup")
     user = TgUser(id=10, is_bot=False, first_name="A")
 
-    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot)
 
     bot.send_message.assert_called_once()
     kwargs = bot.send_message.call_args.kwargs
@@ -364,7 +411,7 @@ async def test_open_dice_after_existing_roll_still_sends_keyboard(
     chat = Chat(id=-100, type="supergroup")
     user = TgUser(id=10, is_bot=False, first_name="A")
 
-    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot, dice_game=svc)
+    await _open_dice(chat=chat, user=user, reply_to_message_id=1, bot=bot)
 
     bot.send_message.assert_called_once()
     kwargs = bot.send_message.call_args.kwargs

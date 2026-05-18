@@ -114,3 +114,78 @@ async def test_max_questions_marks_lost(sessionmaker):
     async with sessionmaker() as session:
         rounds = (await session.execute(select(AkinatorRound))).scalars().all()
     assert rounds[0].status == "lost"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_asks_do_not_exceed_max_questions(sessionmaker):
+    """Atomic question slot claim — running N+5 parallel asks must cap at MAX_QUESTIONS."""
+    import asyncio
+    svc = _make_svc(sessionmaker)
+    await _seed_profile(sessionmaker)
+    await svc.start(chat_id=42, initiator_id=200)
+
+    async def fake_gen(messages, **kwargs):
+        # tiny pause to invite reordering
+        await asyncio.sleep(0)
+        return "no"
+
+    with um.patch("app.services.games.akinator.llm_generate", fake_gen):
+        await asyncio.gather(*[
+            svc.ask(chat_id=42, asker_id=200, question=f"q{i}")
+            for i in range(MAX_QUESTIONS + 5)
+        ])
+
+    async with sessionmaker() as session:
+        questions = (await session.execute(select(AkinatorQuestion))).scalars().all()
+        rounds = (await session.execute(select(AkinatorRound))).scalars().all()
+    assert len(questions) == MAX_QUESTIONS
+    assert rounds[0].questions_asked == MAX_QUESTIONS
+    assert rounds[0].status == "lost"
+
+
+@pytest.mark.asyncio
+async def test_llm_answer_parses_first_token_exactly(sessionmaker):
+    """'not really' must NOT be parsed as 'no' via substring; first token wins."""
+    svc = _make_svc(sessionmaker)
+
+    # Direct probe of the answer parser via the underlying coroutine
+    with um.patch(
+        "app.services.games.akinator.llm_generate",
+        AsyncMock(return_value="not really"),
+    ):
+        ans = await svc._llm_answer(system="s", user="u")
+    assert ans == "unknown"
+
+    with um.patch(
+        "app.services.games.akinator.llm_generate",
+        AsyncMock(return_value="yes, definitely"),
+    ):
+        ans = await svc._llm_answer(system="s", user="u")
+    assert ans == "yes"
+
+    with um.patch(
+        "app.services.games.akinator.llm_generate",
+        AsyncMock(return_value="approximately yes"),
+    ):
+        ans = await svc._llm_answer(system="s", user="u")
+    assert ans == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_expires_old_active(sessionmaker):
+    from datetime import datetime, timedelta
+
+    from app.services.games.akinator import MAX_ROUND_AGE
+
+    svc = _make_svc(sessionmaker)
+    await _seed_profile(sessionmaker)
+    await svc.start(chat_id=42, initiator_id=200)
+    async with sessionmaker() as session:
+        row = (await session.execute(select(AkinatorRound))).scalar_one()
+        row.started_at = datetime.utcnow() - MAX_ROUND_AGE - timedelta(hours=1)
+        await session.commit()
+    recovered = await svc.recover_stale()
+    assert recovered == 1
+    async with sessionmaker() as session:
+        row = (await session.execute(select(AkinatorRound))).scalar_one()
+    assert row.status == "expired"

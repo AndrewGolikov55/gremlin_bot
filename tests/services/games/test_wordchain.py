@@ -85,3 +85,49 @@ async def test_first_letter_mismatch_rejected(sessionmaker):
     async with sessionmaker() as session:
         words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
     assert "дом" not in words
+
+
+@pytest.mark.asyncio
+async def test_yo_is_normalised_to_e(sessionmaker):
+    """ёж and еж must collide via UNIQUE — normalised to the same string on input."""
+    from sqlalchemy import update
+    svc = _make_svc(sessionmaker)
+    await svc.start(chat_id=42)
+    # Need a last_word whose meaningful letter is "е" so "ёлка" (→ "елка") fits.
+    async with sessionmaker() as session:
+        round_ = (await session.execute(select(WordchainRound))).scalars().one()
+        await session.execute(
+            update(WordchainRound).where(WordchainRound.id == round_.id).values(last_word="поле")
+        )
+        await session.commit()
+    await svc.play(chat_id=42, user_id=200, raw_word="ёлка")
+    await svc.play(chat_id=42, user_id=201, raw_word="ёлка")  # ё→е, дубль
+    await svc.stop(chat_id=42)
+    async with sessionmaker() as session:
+        words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
+    assert words.count("елка") == 1
+    assert "ёлка" not in words
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_expires_old_active_rounds(sessionmaker):
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import update
+
+    from app.services.games.wordchain import RECOVERY_SLACK
+
+    svc = _make_svc(sessionmaker)
+    await svc.start(chat_id=42)
+    async with sessionmaker() as session:
+        await session.execute(
+            update(WordchainRound).values(
+                last_word_at=datetime.utcnow() - RECOVERY_SLACK - timedelta(seconds=10),
+            )
+        )
+        await session.commit()
+    recovered = await svc.recover_stale()
+    assert recovered == 1
+    async with sessionmaker() as session:
+        row = (await session.execute(select(WordchainRound))).scalar_one()
+    assert row.status == "expired"

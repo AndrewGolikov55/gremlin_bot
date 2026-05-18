@@ -46,6 +46,7 @@ class DbSessionMiddleware(BaseMiddleware):
 class ServicesMiddleware(BaseMiddleware):
     def __init__(
         self,
+        *,
         settings: SettingsService,
         context: ContextService,
         interjector: InterjectorService,

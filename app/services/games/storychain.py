@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -22,6 +22,7 @@ from .common import RoundStatus
 logger = logging.getLogger(__name__)
 
 DEFAULT_TARGET = 6
+MAX_ROUND_AGE = timedelta(hours=24)
 
 SEED_RULES = (
     "Сгенерируй ОДНО первое предложение для совместной истории в чате. "
@@ -84,7 +85,7 @@ class StorychainService:
         target = max(3, min(target, 12))
 
         async with self._lock(chat_id):
-            existing = await self._fetch_active(chat_id)
+            existing = await self._fetch_open(chat_id)
             if existing is not None:
                 await self.bot.send_message(
                     chat_id, "Сторичейн уже идёт. /storychain_stop чтобы закрыть.",
@@ -136,42 +137,67 @@ class StorychainService:
             await self.bot.send_message(chat_id, "Слишком длинно, до 500 символов.")
             return
 
+        should_finalise = False
+        round_id: int | None = None
         async with self._lock(chat_id):
             async with self.sessionmaker() as session:
+                round_ = await self._fetch_active(chat_id, session=session)
+                if round_ is None:
+                    await self.bot.send_message(
+                        chat_id, "Сторичейн не идёт. /storychain чтобы запустить.",
+                    )
+                    return
+                round_id = round_.id
+                round_target = round_.target_contributions
+
+            # Publish first, persist after. If Telegram fails, contribution is dropped
+            # but no row leaks; if DB fails after publish, the chat sees the line and
+            # we log — better than holding a connection open across a Telegram call.
+            try:
+                msg = await self.bot.send_message(chat_id, f"➕ <i>{text}</i>")
+            except Exception:
+                logger.exception("storychain: send_message failed chat=%s", chat_id)
+                return
+
+            async with self.sessionmaker() as session:
                 async with session.begin():
-                    round_ = await self._fetch_active(chat_id, session=session)
-                    if round_ is None:
-                        await self.bot.send_message(chat_id, "Сторичейн не идёт. /storychain чтобы запустить.")
-                        return
-                    msg = await self.bot.send_message(chat_id, f"➕ <i>{text}</i>")
                     session.add(StorychainContribution(
-                        round_id=round_.id,
+                        round_id=round_id,
                         user_id=user_id,
                         text=text,
                         message_id=msg.message_id,
                     ))
-                    count_stmt = select(StorychainContribution.id).where(
-                        StorychainContribution.round_id == round_.id
-                    )
-                    contributions = (await session.execute(count_stmt)).all()
-                    count = len(contributions) + 1  # включая только что добавленную? нет, она ещё во flush
-                    # повторно подсчитаем после flush
-                round_target = round_.target_contributions
-                round_id = round_.id
-            # Повторный пересчёт после коммита
-            async with self.sessionmaker() as session:
-                count_stmt = select(StorychainContribution.id).where(
-                    StorychainContribution.round_id == round_id
+                count_stmt = (
+                    select(func.count())
+                    .select_from(StorychainContribution)
+                    .where(StorychainContribution.round_id == round_id)
                 )
-                count = len((await session.execute(count_stmt)).all())
+                count = int((await session.execute(count_stmt)).scalar_one())
 
-        if count >= round_target:
+            if count >= round_target:
+                # CAS: atomically claim the finalise transition; only one caller wins.
+                async with self.sessionmaker() as session:
+                    async with session.begin():
+                        result = await session.execute(
+                            update(StorychainRound)
+                            .where(
+                                StorychainRound.id == round_id,
+                                StorychainRound.status == RoundStatus.ACTIVE.value,
+                            )
+                            .values(status=RoundStatus.FINALISING.value)
+                        )
+                        should_finalise = result.rowcount == 1  # type: ignore[attr-defined]
+
+        if should_finalise and round_id is not None:
             await self._finalise(chat_id=chat_id, round_id=round_id)
 
     async def _finalise(self, *, chat_id: int, round_id: int) -> None:
+        # Caller has already CAS-transitioned ACTIVE → FINALISING (single-winner).
         async with self.sessionmaker() as session:
             round_ = await session.get(StorychainRound, round_id)
-            if round_ is None or round_.status != RoundStatus.ACTIVE.value:
+            if round_ is None or round_.status not in {
+                RoundStatus.ACTIVE.value, RoundStatus.FINALISING.value,
+            }:
                 return
             contributions_stmt = (
                 select(StorychainContribution.text)
@@ -233,3 +259,47 @@ class StorychainService:
             async with self.sessionmaker() as s:
                 return (await s.execute(stmt)).scalar_one_or_none()
         return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def _fetch_open(
+        self, chat_id: int, *, session: AsyncSession | None = None,
+    ) -> StorychainRound | None:
+        """Active OR finalising — i.e. a row that should block a new start."""
+        stmt = (
+            select(StorychainRound)
+            .where(
+                StorychainRound.chat_id == chat_id,
+                StorychainRound.status.in_([
+                    RoundStatus.ACTIVE.value,
+                    RoundStatus.FINALISING.value,
+                ]),
+            )
+            .limit(1)
+        )
+        if session is None:
+            async with self.sessionmaker() as s:
+                return (await s.execute(stmt)).scalar_one_or_none()
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def recover_stale(self, *, now: datetime | None = None) -> int:
+        """Expire ACTIVE/FINALISING rounds older than MAX_ROUND_AGE.
+
+        Called at startup to clean up rounds whose in-process orchestration was
+        killed by a bot restart. Returns the number of rounds recovered.
+        """
+        if now is None:
+            now = datetime.utcnow()
+        cutoff = now - MAX_ROUND_AGE
+        async with self.sessionmaker() as session:
+            result = await session.execute(
+                update(StorychainRound)
+                .where(
+                    StorychainRound.status.in_([
+                        RoundStatus.ACTIVE.value,
+                        RoundStatus.FINALISING.value,
+                    ]),
+                    StorychainRound.started_at < cutoff,
+                )
+                .values(status=RoundStatus.EXPIRED.value, finalised_at=now)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]

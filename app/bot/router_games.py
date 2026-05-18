@@ -31,16 +31,16 @@ def _get_guess_lock(chat_id: int) -> asyncio.Lock:
 QUESTION_LIMIT = 300
 
 
-def build_games_menu_markup() -> types.InlineKeyboardMarkup:
+def build_games_menu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
-            [types.InlineKeyboardButton(text="🎲 Быстрые игры", callback_data="games:cat:quick")],
-            [types.InlineKeyboardButton(text="🎭 Совместные игры", callback_data="games:cat:multi")],
+            [types.InlineKeyboardButton(text="🎲 Быстрые игры", callback_data=f"games:cat:quick:{opener_id}")],
+            [types.InlineKeyboardButton(text="🎭 Совместные игры", callback_data=f"games:cat:multi:{opener_id}")],
         ]
     )
 
 
-def build_quick_submenu_markup() -> types.InlineKeyboardMarkup:
+def build_quick_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎲 Кости", callback_data="games:dice")],
@@ -51,12 +51,12 @@ def build_quick_submenu_markup() -> types.InlineKeyboardMarkup:
             [types.InlineKeyboardButton(text="🥠 Fortune (/fortune)", callback_data="games:noop:fortune")],
             [types.InlineKeyboardButton(text="📜 Wisdom (/wisdom)", callback_data="games:noop:wisdom")],
             [types.InlineKeyboardButton(text="🌌 Predict (/predict)", callback_data="games:noop:predict")],
-            [types.InlineKeyboardButton(text="🔙 Назад", callback_data="games:cat:root")],
+            [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"games:cat:root:{opener_id}")],
         ]
     )
 
 
-def build_multi_submenu_markup() -> types.InlineKeyboardMarkup:
+def build_multi_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
@@ -65,9 +65,22 @@ def build_multi_submenu_markup() -> types.InlineKeyboardMarkup:
             [types.InlineKeyboardButton(text="🔗 Wordchain (/wordchain)", callback_data="games:noop:wordchain")],
             [types.InlineKeyboardButton(text="🎤 Рэп-баттл (/rapbattle)", callback_data="games:noop:rapbattle")],
             [types.InlineKeyboardButton(text="📖 Storychain (/storychain)", callback_data="games:noop:storychain")],
-            [types.InlineKeyboardButton(text="🔙 Назад", callback_data="games:cat:root")],
+            [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"games:cat:root:{opener_id}")],
         ]
     )
+
+
+def _parse_menu_opener(data: str | None) -> int | None:
+    """Extract opener_id from a 'games:cat:<section>:<opener_id>' callback string."""
+    if not data:
+        return None
+    parts = data.split(":")
+    if len(parts) != 4:
+        return None
+    try:
+        return int(parts[3])
+    except ValueError:
+        return None
 
 
 # --- Dice game --------------------------------------------------------------
@@ -272,7 +285,12 @@ async def cmd_games(message: types.Message) -> None:
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Меню игр доступно только в групповых чатах.")
         return
-    await message.reply("🎮 Выбери игру:", reply_markup=build_games_menu_markup())
+    if message.from_user is None:
+        return
+    await message.reply(
+        "🎮 Выбери игру:",
+        reply_markup=build_games_menu_markup(opener_id=message.from_user.id),
+    )
 
 
 @router.message(Command("guess"))
@@ -342,31 +360,59 @@ async def cmd_ship(message: types.Message, bot: Bot, ship: ShipService) -> None:
     await message.reply(outcome.rendered_text)
 
 
-@router.callback_query(F.data == "games:cat:root")
+async def _guard_menu_opener(query: types.CallbackQuery) -> int | None:
+    """Validate that the click is from the user who opened the menu.
+
+    Returns the opener_id on success. Sends an alert and returns None otherwise.
+    """
+    opener_id = _parse_menu_opener(query.data)
+    if opener_id is None:
+        await query.answer()
+        return None
+    if query.from_user.id != opener_id:
+        await query.answer(
+            "🚫 Не твоё меню — открой своё через /games.", show_alert=True,
+        )
+        return None
+    return opener_id
+
+
+@router.callback_query(F.data.startswith("games:cat:root:"))
 async def cb_games_cat_root(query: types.CallbackQuery) -> None:
-    await query.answer()
-    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+    opener_id = await _guard_menu_opener(query)
+    if opener_id is None:
         return
-    await query.message.edit_text("🎮 Выбери игру:", reply_markup=build_games_menu_markup())
-
-
-@router.callback_query(F.data == "games:cat:quick")
-async def cb_games_cat_quick(query: types.CallbackQuery) -> None:
     await query.answer()
     if query.message is None or isinstance(query.message, types.InaccessibleMessage):
         return
     await query.message.edit_text(
-        "🎲 Быстрые игры:", reply_markup=build_quick_submenu_markup(),
+        "🎮 Выбери игру:", reply_markup=build_games_menu_markup(opener_id=opener_id),
     )
 
 
-@router.callback_query(F.data == "games:cat:multi")
-async def cb_games_cat_multi(query: types.CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("games:cat:quick:"))
+async def cb_games_cat_quick(query: types.CallbackQuery) -> None:
+    opener_id = await _guard_menu_opener(query)
+    if opener_id is None:
+        return
     await query.answer()
     if query.message is None or isinstance(query.message, types.InaccessibleMessage):
         return
     await query.message.edit_text(
-        "🎭 Совместные игры:", reply_markup=build_multi_submenu_markup(),
+        "🎲 Быстрые игры:", reply_markup=build_quick_submenu_markup(opener_id=opener_id),
+    )
+
+
+@router.callback_query(F.data.startswith("games:cat:multi:"))
+async def cb_games_cat_multi(query: types.CallbackQuery) -> None:
+    opener_id = await _guard_menu_opener(query)
+    if opener_id is None:
+        return
+    await query.answer()
+    if query.message is None or isinstance(query.message, types.InaccessibleMessage):
+        return
+    await query.message.edit_text(
+        "🎭 Совместные игры:", reply_markup=build_multi_submenu_markup(opener_id=opener_id),
     )
 
 
@@ -408,7 +454,6 @@ async def _open_dice(
     user: types.User,
     reply_to_message_id: int | None,
     bot: Bot,
-    dice_game: DiceGameService,
 ) -> None:
     if chat.type not in {"group", "supergroup"}:
         await bot.send_message(
@@ -416,8 +461,6 @@ async def _open_dice(
             text="⛔ Игра только в групповых чатах.",
         )
         return
-
-    now = datetime.utcnow()
 
     await bot.send_message(
         chat_id=chat.id,
@@ -428,23 +471,23 @@ async def _open_dice(
 
 
 @router.message(Command("dice"))
-async def cmd_dice(message: types.Message, bot: Bot, dice_game: DiceGameService) -> None:
+async def cmd_dice(message: types.Message, bot: Bot) -> None:
     if message.from_user is None:
         return
     await _open_dice(
         chat=message.chat, user=message.from_user,
-        reply_to_message_id=message.message_id, bot=bot, dice_game=dice_game,
+        reply_to_message_id=message.message_id, bot=bot,
     )
 
 
 @router.callback_query(F.data == "games:dice")
-async def cb_games_dice(query: types.CallbackQuery, bot: Bot, dice_game: DiceGameService) -> None:
+async def cb_games_dice(query: types.CallbackQuery, bot: Bot) -> None:
     await query.answer()
     if query.message is None or isinstance(query.message, types.InaccessibleMessage):
         return
     await _open_dice(
         chat=query.message.chat, user=query.from_user,
-        reply_to_message_id=query.message.message_id, bot=bot, dice_game=dice_game,
+        reply_to_message_id=query.message.message_id, bot=bot,
     )
 
 

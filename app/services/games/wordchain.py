@@ -4,7 +4,7 @@ import asyncio
 import logging
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 from sqlalchemy import select, update
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 WORD_RE = re.compile(r"^[а-яё]{2,30}$")
 TURN_TIMEOUT_SECONDS = 60
+RECOVERY_SLACK = timedelta(seconds=TURN_TIMEOUT_SECONDS * 2)
 
 # Hardcoded Russian noun seeds (nominative case, singular). Keep simple/common.
 SEED_WORDS: tuple[str, ...] = (
@@ -63,7 +64,8 @@ class WordchainService:
             if existing is not None:
                 await self.bot.send_message(chat_id, "Цепочка уже идёт. /wordchain_stop чтобы закрыть.")
                 return
-            seed = random.choice(SEED_WORDS)
+            # Normalise ё → е consistently with player input
+            seed = random.choice(SEED_WORDS).replace("ё", "е")
             try:
                 async with self.sessionmaker() as session:
                     async with session.begin():
@@ -91,7 +93,9 @@ class WordchainService:
         self._reset_timer(chat_id=chat_id, round_id=round_id)
 
     async def play(self, *, chat_id: int, user_id: int, raw_word: str) -> None:
-        word = raw_word.strip().lower().replace("ё", "ё")
+        # Normalise ё → е so "ёж" and "еж" don't compete as different words and
+        # so the last-letter rule treats them as the same letter class.
+        word = raw_word.strip().lower().replace("ё", "е")
         if not word:
             await self.bot.send_message(chat_id, "Пусто, скажи слово.")
             return
@@ -187,6 +191,27 @@ class WordchainService:
             chat_id,
             f"⌛ Время вышло. Последнее слово: <b>{last_word}</b>. Цепочка закрыта.",
         )
+
+    async def recover_stale(self, *, now: datetime | None = None) -> int:
+        """Expire ACTIVE rounds whose turn timer was lost on bot restart.
+
+        A round is considered stale if its last_word_at is older than 2× the
+        per-turn timeout. Returns the number of rounds expired.
+        """
+        if now is None:
+            now = datetime.utcnow()
+        cutoff = now - RECOVERY_SLACK
+        async with self.sessionmaker() as session:
+            result = await session.execute(
+                update(WordchainRound)
+                .where(
+                    WordchainRound.status == RoundStatus.ACTIVE.value,
+                    WordchainRound.last_word_at < cutoff,
+                )
+                .values(status=RoundStatus.EXPIRED.value, finished_at=now)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def _fetch_active(
         self, chat_id: int, *, session: AsyncSession | None = None,

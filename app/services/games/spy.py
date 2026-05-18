@@ -24,6 +24,10 @@ VOTE_OPEN_PERIOD = 60  # seconds
 MIN_PLAYERS = 3
 MAX_PLAYERS = 9  # Telegram poll caps at 10 options; we reserve 1 for "никто"
 
+# Reaper thresholds: anything in an open status older than these is abandoned.
+LOBBY_MAX_AGE = timedelta(hours=2)
+ACTIVE_MAX_AGE = timedelta(hours=1)
+
 
 @dataclass
 class _PlayerInfo:
@@ -314,6 +318,42 @@ class SpyService:
                 )
                 await session.commit()
         await self.bot.send_message(chat_id, "🎯 Игра в шпиона отменена.")
+
+    async def recover_stale(self, *, now: datetime | None = None) -> int:
+        """Expire LOBBY/ACTIVE/VOTING rounds whose orchestration was lost on restart."""
+        if now is None:
+            now = datetime.utcnow()
+        lobby_cutoff = now - LOBBY_MAX_AGE
+        active_cutoff = now - ACTIVE_MAX_AGE
+        async with self.sessionmaker() as session:
+            r1 = await session.execute(
+                update(SpyRound)
+                .where(
+                    SpyRound.status == RoundStatus.LOBBY.value,
+                    SpyRound.started_at < lobby_cutoff,
+                )
+                .values(
+                    status=RoundStatus.ABORTED.value,
+                    outcome="recovered_stale",
+                    finished_at=now,
+                )
+            )
+            r2 = await session.execute(
+                update(SpyRound)
+                .where(
+                    SpyRound.status.in_([RoundStatus.ACTIVE.value, RoundStatus.VOTING.value]),
+                    SpyRound.started_at < active_cutoff,
+                )
+                .values(
+                    status=RoundStatus.FINISHED.value,
+                    outcome="recovered_stale",
+                    finished_at=now,
+                )
+            )
+            await session.commit()
+            rc1 = int(r1.rowcount or 0)  # type: ignore[attr-defined]
+            rc2 = int(r2.rowcount or 0)  # type: ignore[attr-defined]
+            return rc1 + rc2
 
     # ---------- helpers ----------
 

@@ -23,8 +23,16 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_WINDOW = timedelta(days=7)
 MAX_MESSAGES = 25
+MAX_MESSAGE_CHARS = 240  # per-message cap before joining into LLM prompt
 LLM_MAX_TOKENS = 360
 LLM_TEMPERATURE = 0.95
+
+
+def _truncate(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
+    s = str(text)
+    if len(s) <= limit:
+        return s
+    return s[: limit - 1] + "…"
 
 
 COMMON_OUTPUT_RULES = (
@@ -95,7 +103,7 @@ def _format_list(items: list[str]) -> str:
 def _format_messages(items: list[str]) -> str:
     if not items:
         return "(нет текстовых сообщений)"
-    return "\n".join(f"{i}. {text}" for i, text in enumerate(items, start=1))
+    return "\n".join(f"{i}. {_truncate(text)}" for i, text in enumerate(items, start=1))
 
 
 class QuickGameService:
