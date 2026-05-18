@@ -6,6 +6,7 @@ from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 
 from ..services.games.akinator import AkinatorService
+from ..services.games.rapbattle import RapbattleService
 from ..services.games.spy import SpyService
 from ..services.games.wordchain import WordchainService
 from ..services.quick_games import QuickGameService
@@ -228,3 +229,25 @@ async def cmd_wordchain_stop(message: types.Message, wordchain: WordchainService
     if not _require_group(message):
         return
     await wordchain.stop(chat_id=message.chat.id)
+
+
+# ---------------- /rapbattle ----------------
+
+@router.message(Command("rapbattle"))
+async def cmd_rapbattle(
+    message: types.Message, command: CommandObject, rapbattle: RapbattleService,
+) -> None:
+    if not _require_group(message):
+        await message.answer("Игра доступна только в групповых чатах.")
+        return
+    opponent_reply_id: int | None = None
+    if message.reply_to_message and message.reply_to_message.from_user:
+        opponent_reply_id = message.reply_to_message.from_user.id
+    opponent_arg = (command.args or "").strip().split()
+    arg = opponent_arg[0] if opponent_arg else None
+    await rapbattle.start(
+        chat_id=message.chat.id,
+        initiator_id=message.from_user.id,
+        opponent_arg=arg,
+        opponent_reply_id=opponent_reply_id,
+    )
