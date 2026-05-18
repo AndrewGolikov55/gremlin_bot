@@ -11,7 +11,7 @@ from aiogram import Bot, F, Router, types
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 
-from ..services.dice_game import AlreadyPlayedTodayError, DiceGameService
+from ..services.dice_game import DiceGameService
 from ..services.guess_game import GuessGameService, NoCandidatesError, PreparedRound
 from ..services.ship import ShipService
 
@@ -189,9 +189,6 @@ async def _start_round(
 
     async with _get_guess_lock(chat.id):
         now = datetime.utcnow()
-        if not await guess_game.can_start_today(chat_id=chat.id, now=now):
-            await bot.send_message(chat.id, "На сегодня уже играли, приходите завтра.")
-            return
 
         try:
             prepared: PreparedRound = await guess_game.prepare_round(chat_id=chat.id, now=now)
@@ -342,13 +339,6 @@ async def _open_dice(
         return
 
     now = datetime.utcnow()
-    if not await dice_game.can_play_today(chat_id=chat.id, user_id=user.id, now=now):
-        await bot.send_message(
-            chat_id=chat.id,
-            text="⏳ Ты уже бросал сегодня, приходи завтра.",
-            reply_to_message_id=reply_to_message_id,
-        )
-        return
 
     await bot.send_message(
         chat_id=chat.id,
@@ -485,18 +475,11 @@ async def on_dice_callback(
                 dice_value=value, dice_message_id=dice_msg.message_id,
                 now=datetime.utcnow(),
             )
-        except AlreadyPlayedTodayError:
-            await bot.send_message(
-                chat_id=chat_id,
-                text="⏳ Ты уже бросал сегодня, приходи завтра.",
-                reply_to_message_id=dice_msg.message_id,
-            )
-            return
         except Exception:
             logger.exception("dice.record_roll failed chat=%s user=%s", chat_id, user_id)
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ Кубик показал {value}, но не смог записать — день не сгорел.",
+                text=f"⚠️ Кубик показал {value}, но не смог записать.",
                 reply_to_message_id=dice_msg.message_id,
             )
             return

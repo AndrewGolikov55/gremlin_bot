@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import DiceRound, RouletteScoreAdjustment
-from app.services.dice_game import AlreadyPlayedTodayError, DiceGameService, compute_delta
+from app.services.dice_game import DiceGameService, compute_delta
 
 
 def _utc(year: int, month: int, day: int, hour: int = 12) -> datetime:
@@ -16,67 +16,17 @@ def _utc(year: int, month: int, day: int, hour: int = 12) -> datetime:
 
 class TestComputeDelta:
     @pytest.mark.parametrize("picks,dice_value,expected", [
-        # win 1-pick → -2
         ([3], 3, -2),
         ([6], 6, -2),
-        # loss 1-pick → +2 (NEW)
         ([3], 4, 2),
         ([1], 2, 2),
-        # win 2-pick → -1
         ([1, 4], 1, -1),
         ([1, 4], 4, -1),
-        # loss 2-pick → +1 (NEW)
         ([1, 4], 5, 1),
         ([2, 5], 3, 1),
     ])
     def test_table(self, picks: list[int], dice_value: int, expected: int) -> None:
         assert compute_delta(picks, dice_value) == expected
-
-
-@pytest.mark.asyncio
-async def test_can_play_today_true_when_no_round(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
-    assert await svc.can_play_today(chat_id=-1, user_id=10, now=_utc(2026, 5, 16)) is True
-
-
-@pytest.mark.asyncio
-async def test_can_play_today_false_after_record(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
-    now = _utc(2026, 5, 16, hour=10)
-    await svc.record_roll(
-        chat_id=-1, user_id=10, picks=[3], dice_value=4,
-        dice_message_id=100, now=now,
-    )
-    assert await svc.can_play_today(chat_id=-1, user_id=10, now=now + timedelta(hours=2)) is False
-
-
-@pytest.mark.asyncio
-async def test_can_play_today_true_next_day(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
-    now = _utc(2026, 5, 16, hour=10)
-    await svc.record_roll(
-        chat_id=-1, user_id=10, picks=[3], dice_value=4,
-        dice_message_id=100, now=now,
-    )
-    # next Moscow day: roll at 22:00 UTC today is 01:00 MSK NEXT day → next day
-    next_day = _utc(2026, 5, 16, hour=22)
-    assert await svc.can_play_today(chat_id=-1, user_id=10, now=next_day) is True
-
-
-@pytest.mark.asyncio
-async def test_can_play_today_other_user_still_can_play(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
-    now = _utc(2026, 5, 16)
-    await svc.record_roll(chat_id=-1, user_id=10, picks=[3], dice_value=4, dice_message_id=100, now=now)
-    assert await svc.can_play_today(chat_id=-1, user_id=11, now=now) is True
-
-
-@pytest.mark.asyncio
-async def test_can_play_today_other_chat_still_can_play(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    svc = DiceGameService(sessionmaker)
-    now = _utc(2026, 5, 16)
-    await svc.record_roll(chat_id=-1, user_id=10, picks=[3], dice_value=4, dice_message_id=100, now=now)
-    assert await svc.can_play_today(chat_id=-2, user_id=10, now=now) is True
 
 
 @pytest.mark.asyncio
@@ -155,12 +105,22 @@ async def test_record_roll_loss_double_pick_writes_adjustment_plus_one(
 
 
 @pytest.mark.asyncio
-async def test_record_roll_twice_same_day_raises(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+async def test_record_roll_twice_same_day_both_succeed(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Daily cap removed: two rolls in the same day are both persisted."""
     svc = DiceGameService(sessionmaker)
     now = _utc(2026, 5, 16, hour=10)
-    await svc.record_roll(chat_id=-1, user_id=10, picks=[3], dice_value=4, dice_message_id=100, now=now)
-    with pytest.raises(AlreadyPlayedTodayError):
-        await svc.record_roll(
-            chat_id=-1, user_id=10, picks=[5], dice_value=2,
-            dice_message_id=101, now=now + timedelta(hours=1),
-        )
+    await svc.record_roll(
+        chat_id=-1, user_id=10, picks=[3], dice_value=4,
+        dice_message_id=100, now=now,
+    )
+    await svc.record_roll(
+        chat_id=-1, user_id=10, picks=[5], dice_value=2,
+        dice_message_id=101, now=now + timedelta(hours=1),
+    )
+    async with sessionmaker() as session:
+        rounds = (await session.execute(select(DiceRound))).scalars().all()
+        assert len(rounds) == 2
+        adjustments = (await session.execute(select(RouletteScoreAdjustment))).scalars().all()
+        assert len(adjustments) == 2

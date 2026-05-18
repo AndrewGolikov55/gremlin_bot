@@ -22,7 +22,6 @@ from .settings import SettingsService
 
 logger = logging.getLogger(__name__)
 
-COOLDOWN = timedelta(hours=24)
 ACTIVE_WINDOW = timedelta(days=7)
 MAX_MESSAGES = 30
 LLM_MAX_TOKENS = 280
@@ -93,27 +92,6 @@ class RoastService:
             lock = asyncio.Lock()
             self._chat_locks[chat_id] = lock
         return lock
-
-    async def _remaining_cooldown(
-        self, *, chat_id: int, now: datetime
-    ) -> timedelta | None:
-        """Return time left in the 24h cooldown, or None if a fresh roast is allowed."""
-        cutoff = now - COOLDOWN
-        async with self.sessionmaker() as session:
-            stmt = (
-                select(RoastRun.run_at)
-                .where(RoastRun.chat_id == chat_id, RoastRun.run_at >= cutoff)
-                .order_by(desc(RoastRun.run_at))
-                .limit(1)
-            )
-            last = (await session.execute(stmt)).scalar_one_or_none()
-        if last is None:
-            return None
-        elapsed = now - last
-        remaining = COOLDOWN - elapsed
-        if remaining <= timedelta(0):
-            return None
-        return remaining
 
     async def _active_user_ids(
         self,
@@ -334,14 +312,6 @@ class RoastService:
             return None
 
     @staticmethod
-    def _format_cooldown_refusal(remaining: timedelta) -> str:
-        total_seconds = int(remaining.total_seconds())
-        hours = max(1, (total_seconds + 1799) // 3600)  # round up, min 1
-        return (
-            f"Прожарка уже была сегодня, следующая через ~{hours} ч."
-        )
-
-    @staticmethod
     def _llm_failure_fallback() -> str:
         return "Прожарка не сложилась, LLM в обмороке. Попробуйте позже."
 
@@ -380,11 +350,6 @@ class RoastService:
             now = datetime.utcnow()
 
         async with self._get_lock(chat_id):
-            remaining = await self._remaining_cooldown(chat_id=chat_id, now=now)
-            if remaining is not None:
-                await self._send(chat_id, self._format_cooldown_refusal(remaining))
-                return
-
             target_uid, refusal = await self._resolve_target(
                 chat_id=chat_id, initiator_id=initiator_id,
                 target_arg=target_arg, now=now,

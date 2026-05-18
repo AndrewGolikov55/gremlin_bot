@@ -322,32 +322,6 @@ def _make_round_row(chat_id: int, *, started_at: datetime | None = None, poll_id
 
 
 @pytest.mark.asyncio
-async def test_can_start_today_blocks_when_round_today(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    chat_id = -300
-    async with sessionmaker() as session:
-        session.add(_make_round_row(chat_id, started_at=datetime.utcnow(), poll_id="p-cs1"))
-        await session.commit()
-
-    svc = _svc(sessionmaker)
-    assert (await svc.can_start_today(chat_id=chat_id, now=datetime.utcnow())) is False
-
-
-@pytest.mark.asyncio
-async def test_can_start_today_allows_when_round_yesterday(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    chat_id = -301
-    async with sessionmaker() as session:
-        session.add(_make_round_row(
-            chat_id,
-            started_at=datetime.utcnow() - timedelta(days=1, hours=12),
-            poll_id="p-cs2",
-        ))
-        await session.commit()
-
-    svc = _svc(sessionmaker)
-    assert (await svc.can_start_today(chat_id=chat_id, now=datetime.utcnow())) is True
-
-
-@pytest.mark.asyncio
 async def test_record_first_winner_inserts_adjustment(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     chat_id = -302
     async with sessionmaker() as session:
