@@ -5,6 +5,7 @@ import logging
 from aiogram import F, Router, types
 from aiogram.filters import Command, CommandObject
 
+from ..services.games.akinator import AkinatorService
 from ..services.games.spy import SpyService
 from ..services.quick_games import QuickGameService
 
@@ -155,3 +156,42 @@ async def cb_spy_reveal(query: types.CallbackQuery, spy: SpyService) -> None:
         chat_id=query.message.chat.id, user_id=query.from_user.id, round_id=round_id,
     )
     await query.answer(text, show_alert=True)
+
+
+# ---------------- /akinator ----------------
+
+@router.message(Command("akinator"))
+async def cmd_akinator(message: types.Message, akinator: AkinatorService) -> None:
+    if not _require_group(message):
+        await message.answer("Игра доступна только в групповых чатах.")
+        return
+    await akinator.start(chat_id=message.chat.id, initiator_id=message.from_user.id)
+
+
+@router.message(Command("akinator_ask"))
+async def cmd_akinator_ask(
+    message: types.Message, command: CommandObject, akinator: AkinatorService,
+) -> None:
+    if not _require_group(message):
+        return
+    question = (command.args or "").strip()
+    await akinator.ask(
+        chat_id=message.chat.id, asker_id=message.from_user.id, question=question,
+    )
+
+
+@router.message(Command("akinator_guess"))
+async def cmd_akinator_guess(
+    message: types.Message, command: CommandObject, akinator: AkinatorService,
+) -> None:
+    if not _require_group(message):
+        return
+    arg = (command.args or "").strip().split()
+    target = arg[0] if arg else None
+    if target is None and message.reply_to_message and message.reply_to_message.from_user:
+        u = message.reply_to_message.from_user
+        if u.username:
+            target = f"@{u.username}"
+    await akinator.guess(
+        chat_id=message.chat.id, asker_id=message.from_user.id, target_username=target,
+    )
