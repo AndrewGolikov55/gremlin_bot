@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import unittest.mock as um
 from unittest.mock import AsyncMock, create_autospec
 
 import pytest
-import unittest.mock as um
 from aiogram.enums import ChatMemberStatus
 from sqlalchemy import select
 

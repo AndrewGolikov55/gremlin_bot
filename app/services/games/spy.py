@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from aiogram import Bot
-from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -214,7 +213,7 @@ class SpyService:
                 for uid in player_ids:
                     display = await self._resolve_display(chat_id=chat_id, user_id=uid)
                     players.append(_PlayerInfo(uid, display, uid == round_.spy_user_id))
-                options = [p.display for p in players] + ["Никто (ничья)"]
+                options: list = [p.display for p in players] + ["Никто (ничья)"]
                 poll_msg = await self.bot.send_poll(
                     chat_id=chat_id,
                     question="🎯 Кто шпион?",

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import unittest.mock as um
 from datetime import datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, create_autospec
 
 import pytest
-import unittest.mock as um
 from aiogram.enums import ChatMemberStatus
 
 from app.models import Message, User
@@ -41,8 +42,10 @@ def _make_bot_member(*, first_name="Андрей", username="andrew", is_bot=Fal
     return bot
 
 
-async def _seed_user_with_messages(sessionmaker, *, tg_id=100, username="andrew",
-                                   chat_id=42, now: datetime, count=3):
+async def _seed_user_with_messages(
+    sessionmaker: Any, *, tg_id: int = 100, username: str = "andrew",
+    chat_id: int = 42, now: datetime, count: int = 3,
+) -> None:
     async with sessionmaker() as session:
         session.add(User(tg_id=tg_id, username=username))
         for i in range(count):

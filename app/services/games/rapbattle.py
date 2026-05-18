@@ -21,7 +21,8 @@ from ...models import (
 from ...utils.locks import get_chat_lock
 from ...utils.text import strip_markdown
 from ..app_config import AppConfigService
-from ..llm.client import LLMError, LLMRateLimitError, generate as llm_generate, resolve_llm_options
+from ..llm.client import LLMError, LLMRateLimitError, resolve_llm_options
+from ..llm.client import generate as llm_generate
 from ..persona import DEFAULT_STYLE_KEY, StylePromptService
 from ..settings import SettingsService
 from .common import RoundStatus

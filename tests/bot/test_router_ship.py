@@ -157,14 +157,22 @@ async def test_cmd_ship_happy_path_runs_pipeline_and_sends_text():
 
 from aiogram.types import InaccessibleMessage  # noqa: E402
 
-from app.bot.router_games import build_games_menu_markup, cb_games_ship_random  # noqa: E402
+from app.bot.router_games import (  # noqa: E402
+    build_games_menu_markup,
+    build_quick_submenu_markup,
+    cb_games_ship_random,
+)
 
 
-def test_build_games_menu_includes_ship_random_button() -> None:
-    markup = build_games_menu_markup()
-    flat = [btn for row in markup.inline_keyboard for btn in row]
-    assert any(btn.callback_data == "games:ship_random" for btn in flat)
-    assert any("Шипперинг" in btn.text for btn in flat)
+def test_ship_random_button_now_lives_in_quick_submenu() -> None:
+    top = build_games_menu_markup()
+    top_callbacks = [b.callback_data for row in top.inline_keyboard for b in row]
+    assert "games:ship_random" not in top_callbacks  # moved out of root
+
+    quick = build_quick_submenu_markup()
+    flat = [b for row in quick.inline_keyboard for b in row]
+    assert any(b.callback_data == "games:ship_random" for b in flat)
+    assert any("Шипперинг" in b.text for b in flat)
 
 
 @pytest.mark.asyncio

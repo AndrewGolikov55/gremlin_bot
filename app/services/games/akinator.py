@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from ...models import AkinatorQuestion, AkinatorRound, Message, User, UserMemoryProfile
 from ...utils.locks import get_chat_lock
 from ..app_config import AppConfigService
-from ..llm.client import LLMError, LLMRateLimitError, generate as llm_generate, resolve_llm_options
+from ..llm.client import LLMError, LLMRateLimitError, resolve_llm_options
+from ..llm.client import generate as llm_generate
 from .common import RoundStatus
 
 logger = logging.getLogger(__name__)
