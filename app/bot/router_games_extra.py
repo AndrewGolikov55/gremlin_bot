@@ -8,6 +8,7 @@ from aiogram.filters import Command, CommandObject
 from ..services.games.akinator import AkinatorService
 from ..services.games.rapbattle import RapbattleService
 from ..services.games.spy import SpyService
+from ..services.games.storychain import StorychainService
 from ..services.games.wordchain import WordchainService
 from ..services.quick_games import QuickGameService
 
@@ -251,3 +252,40 @@ async def cmd_rapbattle(
         opponent_arg=arg,
         opponent_reply_id=opponent_reply_id,
     )
+
+
+# ---------------- /storychain ----------------
+
+@router.message(Command("storychain"))
+async def cmd_storychain(
+    message: types.Message, command: CommandObject, storychain: StorychainService,
+) -> None:
+    if not _require_group(message):
+        await message.answer("Игра доступна только в групповых чатах.")
+        return
+    target: int | None = None
+    if command.args:
+        try:
+            target = int(command.args.strip().split()[0])
+        except ValueError:
+            target = None
+    await storychain.start(chat_id=message.chat.id, target_contributions=target)
+
+
+@router.message(Command("storychain_add"))
+async def cmd_storychain_add(
+    message: types.Message, command: CommandObject, storychain: StorychainService,
+) -> None:
+    if not _require_group(message):
+        return
+    text = (command.args or "").strip()
+    await storychain.add(
+        chat_id=message.chat.id, user_id=message.from_user.id, text=text,
+    )
+
+
+@router.message(Command("storychain_stop"))
+async def cmd_storychain_stop(message: types.Message, storychain: StorychainService) -> None:
+    if not _require_group(message):
+        return
+    await storychain.stop(chat_id=message.chat.id)
