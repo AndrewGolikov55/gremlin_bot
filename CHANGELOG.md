@@ -3,6 +3,84 @@
 Формат основан на [Keep a Changelog](https://keepachangelog.com/),
 проект придерживается [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-05-18
+
+### Added
+
+- 10 новых игр:
+  - Быстрые LLM-однокадровки: `/truth` (правда или действие), `/horoscope`
+    (персональный гороскоп), `/fortune` (печенье с предсказанием), `/wisdom`
+    (фейк-афоризм случайного участника), `/predict` (абсурдное предсказание).
+  - Stateful с раундами: `/spy` (Spyfall — лобби `/spy_join`, роль через
+    «Узнать роль» в callback, голосование 60с), `/akinator` (бот загадывает
+    участника с заполненным профилем, игроки задают yes/no через
+    `/akinator_ask`, лимит 20 вопросов), `/wordchain` (цепочка слов, regex
+    `[а-яё]{2,30}`, UNIQUE на дубликаты, 60с на ход), `/rapbattle`
+    (2 куплета × 2 раунда от LLM, голосование, победителю −1 в рулетке через
+    `RouletteScoreAdjustment(reason='rapbattle_win')`), `/storychain`
+    (LLM-seed, вклад через `/storychain_add`, автофинал по достижению цели).
+- Двухуровневое меню `/games`: «🎲 Быстрые игры» / «🎭 Совместные игры».
+  Меню привязано к открывшему — чужой клик на «Назад/Quick/Multi» получает
+  алерт «Не твоё меню» и не редактирует чужое сообщение.
+
+### Changed
+
+- Сняты суточные ограничения с `/dice`, `/guess`, `/roast`. Раньше каждая
+  команда работала один раз в день; теперь любое количество вызовов. Таблицы
+  `DiceRound` / `GuessRound` / `RoastRun` сохранены для статистики и
+  телеметрии — снят только read-side check. Глобальный Redis anti-spam
+  (`usage_limits.py`) и one-winner-per-day рулетки не тронуты.
+
+### Fixed
+
+- Storychain: гонка двойного финала при параллельных `/storychain_add` на
+  границе target — финал теперь захватывается через CAS-переход
+  `ACTIVE → FINALISING`, а `bot.send_message` вынесен из транзакции, чтобы
+  Telegram-таймауты не держали соединение и неудачный send не «терял»
+  отправленное сообщение.
+- Akinator: счётчик `questions_asked` инкрементируется атомарным
+  `UPDATE … RETURNING` — параллельные `/akinator_ask` больше не могут пробить
+  `MAX_QUESTIONS = 20`.
+- Akinator: парсинг ответа LLM `yes/no/maybe/unknown` теперь сверяется по
+  первому токену целиком, не подстрокой — «not really» больше не превращается
+  в «no», «approximately yes» — в «yes».
+- Akinator: при угадывании выводится мнение/упоминание игрока, а не голый
+  Telegram user_id.
+- Wordchain: `.replace("ё", "ё")` (no-op) заменён на нормализацию `ё → е` на
+  входе и в seed — теперь «ёлка» и «елка» считаются одним словом для
+  UNIQUE-дедупа и правил цепочки.
+- Меню `/games` навигация защищена opener-check'ом.
+- `/games`-расширения (`/spy*`, `/akinator*`, `/wordchain*`, `/storychain*`,
+  `/rapbattle`) в личке теперь явно отказывают, а не молча игнорят.
+- `/storychain N` с нечисловым N даёт явный отказ вместо тихого дефолта.
+
+### Internal
+
+- Startup-reaper для зависших раундов: при старте бота
+  `recover_stale()` каждого сервиса финализирует «осиротевшие»
+  ACTIVE/VOTING/GENERATING/FINALISING-раунды, чьи in-process таймеры умерли
+  на рестарте. Пороги: storychain/akinator — 24ч, wordchain — 2× таймаут
+  хода, rapbattle — 30 мин, spy — 1ч (LOBBY — 2ч).
+- `ServicesMiddleware` принимает 22 сервиса через kwargs (раньше positional)
+  — снижает риск незаметной перестановки при добавлении новых сервисов.
+- В `quick_games`/`rapbattle`/`akinator` добавлен per-message truncate
+  (240 символов) перед сборкой LLM-промпта, чтобы одно длинное сообщение
+  цели не выжигало контекст.
+- Миграция `20260518_01_new_games`: `rapbattle_rounds.verses` теперь
+  `JSONB().with_variant(JSON(), "sqlite")` (раньше `sa.JSON()` на всех
+  диалектах). Partial unique индекс на `storychain_rounds` расширен до
+  `status IN ('active','finalising')`, чтобы новый раунд не стартовал, пока
+  идёт финализация предыдущего.
+- Конвенция `/games` (CHANGELOG v0.12.4) восстановлена: только `/games`
+  публикуется в автокомплите Telegram; индивидуальные игровые команды
+  остаются вызываемыми, но доступны через меню.
+- Новый `QuickGameService` инкапсулирует pattern из `roast.py`; пакет
+  `app/services/games/` для stateful-игр; `app/utils/locks.py` — общий
+  per-chat lock helper. `RoundStatus` пополнен значением `finalising`.
+- Тесты: 454 проходят (было 426). Покрыты `rapbattle`, `storychain`,
+  concurrent `/akinator_ask`, recover_stale всех сервисов, owner-check
+  меню, нормализация `ё→е`, разбор LLM-токенов akinator.
+
 ## [0.12.4] - 2026-05-18
 
 ### Changed
