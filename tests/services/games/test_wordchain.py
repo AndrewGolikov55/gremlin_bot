@@ -80,11 +80,15 @@ async def test_first_letter_mismatch_rejected(sessionmaker):
             update(WordchainRound).where(WordchainRound.id == round_.id).values(last_word="кот")
         )
         await session.commit()
-    await svc.play(chat_id=42, user_id=200, raw_word="дом")  # должно быть "т..."
+    # "дятел" — не в SEED_WORDS, начинается на «д», должно быть отвергнуто
+    # (last_word="кот", ждём «т...»). Если бы взяли слово из SEED_WORDS — могли
+    # бы попасть на тот же seed, и тест бы упал из-за совпадения, а не из-за
+    # настоящего mismatch'а.
+    await svc.play(chat_id=42, user_id=200, raw_word="дятел")
     await svc.stop(chat_id=42)
     async with sessionmaker() as session:
         words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
-    assert "дом" not in words
+    assert "дятел" not in words
 
 
 @pytest.mark.asyncio
