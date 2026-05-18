@@ -461,6 +461,7 @@ async def configure_bot_commands(bot: Bot) -> None:
         BotCommand(command="roll", description="Запустить рулетку"),
         BotCommand(command="rollstats_montly", description="Статистика рулетки за месяц"),
         BotCommand(command="rollstats_total", description="Статистика рулетки за всё время"),
+        BotCommand(command="games", description="Меню игр (кости, угадайка, шипперинг)"),
         BotCommand(command="summary", description="Сводка обсуждения"),
         BotCommand(command="reg", description="Зарегистрироваться в рулетке"),
         BotCommand(command="unreg", description="Выйти из рулетки"),
