@@ -47,10 +47,7 @@ def build_quick_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
             [types.InlineKeyboardButton(text="💞 Шипперинг (рандом)", callback_data="games:ship_random")],
             [types.InlineKeyboardButton(text="🔥 Прожарка (/roast)", callback_data="games:noop:roast")],
             [types.InlineKeyboardButton(text="🎭 Truth (/truth)", callback_data="games:noop:truth")],
-            [types.InlineKeyboardButton(text="🔮 Horoscope (/horoscope)", callback_data="games:noop:horoscope")],
-            [types.InlineKeyboardButton(text="🥠 Fortune (/fortune)", callback_data="games:noop:fortune")],
             [types.InlineKeyboardButton(text="📜 Wisdom (/wisdom)", callback_data="games:noop:wisdom")],
-            [types.InlineKeyboardButton(text="🌌 Predict (/predict)", callback_data="games:noop:predict")],
             [types.InlineKeyboardButton(text="🔙 Назад", callback_data=f"games:cat:root:{opener_id}")],
         ]
     )
@@ -60,7 +57,6 @@ def build_multi_submenu_markup(opener_id: int) -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
             [types.InlineKeyboardButton(text="🎭 Угадай кто сказал", callback_data="games:guess")],
-            [types.InlineKeyboardButton(text="🎯 Шпион (/spy)", callback_data="games:noop:spy")],
             [types.InlineKeyboardButton(text="🤔 Akinator (/akinator)", callback_data="games:noop:akinator")],
             [types.InlineKeyboardButton(text="🔗 Wordchain (/wordchain)", callback_data="games:noop:wordchain")],
             [types.InlineKeyboardButton(text="🎤 Рэп-баттл (/rapbattle)", callback_data="games:noop:rapbattle")],
@@ -419,11 +415,7 @@ async def cb_games_cat_multi(query: types.CallbackQuery) -> None:
 _NOOP_HINTS = {
     "roast": "Вызови команду /roast (можно с @username или в реплае).",
     "truth": "Вызови команду /truth (можно с @username или в реплае).",
-    "horoscope": "Вызови команду /horoscope (можно с @username или в реплае).",
-    "fortune": "Вызови команду /fortune.",
     "wisdom": "Вызови команду /wisdom.",
-    "predict": "Вызови команду /predict (можно с @username или в реплае).",
-    "spy": "Старт через /spy, далее /spy_join, /spy_start.",
     "akinator": "Старт через /akinator, далее /akinator_ask <вопрос>.",
     "wordchain": "Старт через /wordchain, ходы — /wordchain_play <слово>.",
     "rapbattle": "Вызови /rapbattle @opponent.",

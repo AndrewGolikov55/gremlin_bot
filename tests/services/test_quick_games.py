@@ -78,50 +78,6 @@ async def test_truth_sends_message_with_target_mention(sessionmaker):
 
 
 @pytest.mark.asyncio
-async def test_horoscope_sends_personalised(sessionmaker):
-    now = datetime(2026, 5, 18, 12, 0, 0)
-    await _seed_user_with_messages(sessionmaker, now=now)
-    bot = _make_bot_member()
-    svc = _make_svc(sessionmaker, bot=bot)
-
-    async def fake_gen(messages, **kwargs):
-        return "Сегодня Меркурий не в твоей пользе, не открывай новые таски."
-
-    with um.patch("app.services.quick_games.llm_generate", fake_gen):
-        await svc.run_horoscope(
-            chat_id=42, initiator_id=200, target_arg="@andrew", now=now,
-        )
-
-    sent_text = bot.send_message.call_args.kwargs["text"]
-    assert "Гороскоп" in sent_text
-    assert "Меркурий" in sent_text
-
-
-@pytest.mark.asyncio
-async def test_fortune_no_target_no_persona(sessionmaker):
-    bot = AsyncMock()
-    bot.send_message = AsyncMock()
-    svc = _make_svc(sessionmaker, bot=bot)
-
-    captured: dict[str, list] = {}
-
-    async def fake_gen(messages, **kwargs):
-        captured["messages"] = messages
-        return "Не каждая пельмешка доплывает до тарелки."
-
-    with um.patch("app.services.quick_games.llm_generate", fake_gen):
-        await svc.run_fortune(
-            chat_id=42, initiator_id=200, now=datetime(2026, 5, 18, 12, 0, 0),
-        )
-
-    sent_text = bot.send_message.call_args.kwargs["text"]
-    assert "🥠" in sent_text
-    assert "пельмешка" in sent_text
-    # Persona prompt must NOT be merged into system
-    assert "persona" not in captured["messages"][0]["content"]
-
-
-@pytest.mark.asyncio
 async def test_wisdom_attributes_to_active_member(sessionmaker):
     now = datetime(2026, 5, 18, 12, 0, 0)
     await _seed_user_with_messages(sessionmaker, now=now)
@@ -139,26 +95,6 @@ async def test_wisdom_attributes_to_active_member(sessionmaker):
     sent_text = bot.send_message.call_args.kwargs["text"]
     assert "@andrew" in sent_text
     assert "Каждое утро" in sent_text
-
-
-@pytest.mark.asyncio
-async def test_predict_targets_replied_user_via_random_when_arg_missing(sessionmaker):
-    now = datetime(2026, 5, 18, 12, 0, 0)
-    await _seed_user_with_messages(sessionmaker, now=now)
-    bot = _make_bot_member()
-    svc = _make_svc(sessionmaker, bot=bot)
-
-    async def fake_gen(messages, **kwargs):
-        return "Через неделю ты случайно станешь экспертом по альпаководству."
-
-    with um.patch("app.services.quick_games.llm_generate", fake_gen):
-        await svc.run_predict(
-            chat_id=42, initiator_id=200, target_arg=None, now=now,
-        )
-
-    sent_text = bot.send_message.call_args.kwargs["text"]
-    assert "Предсказание" in sent_text
-    assert "альпаководству" in sent_text
 
 
 @pytest.mark.asyncio

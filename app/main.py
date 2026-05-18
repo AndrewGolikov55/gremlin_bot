@@ -50,7 +50,6 @@ from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECO
 from .services.roast import RoastService
 from .services.quotebook import QuotebookService
 from .services.quick_games import QuickGameService
-from .services.games.spy import SpyService
 from .services.games.akinator import AkinatorService
 from .services.games.wordchain import WordchainService
 from .services.games.rapbattle import RapbattleService
@@ -181,7 +180,6 @@ quick_games_service = QuickGameService(
     settings=settings_service,
     app_config=app_config_service,
 )
-spy_service = SpyService(sessionmaker=async_sessionmaker, bot=bot)
 akinator_service = AkinatorService(
     sessionmaker=async_sessionmaker, bot=bot, app_config=app_config_service,
 )
@@ -246,7 +244,6 @@ dp.update.middleware(
         ship=ship_service,
         quotebook=quotebook_service,
         quick_games=quick_games_service,
-        spy=spy_service,
         akinator=akinator_service,
         wordchain=wordchain_service,
         rapbattle=rapbattle_service,
@@ -507,7 +504,6 @@ async def _recover_stale_game_rounds() -> None:
         ("storychain", storychain_service),
         ("wordchain", wordchain_service),
         ("akinator", akinator_service),
-        ("spy", spy_service),
         ("rapbattle", rapbattle_service),
     )
     for name, svc in services:
@@ -522,16 +518,15 @@ async def _recover_stale_game_rounds() -> None:
 async def configure_bot_commands(bot: Bot) -> None:
     # Convention (CHANGELOG v0.12.4): only /games is exposed in the autocomplete
     # popup. All individual game commands (/dice, /guess, /ship, /truth,
-    # /horoscope, /fortune, /wisdom, /predict, /spy, /akinator, /wordchain,
-    # /rapbattle, /storychain) remain invokable but are reachable through the
-    # /games menu to keep the suggestion list short.
+    # /wisdom, /akinator, /wordchain, /rapbattle, /storychain) remain invokable
+    # but are reachable through the /games menu to keep the suggestion list short.
     commands = [
         BotCommand(command="settings", description="Панель настроек"),
         BotCommand(command="relationships", description="Отношения к участникам"),
         BotCommand(command="roll", description="Запустить рулетку"),
         BotCommand(command="rollstats_montly", description="Статистика рулетки за месяц"),
         BotCommand(command="rollstats_total", description="Статистика рулетки за всё время"),
-        BotCommand(command="games", description="Меню игр (кости, угадайка, шпион, акинатор и др.)"),
+        BotCommand(command="games", description="Меню игр (кости, угадайка, акинатор и др.)"),
         BotCommand(command="summary", description="Сводка обсуждения"),
         BotCommand(command="reg", description="Зарегистрироваться в рулетке"),
         BotCommand(command="unreg", description="Выйти из рулетки"),

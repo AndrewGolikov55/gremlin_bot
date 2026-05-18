@@ -53,28 +53,11 @@ DARE_RULES = (
     "1-3 предложения, повелительное наклонение.\n"
     + COMMON_OUTPUT_RULES
 )
-HOROSCOPE_RULES = (
-    "Сгенерируй персональный гороскоп на сегодня для цели, на основе её "
-    "интересов, проектов и последних сообщений. Тон — ироничный астролог. "
-    "3-5 предложений, упомяни конкретное дело/паттерн цели, а не общие штампы.\n"
-    + COMMON_OUTPUT_RULES
-)
-FORTUNE_RULES = (
-    "Сгенерируй короткое предсказание-«fortune cookie» — 1-2 предложения, "
-    "афористично, абсурдно-философски, без обращения к конкретному человеку.\n"
-    + COMMON_OUTPUT_RULES
-)
 WISDOM_RULES = (
     "Сгенерируй фейк-афоризм, который якобы произнёс заданный участник. "
     "Стиль — глубокомысленная чушь в духе пабликов «мудрость дня», но с зацепкой "
     "за конкретные интересы/паттерны участника. 1-3 предложения от ПЕРВОГО ЛИЦА "
     "(как будто он сам говорит).\n"
-    + COMMON_OUTPUT_RULES
-)
-PREDICT_RULES = (
-    "Сгенерируй абсурдное предсказание о будущем цели — что с ней произойдёт через "
-    "неделю/месяц/год, опираясь на её паттерны и последние сообщения. "
-    "3-5 предложений, без угроз, с конкретикой.\n"
     + COMMON_OUTPUT_RULES
 )
 
@@ -107,7 +90,7 @@ def _format_messages(items: list[str]) -> str:
 
 
 class QuickGameService:
-    """Shared infrastructure for LLM single-shot games (/truth, /horoscope, /fortune, /wisdom, /predict)."""
+    """Shared infrastructure for LLM single-shot games (/truth, /wisdom)."""
 
     def __init__(
         self,
@@ -317,42 +300,6 @@ class QuickGameService:
         label = "🎭 Правда" if is_truth else "🎬 Действие"
         await self._send(chat_id, f"{label} для {self._mention(ctx)}:\n\n{body}")
 
-    # ---------------- /horoscope ----------------
-
-    async def run_horoscope(
-        self, *, chat_id: int, initiator_id: int, target_arg: str | None,
-        now: datetime | None = None,
-    ) -> None:
-        if now is None:
-            now = datetime.utcnow()
-        ctx = await self.build_context(
-            chat_id=chat_id, initiator_id=initiator_id, target_arg=target_arg, now=now,
-        )
-        if isinstance(ctx, str):
-            await self._send(chat_id, ctx)
-            return
-        system = f"{ctx.persona_system}\n\n{HOROSCOPE_RULES}"
-        user = self._format_target_block(ctx) + "\nГороскоп на сегодня."
-        body = await self._llm_oneshot(system=system, user=user) or (
-            "Звёзды молчат, LLM в обмороке."
-        )
-        await self._send(chat_id, f"🔮 Гороскоп для {self._mention(ctx)}:\n\n{body}")
-
-    # ---------------- /fortune ----------------
-
-    async def run_fortune(
-        self, *, chat_id: int, initiator_id: int, now: datetime | None = None,
-    ) -> None:
-        if now is None:
-            now = datetime.utcnow()
-        # No target, no persona — neutral cookie voice
-        system = FORTUNE_RULES
-        user = "Выдай одно предсказание-fortune cookie."
-        body = await self._llm_oneshot(system=system, user=user, max_tokens=120) or (
-            "Печенье пустое, LLM в обмороке."
-        )
-        await self._send(chat_id, f"🥠 {body}")
-
     # ---------------- /wisdom ----------------
 
     async def run_wisdom(
@@ -400,24 +347,3 @@ class QuickGameService:
         )
         mention = f"@{username}" if username else display
         await self._send(chat_id, f"📜 Как однажды сказал {mention}:\n\n«{body}»")
-
-    # ---------------- /predict ----------------
-
-    async def run_predict(
-        self, *, chat_id: int, initiator_id: int, target_arg: str | None,
-        now: datetime | None = None,
-    ) -> None:
-        if now is None:
-            now = datetime.utcnow()
-        ctx = await self.build_context(
-            chat_id=chat_id, initiator_id=initiator_id, target_arg=target_arg, now=now,
-        )
-        if isinstance(ctx, str):
-            await self._send(chat_id, ctx)
-            return
-        system = f"{ctx.persona_system}\n\n{PREDICT_RULES}"
-        user = self._format_target_block(ctx) + "\nПредскажи будущее."
-        body = await self._llm_oneshot(system=system, user=user) or (
-            "Будущее туманно, LLM в обмороке."
-        )
-        await self._send(chat_id, f"🌌 Предсказание для {self._mention(ctx)}:\n\n{body}")

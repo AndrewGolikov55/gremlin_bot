@@ -21,7 +21,6 @@ from ..services.roast import RoastService
 from ..services.ship import ShipService
 from ..services.quotebook import QuotebookService
 from ..services.quick_games import QuickGameService
-from ..services.games.spy import SpyService
 from ..services.games.akinator import AkinatorService
 from ..services.games.wordchain import WordchainService
 from ..services.games.rapbattle import RapbattleService
@@ -64,7 +63,6 @@ class ServicesMiddleware(BaseMiddleware):
         ship: ShipService,
         quotebook: QuotebookService,
         quick_games: QuickGameService,
-        spy: SpyService,
         akinator: AkinatorService,
         wordchain: WordchainService,
         rapbattle: RapbattleService,
@@ -87,7 +85,6 @@ class ServicesMiddleware(BaseMiddleware):
         self.ship = ship
         self.quotebook = quotebook
         self.quick_games = quick_games
-        self.spy = spy
         self.akinator = akinator
         self.wordchain = wordchain
         self.rapbattle = rapbattle
@@ -116,7 +113,6 @@ class ServicesMiddleware(BaseMiddleware):
         data["ship"] = self.ship
         data["quotebook"] = self.quotebook
         data["quick_games"] = self.quick_games
-        data["spy"] = self.spy
         data["akinator"] = self.akinator
         data["wordchain"] = self.wordchain
         data["rapbattle"] = self.rapbattle

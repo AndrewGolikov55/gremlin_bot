@@ -1,4 +1,4 @@
-"""Add tables for new stateful games: spy, akinator, wordchain, rapbattle, storychain
+"""Add tables for new stateful games: akinator, wordchain, rapbattle, storychain
 
 Revision ID: 20260518_01_new_games
 Revises: 20260516_05_ship_cache_clear
@@ -18,43 +18,6 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # ---------- spy ----------
-    op.create_table(
-        "spy_rounds",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("chat_id", sa.BigInteger(), nullable=False),
-        sa.Column("initiator_user_id", sa.BigInteger(), nullable=False),
-        sa.Column("location", sa.String(length=64), nullable=False),
-        sa.Column("status", sa.String(length=16), nullable=False),
-        sa.Column("spy_user_id", sa.BigInteger(), nullable=True),
-        sa.Column("outcome", sa.String(length=16), nullable=True),
-        sa.Column("started_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.Column("ends_at", sa.DateTime(), nullable=True),
-        sa.Column("vote_poll_id", sa.String(length=64), nullable=True),
-        sa.Column("vote_message_id", sa.BigInteger(), nullable=True),
-        sa.Column("finished_at", sa.DateTime(), nullable=True),
-    )
-    op.create_index("ix_spy_rounds_chat_id", "spy_rounds", ["chat_id"])
-    op.create_index("ix_spy_rounds_chat_status", "spy_rounds", ["chat_id", "status"])
-    op.create_index(
-        "ux_spy_rounds_chat_open",
-        "spy_rounds",
-        ["chat_id"],
-        unique=True,
-        postgresql_where=text("status IN ('lobby','active','voting')"),
-    )
-    op.create_table(
-        "spy_players",
-        sa.Column(
-            "round_id", sa.Integer(),
-            sa.ForeignKey("spy_rounds.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-        sa.Column("user_id", sa.BigInteger(), primary_key=True),
-        sa.Column("is_spy", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("revealed_at", sa.DateTime(), nullable=True),
-    )
-
     # ---------- akinator ----------
     op.create_table(
         "akinator_rounds",
@@ -224,8 +187,3 @@ def downgrade() -> None:
     op.drop_index("ix_akinator_rounds_chat_id", table_name="akinator_rounds")
     op.drop_table("akinator_rounds")
 
-    op.drop_table("spy_players")
-    op.drop_index("ux_spy_rounds_chat_open", table_name="spy_rounds")
-    op.drop_index("ix_spy_rounds_chat_status", table_name="spy_rounds")
-    op.drop_index("ix_spy_rounds_chat_id", table_name="spy_rounds")
-    op.drop_table("spy_rounds")
