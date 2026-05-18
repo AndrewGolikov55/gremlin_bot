@@ -7,6 +7,7 @@ from aiogram.filters import Command, CommandObject
 
 from ..services.games.akinator import AkinatorService
 from ..services.games.spy import SpyService
+from ..services.games.wordchain import WordchainService
 from ..services.quick_games import QuickGameService
 
 router = Router(name="games_extra")
@@ -195,3 +196,35 @@ async def cmd_akinator_guess(
     await akinator.guess(
         chat_id=message.chat.id, asker_id=message.from_user.id, target_username=target,
     )
+
+
+# ---------------- /wordchain ----------------
+
+@router.message(Command("wordchain"))
+async def cmd_wordchain(message: types.Message, wordchain: WordchainService) -> None:
+    if not _require_group(message):
+        await message.answer("Игра доступна только в групповых чатах.")
+        return
+    await wordchain.start(chat_id=message.chat.id)
+
+
+@router.message(Command("wordchain_play"))
+async def cmd_wordchain_play(
+    message: types.Message, command: CommandObject, wordchain: WordchainService,
+) -> None:
+    if not _require_group(message):
+        return
+    arg = (command.args or "").strip().split()
+    if not arg:
+        await message.answer("Скажи одно слово: /wordchain_play кот")
+        return
+    await wordchain.play(
+        chat_id=message.chat.id, user_id=message.from_user.id, raw_word=arg[0],
+    )
+
+
+@router.message(Command("wordchain_stop"))
+async def cmd_wordchain_stop(message: types.Message, wordchain: WordchainService) -> None:
+    if not _require_group(message):
+        return
+    await wordchain.stop(chat_id=message.chat.id)
