@@ -245,6 +245,21 @@ class StorychainService:
                 await session.commit()
         await self.bot.send_message(chat_id, "📖 Сторичейн закрыт.")
 
+    async def get_active_summary(self, chat_id: int) -> str | None:
+        """Return a one-line summary if there's an active storychain here."""
+        async with self.sessionmaker() as session:
+            round_ = await self._fetch_open(chat_id, session=session)
+            if round_ is None:
+                return None
+            count = int((await session.execute(
+                select(func.count()).select_from(StorychainContribution)
+                .where(StorychainContribution.round_id == round_.id)
+            )).scalar_one())
+        return (
+            f"📖 Storychain (вкладов: {count}/{round_.target_contributions}) — "
+            f"/storychain_add"
+        )
+
     async def _fetch_active(
         self, chat_id: int, *, session: AsyncSession | None = None,
     ) -> StorychainRound | None:

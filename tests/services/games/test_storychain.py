@@ -216,3 +216,24 @@ async def test_stop_marks_round_expired(sessionmaker):
     async with sessionmaker() as session:
         row = (await session.execute(select(StorychainRound))).scalar_one()
     assert row.status == "expired"
+
+
+class TestStorychainActiveSummary:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_round(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        result = await svc.get_active_summary(chat_id=42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_string_with_progress(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        with um.patch("app.services.games.storychain.llm_generate", AsyncMock(return_value="seed")):
+            await svc.start(chat_id=42, target_contributions=5)
+        await svc.add(chat_id=42, user_id=200, text="первое")
+        await svc.add(chat_id=42, user_id=201, text="второе")
+        result = await svc.get_active_summary(chat_id=42)
+        assert result is not None
+        assert "📖 Storychain" in result
+        assert "2/5" in result
+        assert "/storychain_add" in result
