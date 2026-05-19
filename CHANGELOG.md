@@ -1,7 +1,12 @@
 # Changelog
 
-Формат основан на [Keep a Changelog](https://keepachangelog.com/),
-проект придерживается [Semantic Versioning](https://semver.org/).
+Формат основан на [Keep a Changelog](https://keepachangelog.com/).
+
+## Версионирование
+
+Проект использует [CalVer](https://calver.org/) формат `YYYY.MM.DD.N`,
+начиная с `2026.05.19.0`. До этой версии — semver `vX.Y.Z`, переименованный
+задним числом по дате коммита (см. секции ниже).
 
 ## [0.13.2] - 2026-05-18
 
