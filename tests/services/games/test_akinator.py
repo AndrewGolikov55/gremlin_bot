@@ -242,6 +242,86 @@ async def test_start_when_active_reports_progress_not_generic(sessionmaker):
     assert "/akinator_guess" in msg
 
 
+class TestTargetMeta:
+    @pytest.mark.asyncio
+    async def test_fetch_target_meta_returns_dataclass(self, sessionmaker):
+        from app.services.games.akinator import TargetMeta
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        meta = await svc._fetch_target_meta(chat_id=42, user_id=100)
+        assert isinstance(meta, TargetMeta)
+        assert meta.display == "Андрей"
+        assert meta.username == "andrew"
+        # `_make_bot()` mocks status=ChatMemberStatus.MEMBER which str()s to 'member'
+        assert meta.member_status == "member"
+        assert meta.message_count_week == 0  # no Message rows in fixture
+
+    @pytest.mark.asyncio
+    async def test_fetch_target_meta_handles_missing_member(self, sessionmaker):
+        from aiogram.exceptions import TelegramBadRequest
+
+        bot = AsyncMock()
+        bot.get_chat_member = AsyncMock(
+            side_effect=TelegramBadRequest(method=None, message="not found")  # type: ignore[arg-type]
+        )
+        bot.send_message = AsyncMock()
+        app_config = create_autospec(AppConfigService, instance=True)
+        app_config.get_all = AsyncMock(return_value={})
+        svc = AkinatorService(
+            sessionmaker=sessionmaker, bot=bot, app_config=app_config,
+        )
+        meta = await svc._fetch_target_meta(chat_id=42, user_id=100)
+        assert meta.display == "id100"
+        assert meta.username is None
+        assert meta.member_status is None
+        assert meta.message_count_week == 0
+
+    @pytest.mark.asyncio
+    async def test_fetch_target_meta_counts_messages_within_week(self, sessionmaker):
+        from datetime import datetime, timedelta
+
+        from app.models import Message
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        # Seed messages: 3 within week, 1 old, 1 bot
+        async with sessionmaker() as session:
+            now = datetime.utcnow()
+            for i, days in enumerate([1, 2, 3]):
+                session.add(Message(
+                    chat_id=42, message_id=1000 + i, user_id=100,
+                    text=f"msg{i}", date=now - timedelta(days=days),
+                    is_bot=False, reply_to_id=None,
+                    tg_file_id=None, media_group_id=None,
+                ))
+            # Out of window
+            session.add(Message(
+                chat_id=42, message_id=2000, user_id=100, text="old",
+                date=now - timedelta(days=10),
+                is_bot=False, reply_to_id=None,
+                tg_file_id=None, media_group_id=None,
+            ))
+            # Bot message — excluded
+            session.add(Message(
+                chat_id=42, message_id=3000, user_id=100, text="bot",
+                date=now - timedelta(days=1),
+                is_bot=True, reply_to_id=None,
+                tg_file_id=None, media_group_id=None,
+            ))
+            await session.commit()
+        meta = await svc._fetch_target_meta(chat_id=42, user_id=100)
+        assert meta.message_count_week == 3
+
+    @pytest.mark.asyncio
+    async def test_target_meta_caches_by_round_id(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        # Two calls with same round_id — bot.get_chat_member called only once
+        meta1 = await svc._target_meta(round_id=99, chat_id=42, user_id=100)
+        meta2 = await svc._target_meta(round_id=99, chat_id=42, user_id=100)
+        assert meta1 is meta2  # cached object identity
+        assert svc.bot.get_chat_member.await_count == 1
+
+
 @pytest.mark.asyncio
 async def test_recover_stale_expires_old_active(sessionmaker):
     from datetime import datetime, timedelta

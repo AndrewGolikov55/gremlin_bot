@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html import escape
 
@@ -33,6 +34,16 @@ def _truncate(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
         return s
     return s[: limit - 1] + "…"
 
+
+@dataclass(frozen=True)
+class TargetMeta:
+    """Telegram + activity metadata for the target user. Cached per akinator round."""
+    display: str           # tg first_name, fallback к username/id
+    username: str | None
+    member_status: str | None
+    message_count_week: int
+
+
 SYSTEM_PROMPT = (
     "Ты ведущий игры «Акинатор». Бот загадал участника чата по его профилю и сообщениям.\n"
     "Игрок задаёт вопрос «да/нет» о загаданном участнике. Ответь ОДНИМ словом:\n"
@@ -56,6 +67,7 @@ class AkinatorService:
         self.bot = bot
         self.app_config = app_config
         self._locks: dict[int, asyncio.Lock] = {}
+        self._meta_cache: dict[int, TargetMeta] = {}  # key: round_id
 
     def _lock(self, chat_id: int) -> asyncio.Lock:
         return get_chat_lock(chat_id, self._locks)
@@ -97,6 +109,56 @@ class AkinatorService:
         if not candidates:
             return None
         return random.choice(candidates)
+
+    async def _fetch_target_meta(self, *, chat_id: int, user_id: int) -> TargetMeta:
+        """ONE get_chat_member + ONE COUNT() — без двойного API-вызова."""
+        display = f"id{user_id}"
+        username: str | None = None
+        member_status: str | None = None
+        try:
+            member = await self.bot.get_chat_member(chat_id, user_id)
+            user = getattr(member, "user", None)
+            if user is not None:
+                display = str(user.first_name or user.username or f"id{user_id}")
+                username = user.username or None
+            # ChatMemberStatus in this aiogram is a plain Enum, not StrEnum,
+            # so str(enum) returns "ChatMemberStatus.MEMBER"; use .value when available.
+            status = member.status
+            member_status = str(getattr(status, "value", status))
+        except TelegramBadRequest:
+            pass
+        except Exception:
+            logger.exception("akinator: get_chat_member meta failed chat=%s user=%s", chat_id, user_id)
+        async with self.sessionmaker() as session:
+            cutoff = datetime.utcnow() - timedelta(days=7)
+            stmt = (
+                select(func.count())
+                .select_from(Message)
+                .where(
+                    Message.chat_id == chat_id,
+                    Message.user_id == user_id,
+                    Message.is_bot.is_(False),
+                    Message.date >= cutoff,
+                )
+            )
+            count = int((await session.execute(stmt)).scalar_one())
+        return TargetMeta(
+            display=display,
+            username=username,
+            member_status=member_status,
+            message_count_week=count,
+        )
+
+    async def _target_meta(
+        self, *, round_id: int, chat_id: int, user_id: int,
+    ) -> TargetMeta:
+        """Round-scoped cache around _fetch_target_meta."""
+        cached = self._meta_cache.get(round_id)
+        if cached is not None:
+            return cached
+        meta = await self._fetch_target_meta(chat_id=chat_id, user_id=user_id)
+        self._meta_cache[round_id] = meta
+        return meta
 
     async def start(self, *, chat_id: int, initiator_id: int) -> None:
         async with self._lock(chat_id):
