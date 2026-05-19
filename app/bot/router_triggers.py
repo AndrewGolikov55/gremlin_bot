@@ -215,7 +215,35 @@ async def collect_messages(
         )
         if personalization_enabled and message.from_user and memory.sidecar_enabled(app_conf):
             system_prompt += "\n\n" + memory.get_sidecar_system_suffix()
-        _ctx = [b for b in [memory_block, chat_memory_block, champion_block] if b]
+
+        reply_transcript_block: str | None = None
+        replied = message.reply_to_message
+        reply_to_non_bot = replied is not None and not _is_reply_to_bot(
+            replied, bot_user.id, bot_user.username
+        )
+        if reply_to_non_bot:
+            try:
+                reply_transcript = await get_reply_voice_transcript(
+                    bot=bot,
+                    message=message,
+                    session=session,
+                    max_seconds=int(app_conf.get("voice_max_seconds", 0) or 0),
+                )
+            except Exception:
+                logger.exception(
+                    "reply-chain voice transcript failed chat=%s message=%s",
+                    message.chat.id,
+                    message.message_id,
+                )
+                reply_transcript = None
+            if reply_transcript:
+                reply_transcript_block = f"[Голосовое из треда]: {reply_transcript}"
+
+        _ctx = [
+            b
+            for b in [memory_block, chat_memory_block, champion_block, reply_transcript_block]
+            if b
+        ]
         messages_for_llm = build_messages(
             system_prompt,
             turns,
@@ -225,8 +253,7 @@ async def collect_messages(
         )
 
         reply_images: list[str] = []
-        replied = message.reply_to_message
-        if replied is not None and not _is_reply_to_bot(replied, bot_user.id, bot_user.username):
+        if reply_to_non_bot:
             reply_images = await collect_reply_images(
                 bot=bot,
                 message=message,

@@ -49,3 +49,17 @@ async def test_download_defaults_to_jpeg_when_mime_unknown() -> None:
     url = await download_file_id_as_data_url(bot, "file-id")  # type: ignore[arg-type]
     assert url is not None
     assert url.startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_non_image_mime() -> None:
+    bot = _FakeBot(file_path="video_notes/file_2.mp4", payload=b"\x00\x00\x00\x20ftyp")
+    url = await download_file_id_as_data_url(bot, "file-id")  # type: ignore[arg-type]
+    assert url is None
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_audio_mime() -> None:
+    bot = _FakeBot(file_path="voice/file_1.oga", payload=b"OggS\x00")
+    url = await download_file_id_as_data_url(bot, "file-id")  # type: ignore[arg-type]
+    assert url is None

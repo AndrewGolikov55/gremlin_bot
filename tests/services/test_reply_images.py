@@ -128,6 +128,65 @@ async def test_partial_download_failure_drops_failed_entries(sessionmaker: async
 
 
 @pytest.mark.asyncio
+async def test_skip_voice_note_row(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    await _seed_message(
+        sessionmaker, chat_id=100, message_id=50,
+        tg_file_id="voice-fid", text="[голосовое]",
+    )
+    msg = _reply_msg()
+    download = AsyncMock(return_value="data:image/jpeg;base64,X")
+    async with sessionmaker() as session:
+        result = await collect_reply_images(
+            bot=AsyncMock(),
+            message=msg,  # type: ignore[arg-type]
+            session=session,
+            _download=download,
+        )
+    assert result == []
+    download.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_video_note_row(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    await _seed_message(
+        sessionmaker, chat_id=100, message_id=50,
+        tg_file_id="video-note-fid", text="[круглое видео]",
+    )
+    msg = _reply_msg()
+    download = AsyncMock(return_value="data:image/jpeg;base64,X")
+    async with sessionmaker() as session:
+        result = await collect_reply_images(
+            bot=AsyncMock(),
+            message=msg,  # type: ignore[arg-type]
+            session=session,
+            _download=download,
+        )
+    assert result == []
+    download.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_cached_video_note_with_transcript(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed_message(
+        sessionmaker, chat_id=100, message_id=50,
+        tg_file_id="video-note-fid", text="[круглое видео] привет всем",
+    )
+    msg = _reply_msg()
+    download = AsyncMock(return_value="data:image/jpeg;base64,X")
+    async with sessionmaker() as session:
+        result = await collect_reply_images(
+            bot=AsyncMock(),
+            message=msg,  # type: ignore[arg-type]
+            session=session,
+            _download=download,
+        )
+    assert result == []
+    download.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_fallback_to_reply_to_message_photo(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
     reply_photo = [SimpleNamespace(file_id="live-fid", file_size=50_000, width=800, height=600)]
     msg = _reply_msg(reply_to_id=999, reply_photo=reply_photo)

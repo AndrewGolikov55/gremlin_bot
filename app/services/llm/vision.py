@@ -53,6 +53,14 @@ async def download_file_id_as_data_url(
         )
 
     mime_type, _encoding = mimetypes.guess_type(file_path)
+    if mime_type and not mime_type.startswith("image/"):
+        logger.warning(
+            "Refusing non-image file for vision: file_id=%s path=%s mime=%s",
+            file_id,
+            file_path,
+            mime_type,
+        )
+        return None
     if not mime_type:
         mime_type = "image/jpeg"
     encoded = base64.b64encode(payload).decode("ascii")

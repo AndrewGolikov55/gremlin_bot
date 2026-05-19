@@ -9,10 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.message import Message
 from .llm.vision import download_file_id_as_data_url
+from .reply_voice import VIDEO_NOTE_MARKER, VOICE_MARKER
 
 logger = logging.getLogger(__name__)
 
 MAX_REPLY_IMAGES = 10  # Telegram album cap
+
+_NON_IMAGE_MARKERS = (VOICE_MARKER, VIDEO_NOTE_MARKER)
+
+
+def _is_non_image_row(text: str | None) -> bool:
+    if not text:
+        return False
+    return any(text.startswith(marker) for marker in _NON_IMAGE_MARKERS)
 
 _DownloadFn = Callable[[Bot, str], Awaitable[str | None]]
 
@@ -61,17 +70,17 @@ async def collect_reply_images(
     file_ids: list[str] = []
 
     if reply_message_id is not None:
-        stmt = select(Message.media_group_id, Message.tg_file_id).where(
+        stmt = select(Message.media_group_id, Message.tg_file_id, Message.text).where(
             Message.chat_id == chat_id,
             Message.message_id == reply_message_id,
         )
         result = await session.execute(stmt)
         row = result.first()
         if row is not None:
-            media_group_id, tg_file_id = row
+            media_group_id, tg_file_id, row_text = row
             if media_group_id:
                 album_stmt = (
-                    select(Message.tg_file_id)
+                    select(Message.tg_file_id, Message.text)
                     .where(
                         Message.chat_id == chat_id,
                         Message.media_group_id == media_group_id,
@@ -81,8 +90,10 @@ async def collect_reply_images(
                     .limit(MAX_REPLY_IMAGES)
                 )
                 album_res = await session.execute(album_stmt)
-                file_ids = [fid for (fid,) in album_res.all() if fid]
-            elif tg_file_id:
+                file_ids = [
+                    fid for (fid, txt) in album_res.all() if fid and not _is_non_image_row(txt)
+                ]
+            elif tg_file_id and not _is_non_image_row(row_text):
                 file_ids = [tg_file_id]
 
     if not file_ids:
