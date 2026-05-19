@@ -131,3 +131,115 @@ class TestApplyDryRun:
         assert "DRY" in out
         assert "v0.1.0" in out
         assert "2026.04.12.0" in out
+
+
+class TestApplyWrite:
+    def test_creates_new_tag_at_same_sha_and_deletes_old(
+        self, fake_repo: Path,
+    ) -> None:
+        run_git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        old_sha = run_git("rev-list", "-1", "v0.1.0").strip()
+        (fake_repo / "CHANGELOG.md").write_text(
+            "## [0.1.0] - 2026-04-12\n\nbody\n"
+        )
+        run_git("add", "CHANGELOG.md")
+        run_git("commit", "-q", "-m", "add changelog")
+
+        apply(
+            dry_run=False,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+
+        assert tag_exists("v0.1.0") is False
+        assert tag_exists("2026.04.12.0") is True
+        new_sha = run_git("rev-list", "-1", "2026.04.12.0").strip()
+        assert new_sha == old_sha
+        assert "[2026.04.12.0]" in (fake_repo / "CHANGELOG.md").read_text()
+        assert "[0.1.0]" not in (fake_repo / "CHANGELOG.md").read_text()
+
+    def test_idempotent_second_run_no_errors(
+        self, fake_repo: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        run_git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        (fake_repo / "CHANGELOG.md").write_text(
+            "## [0.1.0] - 2026-04-12\n\nbody\n"
+        )
+        run_git("add", "CHANGELOG.md")
+        run_git("commit", "-q", "-m", "add changelog")
+
+        # First run: migrates
+        apply(
+            dry_run=False,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+        # Commit the rewritten CHANGELOG so the tree is clean for run 2
+        run_git("add", "CHANGELOG.md")
+        run_git("commit", "-q", "-m", "calver rewrite")
+        capsys.readouterr()  # clear
+
+        # Second run: should be no-op, no exceptions
+        apply(
+            dry_run=False,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+        out = capsys.readouterr().out
+        assert "skip: v0.1.0 already migrated to 2026.04.12.0" in out
+        assert tag_exists("2026.04.12.0") is True
+        assert tag_exists("v0.1.0") is False
+
+    def test_dry_run_after_apply_finds_no_work(
+        self, fake_repo: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Acceptance criterion: idempotency check via second --dry-run."""
+        run_git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        (fake_repo / "CHANGELOG.md").write_text(
+            "## [0.1.0] - 2026-04-12\nbody\n"
+        )
+        run_git("add", "CHANGELOG.md")
+        run_git("commit", "-q", "-m", "add changelog")
+        apply(
+            dry_run=False,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+        capsys.readouterr()  # clear
+
+        apply(
+            dry_run=True,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+        out = capsys.readouterr().out
+        assert "DRY: would create" not in out  # nothing left to do
+        assert "skip" in out
+
+    def test_refuses_dirty_tree(self, fake_repo: Path) -> None:
+        (fake_repo / "dirty.txt").write_text("uncommitted\n")
+        with pytest.raises(SystemExit, match="uncommitted"):
+            apply(
+                dry_run=False,
+                changelog_path=fake_repo / "CHANGELOG.md",
+                mapping={"v0.1.0": "2026.04.12.0"},
+            )
+
+    def test_prints_operator_instructions_on_real_run(
+        self, fake_repo: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        run_git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        (fake_repo / "CHANGELOG.md").write_text(
+            "## [0.1.0] - 2026-04-12\nbody\n"
+        )
+        run_git("add", "CHANGELOG.md")
+        run_git("commit", "-q", "-m", "add changelog")
+        apply(
+            dry_run=False,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+        out = capsys.readouterr().out
+        assert "git push origin --tags" in out
+        assert "git push origin --delete v0.1.0" in out
+        assert "gh release edit" in out
