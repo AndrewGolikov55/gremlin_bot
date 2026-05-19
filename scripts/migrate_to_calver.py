@@ -166,3 +166,32 @@ def _print_operator_instructions(mapping: dict[str, str]) -> None:
     print(f"  git push origin --delete {old_list}\n")
     print("  # 3. (If GitHub Releases exist) re-point them via:")
     print("  #    gh release edit <old-tag> --tag <new-tag>")
+
+
+def revert(
+    *,
+    changelog_path: Path = CHANGELOG_DEFAULT,
+    mapping: dict[str, str] | None = None,
+) -> None:
+    """Inverse of apply()."""
+    if mapping is None:
+        mapping = MAP
+    ensure_clean_tree()
+
+    # 1. CHANGELOG: rewrite headings back
+    for old, new in mapping.items():
+        old_v = old.removeprefix("v")
+        sed_inplace(
+            changelog_path,
+            rf"^## \[{re.escape(new)}\] -",
+            f"## [{old_v}] -",
+        )
+
+    # 2. Tags: recreate old, delete new
+    for old, new in mapping.items():
+        if not tag_exists(new):
+            continue
+        sha = run_git("rev-list", "-1", new).strip()
+        if not tag_exists(old):
+            run_git("tag", "-a", old, sha, "-m", old)
+        run_git("tag", "-d", new)

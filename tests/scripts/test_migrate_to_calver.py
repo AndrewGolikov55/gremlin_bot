@@ -8,6 +8,7 @@ from scripts.migrate_to_calver import (
     MAP,
     apply,
     ensure_clean_tree,
+    revert,
     run_git,
     sed_inplace,
     tag_exists,
@@ -243,3 +244,43 @@ class TestApplyWrite:
         assert "git push origin --tags" in out
         assert "git push origin --delete v0.1.0" in out
         assert "gh release edit" in out
+
+
+class TestRevert:
+    def test_undoes_apply(self, fake_repo: Path) -> None:
+        run_git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        old_sha = run_git("rev-list", "-1", "v0.1.0").strip()
+        (fake_repo / "CHANGELOG.md").write_text(
+            "## [0.1.0] - 2026-04-12\nbody\n"
+        )
+        run_git("add", "CHANGELOG.md")
+        run_git("commit", "-q", "-m", "add changelog")
+
+        apply(
+            dry_run=False,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+        # state after apply: new tag exists, old tag gone, CHANGELOG rewritten
+        run_git("add", "CHANGELOG.md")
+        run_git("commit", "-q", "-m", "calver rewrite")
+
+        revert(
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+        # state after revert: old tag back, new tag gone, CHANGELOG restored
+
+        assert tag_exists("v0.1.0") is True
+        assert tag_exists("2026.04.12.0") is False
+        assert run_git("rev-list", "-1", "v0.1.0").strip() == old_sha
+        assert "[0.1.0]" in (fake_repo / "CHANGELOG.md").read_text()
+        assert "[2026.04.12.0]" not in (fake_repo / "CHANGELOG.md").read_text()
+
+    def test_refuses_dirty_tree(self, fake_repo: Path) -> None:
+        (fake_repo / "dirty.txt").write_text("uncommitted\n")
+        with pytest.raises(SystemExit, match="uncommitted"):
+            revert(
+                changelog_path=fake_repo / "CHANGELOG.md",
+                mapping={"v0.1.0": "2026.04.12.0"},
+            )
