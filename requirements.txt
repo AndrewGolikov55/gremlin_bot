@@ -9,5 +9,6 @@ redis>=5.0
 apscheduler>=3.10
 httpx[socks]>=0.26
 prometheus-client>=0.20
+pymorphy3>=2.0
 pydantic>=2.7
 python-multipart
