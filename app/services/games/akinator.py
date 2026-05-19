@@ -230,6 +230,7 @@ class AkinatorService:
                     .values(status=RoundStatus.ABORTED.value, finished_at=datetime.utcnow())
                 )
                 await session.commit()
+                self._meta_cache.pop(round_.id, None)
         display, _ = await self._resolve_display(chat_id=chat_id, user_id=target_uid)
         await self.bot.send_message(
             chat_id,
@@ -410,6 +411,7 @@ class AkinatorService:
                         )
                     )
                     await session.commit()
+                    self._meta_cache.pop(round_.id, None)
                 else:
                     await session.commit()
         if correct:
@@ -439,6 +441,7 @@ class AkinatorService:
             )
             await session.commit()
             target_uid = round_.target_user_id
+            self._meta_cache.pop(round_.id, None)
         display, _ = await self._resolve_display(chat_id=chat_id, user_id=target_uid)
         await self.bot.send_message(
             chat_id,
@@ -460,7 +463,10 @@ class AkinatorService:
                 .values(status=RoundStatus.EXPIRED.value, finished_at=now)
             )
             await session.commit()
-            return int(result.rowcount or 0)  # type: ignore[attr-defined]
+            recovered = int(result.rowcount or 0)  # type: ignore[attr-defined]
+            if recovered > 0:
+                self._meta_cache.clear()
+            return recovered
 
     @staticmethod
     async def _fetch_active(session: AsyncSession, chat_id: int) -> AkinatorRound | None:

@@ -367,3 +367,57 @@ async def test_recover_stale_expires_old_active(sessionmaker):
     async with sessionmaker() as session:
         row = (await session.execute(select(AkinatorRound))).scalar_one()
     assert row.status == "expired"
+
+
+class TestMetaCacheCleanup:
+    @pytest.mark.asyncio
+    async def test_cache_cleared_on_stop(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        await svc.start(chat_id=42, initiator_id=200)
+        # Populate cache via one ask
+        with um.patch("app.services.games.akinator.llm_generate", AsyncMock(return_value="yes")):
+            await svc.ask(chat_id=42, asker_id=200, question="q?")
+        assert len(svc._meta_cache) == 1
+        await svc.stop(chat_id=42)
+        assert len(svc._meta_cache) == 0
+
+    @pytest.mark.asyncio
+    async def test_cache_cleared_on_guess_won(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        await svc.start(chat_id=42, initiator_id=200)
+        with um.patch("app.services.games.akinator.llm_generate", AsyncMock(return_value="yes")):
+            await svc.ask(chat_id=42, asker_id=200, question="q?")
+        assert len(svc._meta_cache) == 1
+        await svc.guess(chat_id=42, asker_id=200, target_username="@andrew")
+        assert len(svc._meta_cache) == 0
+
+    @pytest.mark.asyncio
+    async def test_cache_cleared_on_finish_lost(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        await svc.start(chat_id=42, initiator_id=200)
+        with um.patch("app.services.games.akinator.llm_generate", AsyncMock(return_value="no")):
+            for _ in range(MAX_QUESTIONS):
+                await svc.ask(chat_id=42, asker_id=200, question="q?")
+        # After MAX_QUESTIONS asks, _finish_lost called → cache must be empty
+        assert len(svc._meta_cache) == 0
+
+    @pytest.mark.asyncio
+    async def test_recover_stale_clears_cache(self, sessionmaker):
+        from datetime import datetime, timedelta
+        from app.services.games.akinator import MAX_ROUND_AGE
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        await svc.start(chat_id=42, initiator_id=200)
+        with um.patch("app.services.games.akinator.llm_generate", AsyncMock(return_value="yes")):
+            await svc.ask(chat_id=42, asker_id=200, question="q?")
+        # Backdate
+        async with sessionmaker() as session:
+            row = (await session.execute(select(AkinatorRound))).scalar_one()
+            row.started_at = datetime.utcnow() - MAX_ROUND_AGE - timedelta(hours=1)
+            await session.commit()
+        assert len(svc._meta_cache) == 1
+        await svc.recover_stale()
+        assert len(svc._meta_cache) == 0
