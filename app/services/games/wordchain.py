@@ -202,20 +202,28 @@ class WordchainService:
             self._reset_timer(chat_id=chat_id, round_id=round_id)
 
     async def stop(self, *, chat_id: int) -> None:
+        """Close active wordchain round. Decision built under lock+tx, side-effects after."""
+        decision: str = "noop"
         async with self._lock(chat_id):
             async with self.sessionmaker() as session:
-                round_ = await self._fetch_active(chat_id, session=session)
-                if round_ is None:
-                    await self.bot.send_message(chat_id, "Цепочки нет.")
-                    return
-                await session.execute(
-                    update(WordchainRound)
-                    .where(WordchainRound.id == round_.id)
-                    .values(status=RoundStatus.FINISHED.value, finished_at=datetime.utcnow())
-                )
-                await session.commit()
-            self._cancel_timer(chat_id)
-        await self.bot.send_message(chat_id, "🔗 Цепочка закрыта.")
+                async with session.begin():
+                    round_ = await self._fetch_active(chat_id, session=session)
+                    if round_ is None:
+                        decision = "no_round"
+                    else:
+                        await session.execute(
+                            update(WordchainRound)
+                            .where(WordchainRound.id == round_.id)
+                            .values(status=RoundStatus.FINISHED.value, finished_at=datetime.utcnow())
+                        )
+                        decision = "stopped"
+            if decision == "stopped":
+                self._cancel_timer(chat_id)
+
+        if decision == "no_round":
+            await self.bot.send_message(chat_id, "Цепочки нет.")
+        elif decision == "stopped":
+            await self.bot.send_message(chat_id, "🔗 Цепочка закрыта.")
 
     def _reset_timer(self, *, chat_id: int, round_id: int) -> None:
         self._cancel_timer(chat_id)
