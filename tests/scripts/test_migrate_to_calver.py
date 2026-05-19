@@ -8,6 +8,7 @@ from scripts.migrate_to_calver import (
     MAP,
     ensure_clean_tree,
     run_git,
+    sed_inplace,
     tag_exists,
 )
 
@@ -63,3 +64,37 @@ class TestEnsureCleanTree:
         (fake_repo / "dirty.txt").write_text("uncommitted\n")
         with pytest.raises(SystemExit, match="uncommitted"):
             ensure_clean_tree()
+
+
+class TestSedInplace:
+    def test_replaces_single_match_and_returns_count(
+        self, tmp_path: Path,
+    ) -> None:
+        f = tmp_path / "x.md"
+        f.write_text("## [0.1.0] - 2026-04-12\n\nbody\n")
+        n = sed_inplace(f, r"^## \[0\.1\.0\] -", "## [2026.04.12.0] -")
+        assert n == 1
+        assert f.read_text().startswith("## [2026.04.12.0] - 2026-04-12")
+
+    def test_returns_zero_when_no_match(self, tmp_path: Path) -> None:
+        f = tmp_path / "x.md"
+        f.write_text("nothing to see\n")
+        n = sed_inplace(f, r"^## \[0\.1\.0\] -", "## [whatever] -")
+        assert n == 0
+        assert f.read_text() == "nothing to see\n"
+
+    def test_dry_run_does_not_write(self, tmp_path: Path) -> None:
+        f = tmp_path / "x.md"
+        original = "## [0.1.0] - 2026-04-12\nbody\n"
+        f.write_text(original)
+        n = sed_inplace(
+            f, r"^## \[0\.1\.0\] -", "## [2026.04.12.0] -", dry_run=True,
+        )
+        assert n == 1  # счёт всё равно возвращаем
+        assert f.read_text() == original  # но не пишем
+
+    def test_only_matches_at_line_start(self, tmp_path: Path) -> None:
+        f = tmp_path / "x.md"
+        f.write_text("  ## [0.1.0] - leading space, должен пропустить\n")
+        n = sed_inplace(f, r"^## \[0\.1\.0\] -", "## [X] -")
+        assert n == 0

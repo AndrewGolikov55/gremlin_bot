@@ -13,7 +13,9 @@ Revert (rare):
 """
 from __future__ import annotations
 
+import re
 import subprocess
+from pathlib import Path
 from typing import NoReturn
 
 MAP: dict[str, str] = {
@@ -82,3 +84,22 @@ def ensure_clean_tree() -> None:
             "working tree has uncommitted changes — "
             "commit or stash them first"
         )
+
+
+def sed_inplace(
+    path: Path,
+    pattern: str,
+    replacement: str,
+    *,
+    dry_run: bool = False,
+) -> int:
+    """In-place regex replace on a file. Returns number of substitutions made.
+
+    Pattern is treated as MULTILINE so `^` matches line starts. Replacement
+    is plain text (not a regex template).
+    """
+    text = path.read_text()
+    new_text, n = re.subn(pattern, replacement, text, flags=re.MULTILINE)
+    if n > 0 and not dry_run:
+        path.write_text(new_text)
+    return n
