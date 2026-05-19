@@ -13,6 +13,9 @@ Revert (rare):
 """
 from __future__ import annotations
 
+import subprocess
+from typing import NoReturn
+
 MAP: dict[str, str] = {
     "v0.1.0":  "2026.04.12.0",
     "v0.1.1":  "2026.04.13.0",
@@ -48,3 +51,34 @@ MAP: dict[str, str] = {
     "v0.13.1": "2026.05.18.2",
     "v0.13.2": "2026.05.18.3",
 }
+
+
+def _die(msg: str) -> NoReturn:
+    raise SystemExit(f"error: {msg}")
+
+
+def run_git(*args: str) -> str:
+    """Run a git command, return stdout as string. Die on non-zero exit."""
+    proc = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        _die(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def tag_exists(name: str) -> bool:
+    """Return True if a git tag with the given name exists locally."""
+    return bool(run_git("tag", "-l", name).strip())
+
+
+def ensure_clean_tree() -> None:
+    """Refuse to proceed if working tree has uncommitted changes."""
+    if run_git("status", "--porcelain").strip():
+        _die(
+            "working tree has uncommitted changes — "
+            "commit or stash them first"
+        )
