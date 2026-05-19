@@ -45,12 +45,19 @@ class TargetMeta:
 
 
 SYSTEM_PROMPT = (
-    "Ты ведущий игры «Акинатор». Бот загадал участника чата по его профилю и сообщениям.\n"
-    "Игрок задаёт вопрос «да/нет» о загаданном участнике. Ответь ОДНИМ словом:\n"
-    "- 'yes' если по фактам/профилю/сообщениям загаданного это правда\n"
-    "- 'no' если это неправда\n"
-    "- 'maybe' если есть и за, и против, или контекст неоднозначен\n"
-    "- 'unknown' если в профиле и сообщениях нет данных для ответа\n"
+    "Ты ведущий игры «Акинатор». Бот загадал участника чата и делится с тобой "
+    "его профилем, сообщениями и Telegram-метаданными (имя, username, статус, активность).\n"
+    "Игрок задаёт вопрос «да/нет» о загаданном. Ответь ОДНИМ словом:\n"
+    "- 'yes' если ответ положительный по любому из источников\n"
+    "- 'no' если ответ отрицательный\n"
+    "- 'maybe' если есть и за, и против, или контекст реально неоднозначен\n"
+    "- 'unknown' если вопрос абстрактный, философский, или невозможно "
+    "ответить вообще никакими методами\n\n"
+    "Не уходи в 'unknown' на вопросы, которые можно вывести из:\n"
+    "- имени или username (пол, национальность, возможно возраст)\n"
+    "- статуса (admin/creator vs обычный member)\n"
+    "- активности (много пишет / тихий)\n"
+    "- ключевых слов в сообщениях (хобби, профессия, привычки)\n\n"
     "Никаких лишних слов, только одно из четырёх значений."
 )
 
@@ -277,6 +284,10 @@ class AkinatorService:
             return
         round_id, target_uid, new_count = claim
 
+        meta = await self._target_meta(
+            round_id=round_id, chat_id=chat_id, user_id=target_uid,
+        )
+
         # Load target context outside any lock (read-only, can be slow)
         async with self.sessionmaker() as session:
             stmt = (
@@ -299,7 +310,18 @@ class AkinatorService:
         projects = ", ".join(profile.projects or []) if profile else ""
         summary = (profile.summary if profile else None) or "—"
 
+        username_label = f"@{meta.username}" if meta.username else "—"
+        status_label = meta.member_status or "—"
+        tg_meta_block = (
+            f"Telegram-метаданные загаданного:\n"
+            f"- first_name: {meta.display}\n"
+            f"- username: {username_label}\n"
+            f"- member_status: {status_label}\n"
+            f"- сообщений за неделю: {meta.message_count_week}\n"
+        )
+
         user_prompt = (
+            f"{tg_meta_block}\n"
             f"Профиль загаданного:\n"
             f"identity: {identity or '—'}\n"
             f"preferences: {prefs or '—'}\n"

@@ -322,6 +322,33 @@ class TestTargetMeta:
         assert svc.bot.get_chat_member.await_count == 1
 
 
+class TestAskPromptIncludesMeta:
+    @pytest.mark.asyncio
+    async def test_ask_passes_meta_into_llm_prompt(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        await svc.start(chat_id=42, initiator_id=200)
+
+        captured: dict[str, str] = {}
+
+        async def fake_gen(messages, **kwargs):
+            captured["system"] = messages[0]["content"]
+            captured["user"] = messages[1]["content"]
+            return "yes"
+
+        with um.patch("app.services.games.akinator.llm_generate", fake_gen):
+            await svc.ask(chat_id=42, asker_id=200, question="Это мужчина?")
+
+        # Telegram-метаданные блок должен присутствовать в user-prompt
+        assert "Telegram-метаданные" in captured["user"]
+        assert "first_name: Андрей" in captured["user"]
+        assert "username: @andrew" in captured["user"]
+        assert "member_status: member" in captured["user"]
+        assert "сообщений за неделю:" in captured["user"]
+        # System prompt тоже обновлён — упоминает Telegram-метаданные
+        assert "Telegram-метаданными" in captured["system"]
+
+
 @pytest.mark.asyncio
 async def test_recover_stale_expires_old_active(sessionmaker):
     from datetime import datetime, timedelta
