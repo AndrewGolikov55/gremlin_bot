@@ -8,6 +8,51 @@
 начиная с `2026.05.19.0`. До этой версии — semver `vX.Y.Z`, переименованный
 задним числом по дате коммита (см. секции ниже).
 
+## [2026.05.19.2] - 2026-05-19
+
+### Added
+
+- В `/games` меню сверху показывается блок «📌 Сейчас идёт:» с активными
+  раундами `Akinator`/`Wordchain`/`Storychain`/`Rapbattle`. Зависшие
+  раунды больше не невидимы — открыл `/games`, увидел, продолжил или
+  закрыл через `/akinator_stop` / `/wordchain_stop` / `/storychain_stop`.
+
+### Changed
+
+- `/wordchain` теперь валидирует слово через `pymorphy3` —
+  «рокинокичу», «уууебан», «тыблять» и прочая глоссолалия отвергается
+  с «Не знаю такого слова». Множественное число, косвенные падежи,
+  глаголы и прилагательные тоже отлетают: только NOUN им.падежа
+  единственного числа.
+- `/wordchain` запрещает двум подряд ходам от одного юзера: «🛑 Ты
+  только что играл. Жду другого игрока.» Игра становится по-настоящему
+  совместной.
+- `/akinator` получает в LLM-контекст Telegram-метаданные загаданного
+  (имя, username, статус админа/мембера, число сообщений за неделю).
+  SYSTEM_PROMPT переписан: «не уходи в unknown, если можно вывести
+  ответ из имени, статуса или активности». Теперь «это мужчина?» и
+  подобные вопросы получают осмысленный ответ.
+
+### Internal
+
+- Новая зависимость: `pymorphy3>=2.0` (с `pymorphy3-dicts-ru`). Lazy
+  singleton `MorphAnalyzer`, ~5MB словаря в памяти, init ~200-500ms на
+  первый вызов wordchain.
+- `WordchainService.play()` и `stop()` отрефакторены в decision-pattern:
+  `bot.send_message` вынесен из транзакции (Telegram-таймауты больше не
+  держат DB-соединение, неудачный send не валит state).
+- `AkinatorService`: `TargetMeta` frozen dataclass + per-round in-memory
+  cache (`_meta_cache`). Один `get_chat_member` + один `COUNT()` за раунд
+  вместо повторного fetch'а на каждый из ~20 вопросов. Cache очищается
+  на won/lost/aborted/expired.
+- `RapbattleService._fetch_open` — новый helper для консистентности с
+  `_fetch_active`/`_fetch_open` у других сервисов.
+- `+15` тестов: `TestIsValidNoun`, `TestPlayValidation`,
+  `TestPlayAlternating`, `TestTargetMeta`, `TestAskPromptIncludesMeta`,
+  `TestMetaCacheCleanup`, `TestAkinatorActiveSummary`,
+  `TestWordchainActiveSummary`, `TestStorychainActiveSummary`,
+  `TestRapbattleActiveSummary`, `TestCmdGamesActiveRoundsBlock`.
+
 ## [2026.05.19.1] - 2026-05-19
 
 ### Fixed

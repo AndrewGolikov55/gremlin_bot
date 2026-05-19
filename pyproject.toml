@@ -1,6 +1,6 @@
 [project]
 name = "gremlin-bot"
-version = "2026.05.19.1"
+version = "2026.05.19.2"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
