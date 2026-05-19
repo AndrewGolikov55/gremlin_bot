@@ -421,3 +421,26 @@ class TestMetaCacheCleanup:
         assert len(svc._meta_cache) == 1
         await svc.recover_stale()
         assert len(svc._meta_cache) == 0
+
+
+class TestAkinatorActiveSummary:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_round(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        result = await svc.get_active_summary(chat_id=42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_string_with_progress(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        await _seed_profile(sessionmaker)
+        await svc.start(chat_id=42, initiator_id=200)
+        with um.patch("app.services.games.akinator.llm_generate", AsyncMock(return_value="yes")):
+            await svc.ask(chat_id=42, asker_id=200, question="q?")
+            await svc.ask(chat_id=42, asker_id=200, question="q?")
+        result = await svc.get_active_summary(chat_id=42)
+        assert result is not None
+        assert "🤔 Akinator" in result
+        assert "2/20" in result
+        assert "/akinator_ask" in result
+        assert "/akinator_stop" in result

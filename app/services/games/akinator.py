@@ -468,6 +468,17 @@ class AkinatorService:
                 self._meta_cache.clear()
             return recovered
 
+    async def get_active_summary(self, chat_id: int) -> str | None:
+        """Return a one-line summary if there's an active akinator round here."""
+        async with self.sessionmaker() as session:
+            round_ = await self._fetch_active(session, chat_id)
+        if round_ is None:
+            return None
+        return (
+            f"🤔 Akinator (задано {round_.questions_asked}/{MAX_QUESTIONS}) — "
+            f"/akinator_ask или /akinator_stop"
+        )
+
     @staticmethod
     async def _fetch_active(session: AsyncSession, chat_id: int) -> AkinatorRound | None:
         stmt = (
