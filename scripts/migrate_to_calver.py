@@ -13,6 +13,7 @@ Revert (rare):
 """
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
 from pathlib import Path
@@ -195,3 +196,28 @@ def revert(
         if not tag_exists(old):
             run_git("tag", "-a", old, sha, "-m", old)
         run_git("tag", "-d", new)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Migrate semver tags + CHANGELOG to CalVer (YYYY.MM.DD.N)",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--dry-run", action="store_true",
+        help="show what would change without modifying anything",
+    )
+    mode.add_argument(
+        "--revert", action="store_true",
+        help="undo a previous migration (recreates old tags, restores CHANGELOG)",
+    )
+    args = parser.parse_args()
+
+    if args.revert:
+        revert()
+    else:
+        apply(dry_run=args.dry_run)
+
+
+if __name__ == "__main__":
+    main()

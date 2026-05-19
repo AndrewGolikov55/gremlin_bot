@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess as sp
+import sys
 from pathlib import Path
 
 import pytest
@@ -284,3 +286,28 @@ class TestRevert:
                 changelog_path=fake_repo / "CHANGELOG.md",
                 mapping={"v0.1.0": "2026.04.12.0"},
             )
+
+
+class TestCLI:
+    def test_dry_run_flag(self, fake_repo: Path) -> None:
+        run_git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        (fake_repo / "CHANGELOG.md").write_text("## [0.1.0] - 2026-04-12\n")
+        repo_root = Path(__file__).resolve().parents[2]
+        proc = sp.run(
+            [sys.executable, str(repo_root / "scripts" / "migrate_to_calver.py"),
+             "--dry-run"],
+            capture_output=True, text=True, check=True,
+        )
+        assert "DRY" in proc.stdout
+        assert tag_exists("v0.1.0") is True
+        assert tag_exists("2026.04.12.0") is False
+
+    def test_help_lists_modes(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        proc = sp.run(
+            [sys.executable, str(repo_root / "scripts" / "migrate_to_calver.py"),
+             "--help"],
+            capture_output=True, text=True, check=True,
+        )
+        assert "--dry-run" in proc.stdout
+        assert "--revert" in proc.stdout
