@@ -103,3 +103,66 @@ def sed_inplace(
     if n > 0 and not dry_run:
         path.write_text(new_text)
     return n
+
+
+CHANGELOG_DEFAULT = Path("CHANGELOG.md")
+
+
+def apply(
+    *,
+    dry_run: bool,
+    changelog_path: Path = CHANGELOG_DEFAULT,
+    mapping: dict[str, str] | None = None,
+) -> None:
+    """Apply CalVer migration: rewrite CHANGELOG headings + recreate tags.
+
+    Idempotent: a second run after a successful first prints "skip" for
+    each already-migrated tag and finds no headings to rewrite.
+    """
+    if mapping is None:
+        mapping = MAP
+    if not dry_run:
+        ensure_clean_tree()
+
+    # 1. CHANGELOG rewrite
+    for old, new in mapping.items():
+        old_v = old.removeprefix("v")
+        n = sed_inplace(
+            changelog_path,
+            rf"^## \[{re.escape(old_v)}\] -",
+            f"## [{new}] -",
+            dry_run=dry_run,
+        )
+        if n == 0:
+            print(f"  note: no CHANGELOG entry for {old} (tag-only migration)")
+
+    # 2. Tag migration
+    for old, new in mapping.items():
+        if not tag_exists(old):
+            if tag_exists(new):
+                print(f"  skip: {old} already migrated to {new}")
+            else:
+                print(f"  warn: {old} missing and {new} not yet created")
+            continue
+        sha = run_git("rev-list", "-1", old).strip()
+        if dry_run:
+            print(f"DRY: would create {new} -> {sha} (was {old})")
+            continue
+        if not tag_exists(new):
+            run_git("tag", "-a", new, sha, "-m", new)
+        run_git("tag", "-d", old)
+
+    if not dry_run:
+        _print_operator_instructions(mapping)
+
+
+def _print_operator_instructions(mapping: dict[str, str]) -> None:
+    old_list = " ".join(mapping.keys())
+    print("\nLocal migration done. Next steps for operator:\n")
+    print("  # 1. Push the new release commit + all new tags")
+    print("  git push origin main")
+    print("  git push origin --tags\n")
+    print("  # 2. Delete the old tags from origin")
+    print(f"  git push origin --delete {old_list}\n")
+    print("  # 3. (If GitHub Releases exist) re-point them via:")
+    print("  #    gh release edit <old-tag> --tag <new-tag>")

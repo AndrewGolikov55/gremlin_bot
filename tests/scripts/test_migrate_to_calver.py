@@ -6,6 +6,7 @@ import pytest
 
 from scripts.migrate_to_calver import (
     MAP,
+    apply,
     ensure_clean_tree,
     run_git,
     sed_inplace,
@@ -98,3 +99,35 @@ class TestSedInplace:
         f.write_text("  ## [0.1.0] - leading space, должен пропустить\n")
         n = sed_inplace(f, r"^## \[0\.1\.0\] -", "## [X] -")
         assert n == 0
+
+
+class TestApplyDryRun:
+    def test_dry_run_does_not_create_tags(
+        self, fake_repo: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Set up: tag v0.1.0 exists, others don't
+        run_git("tag", "-a", "v0.1.0", "-m", "v0.1.0")
+        (fake_repo / "CHANGELOG.md").write_text(
+            "## [0.1.0] - 2026-04-12\n\nbody\n"
+        )
+
+        # Limit MAP to one entry to keep the test fast and isolated
+        apply(
+            dry_run=True,
+            changelog_path=fake_repo / "CHANGELOG.md",
+            mapping={"v0.1.0": "2026.04.12.0"},
+        )
+
+        # New tag NOT created
+        assert tag_exists("2026.04.12.0") is False
+        # Old tag still here
+        assert tag_exists("v0.1.0") is True
+        # CHANGELOG not modified
+        assert "0.1.0" in (fake_repo / "CHANGELOG.md").read_text()
+        assert "2026.04.12.0" not in (fake_repo / "CHANGELOG.md").read_text()
+
+        # Output mentions what WOULD happen
+        out = capsys.readouterr().out
+        assert "DRY" in out
+        assert "v0.1.0" in out
+        assert "2026.04.12.0" in out
