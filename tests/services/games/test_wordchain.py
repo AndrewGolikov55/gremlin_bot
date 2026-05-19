@@ -282,3 +282,33 @@ class TestPlayAlternating:
         async with sessionmaker() as session:
             words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
         assert "енот" in words
+
+
+class TestWordchainActiveSummary:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_round(self, sessionmaker):
+        bot = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        result = await svc.get_active_summary(chat_id=42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_string_with_last_word_and_letter(self, sessionmaker):
+        from sqlalchemy import update as sa_update
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        await svc.start(chat_id=42)
+        # Force last_word=стол for determinism
+        async with sessionmaker() as session:
+            await session.execute(
+                sa_update(WordchainRound).values(last_word="стол")
+            )
+            await session.commit()
+        result = await svc.get_active_summary(chat_id=42)
+        await svc.stop(chat_id=42)
+        assert result is not None
+        assert "🔗 Wordchain" in result
+        assert "стол" in result
+        assert "Л" in result  # next letter
+        assert "/wordchain_play" in result

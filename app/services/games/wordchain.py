@@ -281,6 +281,17 @@ class WordchainService:
             await session.commit()
             return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
+    async def get_active_summary(self, chat_id: int) -> str | None:
+        """Return a one-line summary if there's an active wordchain here."""
+        round_ = await self._fetch_active(chat_id)
+        if round_ is None:
+            return None
+        next_letter = _meaningful_last_letter(round_.last_word or "").upper()
+        return (
+            f"🔗 Wordchain (последнее слово: «{round_.last_word}», ход на «{next_letter}») — "
+            f"/wordchain_play"
+        )
+
     async def _fetch_active(
         self, chat_id: int, *, session: AsyncSession | None = None,
     ) -> WordchainRound | None:
