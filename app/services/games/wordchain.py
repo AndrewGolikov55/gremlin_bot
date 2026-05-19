@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta
 from html import escape
 
+import pymorphy3
 from aiogram import Bot
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +18,38 @@ from ...utils.locks import get_chat_lock
 from .common import RoundStatus
 
 logger = logging.getLogger(__name__)
+
+_MORPH: pymorphy3.MorphAnalyzer | None = None
+
+
+def get_morph() -> pymorphy3.MorphAnalyzer:
+    """Lazy singleton MorphAnalyzer (~5MB dict, init ~200-500ms first call)."""
+    global _MORPH
+    if _MORPH is None:
+        _MORPH = pymorphy3.MorphAnalyzer()
+    return _MORPH
+
+
+def is_valid_noun(word: str) -> tuple[bool, str | None]:
+    """Validate word as Russian noun in nominative singular.
+
+    Returns (valid, refusal_reason). refusal_reason is None on success.
+
+    Note about ё/е: pymorphy3 нормализует «ё↔е» в lookup'ах сам по себе,
+    а наш caller дополнительно делает `.replace("ё", "е")` на входе.
+    Две нормализации идемпотентны — «ёж» → «еж» → `word_is_known("еж")` = True.
+    """
+    morph = get_morph()
+    if not morph.word_is_known(word):
+        return False, "Не знаю такого слова."
+    for parse in morph.parse(word):
+        grammemes = set(parse.tag.grammemes)
+        if "NOUN" in grammemes and "nomn" in grammemes and "sing" in grammemes:
+            return True, None
+    return False, (
+        "Слово должно быть существительным в им. падеже, ед. число."
+    )
+
 
 WORD_RE = re.compile(r"^[а-яё]{2,30}$")
 TURN_TIMEOUT_SECONDS = 60

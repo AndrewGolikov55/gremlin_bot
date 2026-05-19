@@ -135,3 +135,39 @@ async def test_recover_stale_expires_old_active_rounds(sessionmaker):
     async with sessionmaker() as session:
         row = (await session.execute(select(WordchainRound))).scalar_one()
     assert row.status == "expired"
+
+
+from app.services.games.wordchain import is_valid_noun
+
+
+class TestIsValidNoun:
+    def test_accepts_simple_noun(self) -> None:
+        ok, refusal = is_valid_noun("стол")
+        assert ok is True
+        assert refusal is None
+
+    def test_rejects_unknown_word(self) -> None:
+        ok, refusal = is_valid_noun("рокинокичу")
+        assert ok is False
+        assert refusal == "Не знаю такого слова."
+
+    def test_rejects_plural(self) -> None:
+        ok, refusal = is_valid_noun("столы")
+        assert ok is False
+        assert "ед. число" in (refusal or "")
+
+    def test_rejects_genitive(self) -> None:
+        ok, refusal = is_valid_noun("стола")
+        assert ok is False
+        assert "им. падеже" in (refusal or "")
+
+    def test_rejects_verb(self) -> None:
+        ok, refusal = is_valid_noun("бегать")
+        assert ok is False
+        assert "существительным" in (refusal or "")
+
+    def test_accepts_normalised_yo_form(self) -> None:
+        # ё→е already done by caller; pymorphy treats them as equivalent anyway
+        ok, refusal = is_valid_noun("еж")
+        assert ok is True
+        assert refusal is None

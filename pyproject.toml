@@ -52,7 +52,7 @@ exclude = '''(?x)(
 )'''
 
 [[tool.mypy.overrides]]
-module = ["aiogram.*", "apscheduler.*", "redis.*"]
+module = ["aiogram.*", "apscheduler.*", "redis.*", "pymorphy3.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
