@@ -12,6 +12,10 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramFor
 from aiogram.filters import Command
 
 from ..services.dice_game import DiceGameService
+from ..services.games.akinator import AkinatorService
+from ..services.games.rapbattle import RapbattleService
+from ..services.games.storychain import StorychainService
+from ..services.games.wordchain import WordchainService
 from ..services.guess_game import GuessGameService, NoCandidatesError, PreparedRound
 from ..services.ship import ShipService
 
@@ -279,14 +283,37 @@ async def _start_round(
 
 
 @router.message(Command("games"))
-async def cmd_games(message: types.Message) -> None:
+async def cmd_games(
+    message: types.Message,
+    akinator: AkinatorService,
+    wordchain: WordchainService,
+    storychain: StorychainService,
+    rapbattle: RapbattleService,
+) -> None:
     if message.chat.type not in {"group", "supergroup"}:
         await message.reply("Меню игр доступно только в групповых чатах.")
         return
     if message.from_user is None:
         return
+
+    chat_id = message.chat.id
+    summaries = [
+        s for s in await asyncio.gather(
+            akinator.get_active_summary(chat_id),
+            wordchain.get_active_summary(chat_id),
+            storychain.get_active_summary(chat_id),
+            rapbattle.get_active_summary(chat_id),
+        )
+        if s
+    ]
+
+    text = "🎮 Выбери игру:"
+    if summaries:
+        active_block = "📌 Сейчас идёт:\n" + "\n".join(f"• {s}" for s in summaries)
+        text = f"{active_block}\n\n{text}"
+
     await message.reply(
-        "🎮 Выбери игру:",
+        text,
         reply_markup=build_games_menu_markup(opener_id=message.from_user.id),
     )
 

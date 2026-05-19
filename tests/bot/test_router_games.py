@@ -616,3 +616,83 @@ async def test_dice_roll_after_existing_roll_persists_second(
     async with sessionmaker() as session:
         rounds = (await session.execute(select(DiceRound))).scalars().all()
     assert len(rounds) == 2
+
+
+class TestCmdGamesActiveRoundsBlock:
+    @pytest.mark.asyncio
+    async def test_no_active_rounds_shows_simple_text(self) -> None:
+        from app.bot.router_games import cmd_games
+        message = MagicMock(spec=TgMessage)
+        message.chat = Chat(id=-100, type="supergroup")
+        message.from_user = TgUser(id=42, is_bot=False, first_name="A")
+        message.reply = AsyncMock()
+        akinator = AsyncMock()
+        akinator.get_active_summary = AsyncMock(return_value=None)
+        wordchain = AsyncMock()
+        wordchain.get_active_summary = AsyncMock(return_value=None)
+        storychain = AsyncMock()
+        storychain.get_active_summary = AsyncMock(return_value=None)
+        rapbattle = AsyncMock()
+        rapbattle.get_active_summary = AsyncMock(return_value=None)
+
+        await cmd_games(
+            message,
+            akinator=akinator, wordchain=wordchain,
+            storychain=storychain, rapbattle=rapbattle,
+        )
+        message.reply.assert_awaited_once()
+        text = message.reply.await_args.args[0]
+        assert text == "🎮 Выбери игру:"
+        assert "Сейчас идёт" not in text
+
+    @pytest.mark.asyncio
+    async def test_with_akinator_active_prepends_summary(self) -> None:
+        from app.bot.router_games import cmd_games
+        message = MagicMock(spec=TgMessage)
+        message.chat = Chat(id=-100, type="supergroup")
+        message.from_user = TgUser(id=42, is_bot=False, first_name="A")
+        message.reply = AsyncMock()
+        akinator = AsyncMock()
+        akinator.get_active_summary = AsyncMock(return_value="🤔 Akinator (задано 3/20) — /akinator_ask или /akinator_stop")
+        wordchain = AsyncMock()
+        wordchain.get_active_summary = AsyncMock(return_value=None)
+        storychain = AsyncMock()
+        storychain.get_active_summary = AsyncMock(return_value=None)
+        rapbattle = AsyncMock()
+        rapbattle.get_active_summary = AsyncMock(return_value=None)
+
+        await cmd_games(
+            message,
+            akinator=akinator, wordchain=wordchain,
+            storychain=storychain, rapbattle=rapbattle,
+        )
+        text = message.reply.await_args.args[0]
+        assert text.startswith("📌 Сейчас идёт")
+        assert "🤔 Akinator" in text
+        assert "3/20" in text
+        assert "🎮 Выбери игру:" in text
+
+    @pytest.mark.asyncio
+    async def test_with_multiple_active_lists_all(self) -> None:
+        from app.bot.router_games import cmd_games
+        message = MagicMock(spec=TgMessage)
+        message.chat = Chat(id=-100, type="supergroup")
+        message.from_user = TgUser(id=42, is_bot=False, first_name="A")
+        message.reply = AsyncMock()
+        akinator = AsyncMock()
+        akinator.get_active_summary = AsyncMock(return_value="🤔 Akinator (3/20)")
+        wordchain = AsyncMock()
+        wordchain.get_active_summary = AsyncMock(return_value="🔗 Wordchain (поле)")
+        storychain = AsyncMock()
+        storychain.get_active_summary = AsyncMock(return_value=None)
+        rapbattle = AsyncMock()
+        rapbattle.get_active_summary = AsyncMock(return_value=None)
+
+        await cmd_games(
+            message,
+            akinator=akinator, wordchain=wordchain,
+            storychain=storychain, rapbattle=rapbattle,
+        )
+        text = message.reply.await_args.args[0]
+        assert "🤔 Akinator" in text
+        assert "🔗 Wordchain" in text

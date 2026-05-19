@@ -407,6 +407,7 @@ class TestMetaCacheCleanup:
     @pytest.mark.asyncio
     async def test_recover_stale_clears_cache(self, sessionmaker):
         from datetime import datetime, timedelta
+
         from app.services.games.akinator import MAX_ROUND_AGE
         svc = _make_svc(sessionmaker)
         await _seed_profile(sessionmaker)
