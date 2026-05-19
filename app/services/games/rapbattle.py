@@ -237,6 +237,35 @@ class RapbattleService:
             a_display=a_display, b_display=b_display,
         ))
 
+    @staticmethod
+    async def _fetch_open(session: AsyncSession, chat_id: int) -> RapbattleRound | None:
+        """Single open rapbattle round in given chat (GENERATING or VOTING)."""
+        stmt = (
+            select(RapbattleRound)
+            .where(
+                RapbattleRound.chat_id == chat_id,
+                RapbattleRound.status.in_([
+                    RoundStatus.GENERATING.value,
+                    RoundStatus.VOTING.value,
+                ]),
+            )
+            .limit(1)
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def get_active_summary(self, chat_id: int) -> str | None:
+        """Return a one-line summary if there's an active rapbattle here."""
+        async with self.sessionmaker() as session:
+            round_ = await self._fetch_open(session, chat_id)
+        if round_ is None:
+            return None
+        label = (
+            "генерируется"
+            if round_.status == RoundStatus.GENERATING.value
+            else "голосование"
+        )
+        return f"🎤 Rapbattle ({label})"
+
     async def recover_stale(self, *, now: datetime | None = None) -> int:
         """Mark GENERATING/VOTING rounds older than ROUND_MAX_AGE as finished w/o winner."""
         if now is None:

@@ -204,3 +204,29 @@ async def test_recover_stale_expires_stuck_voting(sessionmaker):
     async with sessionmaker() as session:
         row = (await session.execute(select(RapbattleRound))).scalar_one()
     assert row.status == "finished"
+
+
+class TestRapbattleActiveSummary:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_round(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        result = await svc.get_active_summary(chat_id=42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_string_in_voting_state(self, sessionmaker):
+        svc = _make_svc(sessionmaker)
+        await _seed_users(sessionmaker)
+        with um.patch(
+            "app.services.games.rapbattle.llm_generate",
+            AsyncMock(return_value="rap rap rap rap"),
+        ):
+            await svc.start(
+                chat_id=42, initiator_id=100, opponent_arg="@ben",
+                opponent_reply_id=None,
+            )
+        # After start(), round is in VOTING state
+        result = await svc.get_active_summary(chat_id=42)
+        assert result is not None
+        assert "🎤 Rapbattle" in result
+        assert "голосование" in result
