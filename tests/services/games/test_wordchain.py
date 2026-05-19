@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import WordchainRound, WordchainWord
 from app.services.games.wordchain import WordchainService
@@ -171,3 +172,113 @@ class TestIsValidNoun:
         ok, refusal = is_valid_noun("еж")
         assert ok is True
         assert refusal is None
+
+
+class TestPlayValidation:
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_word(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        await svc.start(chat_id=42)
+        bot.send_message.reset_mock()
+        await svc.play(chat_id=42, user_id=200, raw_word="рокинокичу")
+        await svc.stop(chat_id=42)
+        async with sessionmaker() as session:
+            words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
+        assert "рокинокичу" not in words
+        sent = [c.args[1] for c in bot.send_message.await_args_list]
+        assert any("Не знаю такого слова" in s for s in sent)
+
+    @pytest.mark.asyncio
+    async def test_rejects_plural_form(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        await svc.start(chat_id=42)
+        bot.send_message.reset_mock()
+        await svc.play(chat_id=42, user_id=200, raw_word="столы")
+        await svc.stop(chat_id=42)
+        async with sessionmaker() as session:
+            words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
+        assert "столы" not in words
+
+    @pytest.mark.asyncio
+    async def test_rejects_verb(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        await svc.start(chat_id=42)
+        bot.send_message.reset_mock()
+        await svc.play(chat_id=42, user_id=200, raw_word="бегать")
+        await svc.stop(chat_id=42)
+        async with sessionmaker() as session:
+            words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
+        assert "бегать" not in words
+
+
+class TestPlayAlternating:
+    @pytest.mark.asyncio
+    async def test_same_user_twice_in_row_rejected(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        from sqlalchemy import update as sa_update
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        await svc.start(chat_id=42)
+        # Force last_word=поле so we can play валидное слово на «е»
+        async with sessionmaker() as session:
+            await session.execute(
+                sa_update(WordchainRound).values(last_word="поле")
+            )
+            await session.commit()
+        # First play by user 200 succeeds
+        await svc.play(chat_id=42, user_id=200, raw_word="енот")
+        bot.send_message.reset_mock()
+        # Second play by SAME user 200 must be rejected even if word is valid
+        await svc.play(chat_id=42, user_id=200, raw_word="трактор")
+        await svc.stop(chat_id=42)
+        async with sessionmaker() as session:
+            words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
+        assert "енот" in words
+        assert "трактор" not in words
+        sent = [c.args[1] for c in bot.send_message.await_args_list]
+        assert any("Жду другого игрока" in s for s in sent)
+
+    @pytest.mark.asyncio
+    async def test_different_users_alternate_ok(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        from sqlalchemy import update as sa_update
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        await svc.start(chat_id=42)
+        async with sessionmaker() as session:
+            await session.execute(
+                sa_update(WordchainRound).values(last_word="поле")
+            )
+            await session.commit()
+        await svc.play(chat_id=42, user_id=200, raw_word="енот")
+        await svc.play(chat_id=42, user_id=201, raw_word="трактор")
+        await svc.stop(chat_id=42)
+        async with sessionmaker() as session:
+            words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
+        assert "енот" in words
+        assert "трактор" in words
+
+    @pytest.mark.asyncio
+    async def test_first_player_after_seed_not_blocked(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        from sqlalchemy import update as sa_update
+        bot = AsyncMock()
+        bot.send_message = AsyncMock()
+        svc = WordchainService(sessionmaker=sessionmaker, bot=bot)
+        await svc.start(chat_id=42)
+        # Seed user_id=0; первый реальный игрок (любой uid) проходит alternating
+        async with sessionmaker() as session:
+            await session.execute(
+                sa_update(WordchainRound).values(last_word="поле")
+            )
+            await session.commit()
+        await svc.play(chat_id=42, user_id=200, raw_word="енот")
+        await svc.stop(chat_id=42)
+        async with sessionmaker() as session:
+            words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
+        assert "енот" in words

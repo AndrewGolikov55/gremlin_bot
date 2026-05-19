@@ -127,8 +127,12 @@ class WordchainService:
         self._reset_timer(chat_id=chat_id, round_id=round_id)
 
     async def play(self, *, chat_id: int, user_id: int, raw_word: str) -> None:
-        # Normalise ё → е so "ёж" and "еж" don't compete as different words and
-        # so the last-letter rule treats them as the same letter class.
+        """Process a wordchain move.
+
+        Flow: pure validation (regex + ё→е + pymorphy) → DB-decision under lock+tx →
+        side-effects (send_message + timer) outside the transaction.
+        """
+        # 1. Pure-функции (без DB и без send_message внутри tx)
         word = raw_word.strip().lower().replace("ё", "е")
         if not word:
             await self.bot.send_message(chat_id, "Пусто, скажи слово.")
@@ -136,44 +140,66 @@ class WordchainService:
         if not WORD_RE.match(word):
             await self.bot.send_message(chat_id, "❌ Слово только из русских букв (2–30 символов).")
             return
+        valid, refusal = is_valid_noun(word)
+        if not valid:
+            await self.bot.send_message(chat_id, f"❌ {refusal}")
+            return
 
+        # 2. DB-проверки под локом + транзакцией, собираем decision
+        decision: tuple[str, str | None] = ("noop", None)
+        round_id: int | None = None
         async with self._lock(chat_id):
             async with self.sessionmaker() as session:
                 async with session.begin():
                     round_ = await self._fetch_active(chat_id, session=session)
                     if round_ is None:
-                        await self.bot.send_message(chat_id, "Цепочка не идёт. /wordchain чтобы стартануть.")
-                        return
-                    expected_letter = _meaningful_last_letter(round_.last_word or "")
-                    if expected_letter and not word.startswith(expected_letter):
-                        await self.bot.send_message(
-                            chat_id,
-                            f"❌ Слово должно начинаться на «{expected_letter.upper()}», "
-                            f"а у тебя — «{word[0].upper()}».",
-                        )
-                        return
-                    # Try insert; UNIQUE (round_id, word) catches repeats
-                    session.add(WordchainWord(round_id=round_.id, user_id=user_id, word=word))
-                    try:
-                        await session.flush()
-                    except IntegrityError:
-                        await self.bot.send_message(chat_id, "❌ Это слово уже было в этой цепочке.")
-                        return
-                    await session.execute(
-                        update(WordchainRound)
-                        .where(WordchainRound.id == round_.id)
-                        .values(
-                            last_word=word,
-                            last_user_id=user_id,
-                            last_word_at=datetime.utcnow(),
-                        )
-                    )
-                    round_id = round_.id
-        await self.bot.send_message(
-            chat_id,
-            f"✅ <b>{escape(word)}</b> — следующее на «{_meaningful_last_letter(word).upper()}».",
-        )
-        self._reset_timer(chat_id=chat_id, round_id=round_id)
+                        decision = ("no_round", None)
+                    elif round_.last_user_id == user_id:
+                        decision = ("same_user", None)
+                    else:
+                        expected_letter = _meaningful_last_letter(round_.last_word or "")
+                        if expected_letter and not word.startswith(expected_letter):
+                            decision = ("wrong_letter", expected_letter)
+                        else:
+                            session.add(WordchainWord(
+                                round_id=round_.id, user_id=user_id, word=word,
+                            ))
+                            try:
+                                await session.flush()
+                            except IntegrityError:
+                                decision = ("dup", None)
+                            else:
+                                await session.execute(
+                                    update(WordchainRound)
+                                    .where(WordchainRound.id == round_.id)
+                                    .values(
+                                        last_word=word,
+                                        last_user_id=user_id,
+                                        last_word_at=datetime.utcnow(),
+                                    )
+                                )
+                                round_id = round_.id
+                                decision = ("accept", None)
+
+        # 3. Side-effects ВНЕ транзакции
+        if decision[0] == "no_round":
+            await self.bot.send_message(chat_id, "Цепочка не идёт. /wordchain чтобы стартануть.")
+        elif decision[0] == "same_user":
+            await self.bot.send_message(chat_id, "🛑 Ты только что играл. Жду другого игрока.")
+        elif decision[0] == "wrong_letter":
+            await self.bot.send_message(
+                chat_id,
+                f"❌ Слово должно начинаться на «{(decision[1] or '').upper()}», "
+                f"а у тебя — «{word[0].upper()}».",
+            )
+        elif decision[0] == "dup":
+            await self.bot.send_message(chat_id, "❌ Это слово уже было в этой цепочке.")
+        elif decision[0] == "accept" and round_id is not None:
+            await self.bot.send_message(
+                chat_id,
+                f"✅ <b>{escape(word)}</b> — следующее на «{_meaningful_last_letter(word).upper()}».",
+            )
+            self._reset_timer(chat_id=chat_id, round_id=round_id)
 
     async def stop(self, *, chat_id: int) -> None:
         async with self._lock(chat_id):
