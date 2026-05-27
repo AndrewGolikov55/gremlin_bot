@@ -7,6 +7,11 @@ services:
     depends_on:
       - db
       - redis
+    env_file:
+      - path: .env
+        required: false
+      - path: .env.spy
+        required: false
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}

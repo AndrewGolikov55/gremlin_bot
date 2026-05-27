@@ -6,6 +6,9 @@ env/*
 *.pyc
 dev.env
 prod.env
+.env
+.env.*
+!.env.example
 compiled_package/*
 gitfs
 
