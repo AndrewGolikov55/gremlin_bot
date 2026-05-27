@@ -27,7 +27,9 @@ class SpyChannelInfo:
     access_mode: str = "mtproto"
 
     @property
-    def public_url(self) -> str:
+    def public_url(self) -> str | None:
+        if not self.username:
+            return None
         return f"https://t.me/{self.username}"
 
 
