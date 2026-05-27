@@ -19,8 +19,13 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
 from sqlalchemy import text
-from telethon import TelegramClient
-from telethon.sessions import StringSession
+
+try:
+    from telethon import TelegramClient  # type: ignore[import-not-found]
+    from telethon.sessions import StringSession  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - depends on optional runtime extra
+    TelegramClient = None  # type: ignore[assignment]
+    StringSession = None  # type: ignore[assignment]
 
 from .admin import create_admin_router
 from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
@@ -213,7 +218,13 @@ storychain_service = StorychainService(
 )
 spy_config = SpyConfig.from_env()
 spy_telegram_client = None
-if spy_config.enabled and spy_config.telegram_api_id and spy_config.telegram_api_hash:
+if (
+    spy_config.enabled
+    and spy_config.telegram_api_id
+    and spy_config.telegram_api_hash
+    and TelegramClient is not None
+    and StringSession is not None
+):
     spy_session = (
         StringSession(spy_config.telegram_session)
         if spy_config.telegram_session
