@@ -17,6 +17,7 @@ from ..models.chat import Chat
 from ..models.memory import ChatMemory, RelationshipState, UserMemoryProfile
 from ..models.message import Message
 from ..models.persona import StylePrompt
+from ..models.spy import SpySource, SpySubscription
 from ..models.user import User
 from ..services.app_config import AppConfigService
 from ..services.llm.tts import OPENAI_TTS_VOICES
@@ -65,6 +66,28 @@ def create_admin_router(
         chats = result.scalars().all()
         body = _render_chats_body(chats, token)
         return HTMLResponse(_render_page("Чаты", token, "chats", body))
+
+    @router.get("/spy", response_class=HTMLResponse)
+    async def spy_sources_view(
+        token: str = Depends(require_token),
+        session: AsyncSession = Depends(get_session),
+    ) -> str:
+        rows = (
+            await session.execute(
+                select(SpySource, func.count(SpySubscription.id))
+                .outerjoin(
+                    SpySubscription,
+                    and_(
+                        SpySubscription.source_id == SpySource.id,
+                        SpySubscription.enabled.is_(True),
+                    ),
+                )
+                .group_by(SpySource.id)
+                .order_by(SpySource.username)
+            )
+        ).all()
+        body = _render_spy_sources_body(rows)
+        return HTMLResponse(_render_page("Gremlin Spy", token, "spy", body))
 
     @router.get("/chats/{chat_id}", response_class=HTMLResponse)
     async def chat_settings_view(
@@ -672,6 +695,7 @@ def _render_page(title: str, token: str | None, active: str, body: str) -> str:
         ("chats", "Чаты", _build_url("/admin/chats", token)),
         ("config", "Настройки", _build_url("/admin/config", token)),
         ("messages", "Сообщения", _build_url("/admin/messages", token)),
+        ("spy", "Gremlin Spy", _build_url("/admin/spy", token)),
         ("styles", "Персоны", _build_url("/admin/styles", token)),
     ]
     nav_html = "".join(
@@ -704,6 +728,46 @@ def _render_page(title: str, token: str | None, active: str, body: str) -> str:
   <script src='{BOOTSTRAP_JS}'></script>
 </body>
 </html>"""
+
+
+def _render_spy_sources_body(rows) -> str:
+    table_rows = []
+    for source, subscription_count in rows:
+        status = "bg-success" if source.status == "active" else "bg-danger"
+        public_url = source.public_url or ""
+        link = (
+            f"<a href='{escape(public_url)}' target='_blank'>{escape(public_url)}</a>"
+            if public_url
+            else "—"
+        )
+        table_rows.append(
+            "<tr>"
+            f"<td>{escape(source.username or '—')}</td>"
+            f"<td>{escape(source.title or '')}</td>"
+            f"<td><span class='badge {status}'>{escape(source.status)}</span></td>"
+            f"<td>{escape(source.reader_mode)}</td>"
+            f"<td>{escape(str(source.last_seen_external_id or '—'))}</td>"
+            f"<td>{escape(str(subscription_count))}</td>"
+            f"<td>{link}</td>"
+            "</tr>"
+        )
+    table = (
+        "<div class='table-responsive'><table class='table table-hover align-middle'>"
+        "<thead><tr><th>Username</th><th>Название</th><th>Статус</th><th>Reader</th>"
+        "<th>Last seen</th><th>Подписок</th><th>URL</th></tr></thead>"
+        f"<tbody>{''.join(table_rows)}</tbody></table></div>"
+        if table_rows
+        else "<div class='alert alert-info'>Источники Gremlin Spy ещё не добавлены.</div>"
+    )
+    return (
+        "<div class='container py-4'>"
+        "<div class='d-flex justify-content-between align-items-center mb-3'>"
+        "<h1 class='h3 mb-0'>Gremlin Spy источники</h1>"
+        f"<span class='text-muted'>Всего: {len(table_rows)}</span>"
+        "</div>"
+        f"{table}"
+        "</div>"
+    )
 
 
 def _render_chats_body(chats: list[Chat], token: str | None) -> str:

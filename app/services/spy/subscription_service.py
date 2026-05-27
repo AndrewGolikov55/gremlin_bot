@@ -19,6 +19,17 @@ class SpyAdminChecker(Protocol):
     async def is_chat_admin(self, chat_id: int, user_id: int) -> bool: ...
 
 
+class AiogramChatAdminChecker:
+    def __init__(self, bot: object) -> None:
+        self._bot = bot
+
+    async def is_chat_admin(self, chat_id: int, user_id: int) -> bool:
+        member = await self._bot.get_chat_member(chat_id, user_id)  # type: ignore[attr-defined]
+        status = getattr(member, "status", None)
+        value = getattr(status, "value", status)
+        return value in {"creator", "administrator"}
+
+
 @dataclass(frozen=True, slots=True)
 class SpySubscriptionView:
     subscription_id: int

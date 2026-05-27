@@ -1,13 +1,9 @@
 import asyncio
 import contextlib
-import json
 import logging
 import os
 from typing import Optional
-
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -19,48 +15,56 @@ from aiogram.types import (
     BotCommandScopeAllPrivateChats,
     Update,
 )
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
+from sqlalchemy import text
+from telethon import TelegramClient
+from telethon.sessions import StringSession
 
+from .admin import create_admin_router
+from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
 from .bot.router_admin import router as admin_router
-from .bot.router_triggers import router as triggers_router
 from .bot.router_fun import router as fun_router
-from .bot.router_interjector import router as interjector_router
 from .bot.router_games import router as games_router
 from .bot.router_games_extra import router as games_extra_router
-from .bot.middlewares import DbSessionMiddleware, ServicesMiddleware
-from .admin import create_admin_router
-
+from .bot.router_interjector import router as interjector_router
+from .bot.router_spy import router as spy_router
+from .bot.router_triggers import router as triggers_router
 from .infra.db import init_engine_and_sessionmaker, shutdown_engine
 from .infra.redis import init_redis, shutdown_redis
 from .infra.scheduler import get_scheduler
-from .services.context import ContextService
-from .services.interjector import InterjectorService
-from .services.settings import SettingsService
-from .services.persona import StylePromptService, BASE_STYLE_DATA
 from .services.app_config import AppConfigService
-from .services.reactions import ReactionService
-from .services.roulette import RouletteService
-from .services.spontaneity import SpontaneityPolicy
-from .services.usage_limits import UsageLimiter
-from .services.user_memory import UserMemoryService
-from .services.guess_game import GuessGameService
+from .services.context import ContextService
 from .services.dice_game import DiceGameService
-from .services.monthly_champion import MonthlyChampionService
-from .services.ship import ShipService
-from .services.network_monitor import NetworkMonitorService, PROBE_INTERVAL_SECONDS
-from .services.roast import RoastService
-from .services.quotebook import QuotebookService
-from .services.quick_games import QuickGameService
 from .services.games.akinator import AkinatorService
-from .services.games.wordchain import WordchainService
 from .services.games.rapbattle import RapbattleService
 from .services.games.storychain import StorychainService
+from .services.games.wordchain import WordchainService
+from .services.guess_game import GuessGameService
+from .services.interjector import InterjectorService
+from .services.monthly_champion import MonthlyChampionService
+from .services.network_monitor import PROBE_INTERVAL_SECONDS, NetworkMonitorService
+from .services.persona import BASE_STYLE_DATA, StylePromptService
+from .services.quick_games import QuickGameService
+from .services.quotebook import QuotebookService
+from .services.reactions import ReactionService
 from .services.release_broadcast import ReleaseBroadcaster
-from .utils.version import get_version
-from zoneinfo import ZoneInfo
+from .services.roast import RoastService
+from .services.roulette import RouletteService
+from .services.settings import SettingsService
+from .services.ship import ShipService
+from .services.spontaneity import SpontaneityPolicy
+from .services.spy.config import SpyConfig
+from .services.spy.readers.telethon import TelethonChannelReader
+from .services.spy.source_service import SpySourceService
+from .services.spy.subscription_service import AiogramChatAdminChecker, SpySubscriptionService
+from .services.spy.types import SpyChannelInfo, SpyPostPayload
+from .services.usage_limits import UsageLimiter
+from .services.user_memory import UserMemoryService
 from .utils.logging import ensure_trace_level
 from .utils.proxy import get_proxy_url
-from sqlalchemy import text
-
+from .utils.version import get_version
 
 # Metrics
 registry = CollectorRegistry()
@@ -98,6 +102,15 @@ def _env_int(name: str, default: int) -> int:
 
 PORT = _env_int("PORT", 8080)
 INTERJECT_TICK_SECONDS = _env_int("INTERJECT_TICK_SECONDS", 30)
+
+
+class DisabledSpyReader:
+    async def resolve_channel(self, ref: str) -> SpyChannelInfo:
+        raise RuntimeError("Gremlin Spy MTProto reader is not configured")
+
+    async def fetch_latest_posts(self, username: str, *, limit: int) -> list[SpyPostPayload]:
+        raise RuntimeError("Gremlin Spy MTProto reader is not configured")
+
 
 # Infra
 engine, async_sessionmaker = init_engine_and_sessionmaker()
@@ -198,10 +211,33 @@ storychain_service = StorychainService(
     settings=settings_service,
     app_config=app_config_service,
 )
+spy_config = SpyConfig.from_env()
+spy_telegram_client = None
+if spy_config.enabled and spy_config.telegram_api_id and spy_config.telegram_api_hash:
+    spy_session = (
+        StringSession(spy_config.telegram_session)
+        if spy_config.telegram_session
+        else spy_config.telegram_session_file
+    )
+    spy_telegram_client = TelegramClient(
+        spy_session,
+        spy_config.telegram_api_id,
+        spy_config.telegram_api_hash,
+    )
+    spy_reader = TelethonChannelReader(spy_telegram_client)
+else:
+    spy_reader = DisabledSpyReader()
+spy_source_service = SpySourceService(async_sessionmaker, spy_reader)
+spy_subscription_service = SpySubscriptionService(
+    async_sessionmaker,
+    spy_source_service,
+    AiogramChatAdminChecker(bot),
+)
 
 # Routers — order matters: command routers MUST be registered before triggers_router,
 # which has a catch-all @router.message(F.text) that consumes any text message.
 dp.include_router(admin_router)
+dp.include_router(spy_router)
 dp.include_router(fun_router)
 dp.include_router(games_router)
 dp.include_router(games_extra_router)
@@ -248,6 +284,7 @@ dp.update.middleware(
         wordchain=wordchain_service,
         rapbattle=rapbattle_service,
         storychain=storychain_service,
+        spy_subscriptions=spy_subscription_service,
     )
 )
 scheduler = get_scheduler()
@@ -304,6 +341,10 @@ async def _process_update_in_background(update_obj: Update) -> None:
 
 @app.on_event("startup")
 async def on_startup():
+    if spy_telegram_client is not None:
+        await spy_telegram_client.start()
+        logger.info("Gremlin Spy MTProto reader started")
+
     await persona_service.ensure_defaults()
     await configure_bot_commands(bot)
     await _recover_stale_game_rounds()
@@ -422,6 +463,9 @@ async def on_shutdown():
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    if spy_telegram_client is not None:
+        await spy_telegram_client.disconnect()
+
     await shutdown_redis(redis)
     await shutdown_engine(engine)
 
@@ -528,6 +572,7 @@ async def configure_bot_commands(bot: Bot) -> None:
         BotCommand(command="rollstats_total", description="Статистика рулетки за всё время"),
         BotCommand(command="games", description="Меню игр (кости, угадайка, акинатор и др.)"),
         BotCommand(command="summary", description="Сводка обсуждения"),
+        BotCommand(command="spy_list", description="Gremlin Spy источники"),
         BotCommand(command="reg", description="Зарегистрироваться в рулетке"),
         BotCommand(command="unreg", description="Выйти из рулетки"),
     ]
