@@ -12,6 +12,7 @@ from .rapbattle_round import RapbattleRound
 from .roast import RoastRun
 from .roulette import RouletteParticipant, RouletteScoreAdjustment, RouletteWinner
 from .ship import ShipResult
+from .spy import SpyDelivery, SpyPost, SpySource, SpySubscription
 from .storychain_round import StorychainContribution, StorychainRound
 from .user import User
 from .wordchain_round import WordchainRound, WordchainWord
@@ -35,6 +36,10 @@ __all__ = [
     "RouletteScoreAdjustment",
     "RouletteWinner",
     "ShipResult",
+    "SpyDelivery",
+    "SpyPost",
+    "SpySource",
+    "SpySubscription",
     "StorychainContribution",
     "StorychainRound",
     "StylePrompt",
