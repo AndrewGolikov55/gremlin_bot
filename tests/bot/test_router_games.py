@@ -156,15 +156,14 @@ async def test_second_correct_vote_no_extra_adjustment(sessionmaker: async_sessi
 
 
 @pytest.mark.asyncio
-async def test_two_rounds_in_same_day_both_succeed(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
-    """Daily cap removed: starting /guess twice in the same chat now creates two rounds."""
+async def test_immediate_duplicate_guess_start_is_debounced(sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    """Double-tapping /games → guess must not create duplicate polls/rounds."""
     chat_id = -402
     await _seed_messages(sessionmaker, chat_id)
     svc = _make_svc(sessionmaker)
 
-    # Each call returns a fresh poll_id — guess_rounds has UNIQUE(poll_id)
     bot = MagicMock()
-    polls = [MagicMock(message_id=999, poll=MagicMock(id=f"POLL-{i}")) for i in range(2)]
+    polls = [MagicMock(message_id=999 + i, poll=MagicMock(id=f"POLL-{i}")) for i in range(2)]
     bot.send_poll = AsyncMock(side_effect=polls)
     bot.send_message = AsyncMock()
 
@@ -174,7 +173,8 @@ async def test_two_rounds_in_same_day_both_succeed(sessionmaker: async_sessionma
 
     async with sessionmaker() as session:
         rounds = (await session.execute(select(GuessRound))).scalars().all()
-    assert len(rounds) == 2
+    assert len(rounds) == 1
+    bot.send_poll.assert_awaited_once()
 
 
 from app.bot.router_games import (

@@ -24,6 +24,7 @@ MIN_LEN = 30
 MAX_LEN = 500
 WINDOW_DAYS = 30
 MIN_ELIGIBLE_PER_AUTHOR = 5
+START_DEBOUNCE_SECONDS = 10
 
 _FORBIDDEN_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"https?://", re.IGNORECASE),
@@ -376,6 +377,25 @@ class GuessGameService:
             correct_option_id=correct_idx,
             selection_mode=selection_mode,
         )
+
+    async def has_recent_round(
+        self,
+        *,
+        chat_id: int,
+        now: datetime,
+        within_seconds: int = START_DEBOUNCE_SECONDS,
+    ) -> bool:
+        cutoff = now - timedelta(seconds=within_seconds)
+        async with self.sessionmaker() as session:
+            row = (await session.execute(
+                select(GuessRound.id)
+                .where(
+                    GuessRound.chat_id == chat_id,
+                    GuessRound.started_at >= cutoff,
+                )
+                .limit(1)
+            )).first()
+            return row is not None
 
     async def persist_round(
         self,

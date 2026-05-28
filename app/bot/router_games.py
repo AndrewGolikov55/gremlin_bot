@@ -233,6 +233,9 @@ async def _start_round(
 
     async with _get_guess_lock(chat.id):
         now = datetime.utcnow()
+        if await guess_game.has_recent_round(chat_id=chat.id, now=now):
+            logger.info("guess.round.start_debounced chat=%s", chat.id)
+            return
 
         try:
             prepared: PreparedRound = await guess_game.prepare_round(chat_id=chat.id, now=now)
