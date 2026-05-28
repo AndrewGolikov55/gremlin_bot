@@ -41,13 +41,13 @@ async def test_play_valid_word_advances(sessionmaker):
             update(WordchainRound).where(WordchainRound.id == round_.id).values(last_word="кот")
         )
         await session.commit()
-    await svc.play(chat_id=42, user_id=200, raw_word="торт")
+    await svc.play(chat_id=42, user_id=200, raw_word="туман")
     await svc.stop(chat_id=42)
     async with sessionmaker() as session:
         rounds = (await session.execute(select(WordchainRound))).scalars().all()
         words = [w.word for w in (await session.execute(select(WordchainWord))).scalars().all()]
-    assert "торт" in words
-    assert rounds[0].last_word == "торт"
+    assert "туман" in words
+    assert rounds[0].last_word == "туман"
 
 
 @pytest.mark.asyncio
@@ -61,13 +61,13 @@ async def test_repeat_rejected(sessionmaker):
             update(WordchainRound).where(WordchainRound.id == round_.id).values(last_word="кот")
         )
         await session.commit()
-    await svc.play(chat_id=42, user_id=200, raw_word="торт")
-    await svc.play(chat_id=42, user_id=201, raw_word="торт")
+    await svc.play(chat_id=42, user_id=200, raw_word="туман")
+    await svc.play(chat_id=42, user_id=201, raw_word="туман")
     await svc.stop(chat_id=42)
     async with sessionmaker() as session:
         words = (await session.execute(select(WordchainWord))).scalars().all()
-    # Seed + only one "торт"
-    assert sum(1 for w in words if w.word == "торт") == 1
+    # Seed + only one "туман"
+    assert sum(1 for w in words if w.word == "туман") == 1
 
 
 @pytest.mark.asyncio
