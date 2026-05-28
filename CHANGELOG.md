@@ -8,6 +8,21 @@
 начиная с `2026.05.19.0`. До этой версии — semver `vX.Y.Z`, переименованный
 задним числом по дате коммита (см. секции ниже).
 
+## [2026.05.28.0] - 2026-05-28
+
+### Added
+
+- Добавить Gremlin Spy / Channel Intelligence: подписки чатов на Telegram-источники, доставку новых постов в чаты и команды `/spy_add`, `/spy_remove`, `/spy_list`.
+- Добавить обработку `channel_post` через Bot API и Telethon-reader для источников, где доступны Telegram API credentials.
+- Добавить раздел Gremlin Spy в админке для операторского управления источниками и подписками.
+
+### Internal
+
+- Добавить модели `spy_sources`, `spy_subscriptions`, `spy_posts`, `spy_deliveries` и миграцию БД.
+- Добавить polling worker, dedup/fanout delivery state, commentary skeleton и безопасный диагностический `scripts/spy_probe.py` без вывода секретов.
+- Добавить тестовое покрытие Gremlin Spy services/readers/delivery/admin-router и стабилизировать wordchain-тест с seed collision.
+
+
 ## [2026.05.19.2] - 2026-05-19
 
 ### Added
