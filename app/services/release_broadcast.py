@@ -4,6 +4,7 @@ import logging
 
 import sqlalchemy as sa
 from aiogram import Bot
+from aiogram.exceptions import TelegramMigrateToChat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -59,10 +60,31 @@ class ReleaseBroadcaster:
             return
 
         delivered = 0
+        delivered_chat_ids: set[int] = set()
         for chat_id in targets:
+            if chat_id in delivered_chat_ids:
+                continue
             try:
                 await self._bot.send_message(chat_id, notes, parse_mode=None)
                 delivered += 1
+                delivered_chat_ids.add(chat_id)
+            except TelegramMigrateToChat as exc:
+                migrated_chat_id = exc.migrate_to_chat_id
+                if migrated_chat_id in delivered_chat_ids:
+                    continue
+                try:
+                    await self._bot.send_message(migrated_chat_id, notes, parse_mode=None)
+                    delivered += 1
+                    delivered_chat_ids.add(migrated_chat_id)
+                    logger.info(
+                        "Release %s broadcast retried after Telegram group migration",
+                        current_version,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to broadcast release %s after Telegram group migration",
+                        current_version,
+                    )
             except Exception:
                 logger.exception(
                     "Failed to broadcast release %s to chat %s",

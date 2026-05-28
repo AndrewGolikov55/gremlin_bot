@@ -4,9 +4,12 @@ from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram.exceptions import TelegramMigrateToChat
+from aiogram.methods import SendMessage
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.chat import Chat, ChatSetting
+from app.services import release_broadcast
 from app.services.release_broadcast import ReleaseBroadcaster
 
 
@@ -73,3 +76,41 @@ async def test_chat_is_active_false_excluded(sessionmaker: async_sessionmaker[As
     ids = await broadcaster._active_chat_ids()
 
     assert -100999888 not in ids
+
+
+@pytest.mark.asyncio
+async def test_broadcast_retries_migrated_group_once(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_chat_id = -646530977
+    migrated_chat_id = -100646530977
+    await _add_chat(sessionmaker, chat_id=old_chat_id)
+
+    monkeypatch.setattr(release_broadcast, "get_version", lambda: "2026.05.28.1")
+    monkeypatch.setattr(release_broadcast, "read_release_notes", lambda: "notes")
+
+    bot = AsyncMock()
+    bot.send_message.side_effect = [
+        TelegramMigrateToChat(
+            method=SendMessage(chat_id=old_chat_id, text="notes"),
+            message="group chat was upgraded",
+            migrate_to_chat_id=migrated_chat_id,
+        ),
+        AsyncMock(),
+    ]
+    app_config = AsyncMock()
+    app_config.get = AsyncMock(return_value="2026.05.28.0")
+
+    broadcaster = ReleaseBroadcaster(
+        bot=bot,
+        sessionmaker=sessionmaker,
+        app_config=app_config,
+    )
+
+    await broadcaster.broadcast_if_new_version()
+
+    assert bot.send_message.call_count == 2
+    bot.send_message.assert_any_await(old_chat_id, "notes", parse_mode=None)
+    bot.send_message.assert_any_await(migrated_chat_id, "notes", parse_mode=None)
+    app_config.set.assert_awaited_once_with("last_broadcasted_version", "2026.05.28.1")
