@@ -12,3 +12,4 @@ prometheus-client>=0.20
 pymorphy3>=2.0
 pydantic>=2.7
 python-multipart
+Telethon>=1.36,<2.0
