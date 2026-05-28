@@ -15,10 +15,13 @@ class FakeSpySubscriptions:
         self.remove_calls: list[dict[str, object]] = []
         self.items: list[SpySubscriptionView] = []
         self.admin_error = False
+        self.unavailable_error = False
 
     async def add_subscription(self, **kwargs: object) -> object:
         if self.admin_error:
             raise SpyAdminRequired("blocked")
+        if self.unavailable_error:
+            raise RuntimeError("Gremlin Spy MTProto reader is not configured")
         self.add_calls.append(kwargs)
         return SimpleNamespace(id=1)
 
@@ -77,6 +80,20 @@ async def test_spy_add_reports_admin_boundary() -> None:
     await cmd_spy_add(message, SimpleNamespace(args="@channel"), service)
 
     message.reply.assert_awaited_once_with("Gremlin Spy могут настраивать только админы чата.")
+
+
+@pytest.mark.asyncio
+async def test_spy_add_reports_runtime_unavailable() -> None:
+    service = FakeSpySubscriptions()
+    service.unavailable_error = True
+    message = _message()
+
+    await cmd_spy_add(message, SimpleNamespace(args="https://t.me/gospodindirectorpivs"), service)
+
+    message.reply.assert_awaited_once_with(
+        "Gremlin Spy пока не настроен: нет Telegram API credentials для чтения каналов."
+    )
+    assert service.add_calls == []
 
 
 @pytest.mark.asyncio

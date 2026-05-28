@@ -43,6 +43,13 @@ async def cmd_spy_add(
     except SpyAdminRequired:
         await message.reply("Gremlin Spy могут настраивать только админы чата.")
         return
+    except RuntimeError as exc:
+        if "MTProto reader is not configured" in str(exc):
+            await message.reply(
+                "Gremlin Spy пока не настроен: нет Telegram API credentials для чтения каналов."
+            )
+            return
+        raise
     except ValueError as exc:
         await message.reply(f"Не могу добавить источник: {exc}")
         return

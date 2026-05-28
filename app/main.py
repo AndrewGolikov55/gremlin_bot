@@ -61,9 +61,11 @@ from .services.settings import SettingsService
 from .services.ship import ShipService
 from .services.spontaneity import SpontaneityPolicy
 from .services.spy.config import SpyConfig
+from .services.spy.polling_worker import SpyPollingWorker
 from .services.spy.readers.telethon import TelethonChannelReader
 from .services.spy.source_service import SpySourceService
 from .services.spy.subscription_service import AiogramChatAdminChecker, SpySubscriptionService
+from .services.spy.telegram_delivery import SpyTelegramDeliveryService
 from .services.spy.types import SpyChannelInfo, SpyPostPayload
 from .services.usage_limits import UsageLimiter
 from .services.user_memory import UserMemoryService
@@ -244,6 +246,12 @@ spy_subscription_service = SpySubscriptionService(
     spy_source_service,
     AiogramChatAdminChecker(bot),
 )
+spy_polling_worker = SpyPollingWorker(
+    async_sessionmaker,
+    spy_reader,
+    fetch_limit=spy_config.batch_limit,
+)
+spy_delivery_service = SpyTelegramDeliveryService(async_sessionmaker, bot)
 
 # Routers — order matters: command routers MUST be registered before triggers_router,
 # which has a catch-all @router.message(F.text) that consumes any text message.
@@ -350,11 +358,27 @@ async def _process_update_in_background(update_obj: Update) -> None:
         logger.exception("Unhandled exception while processing Telegram update")
 
 
+async def _run_spy_tick() -> None:
+    poll_result = await spy_polling_worker.tick()
+    sent_count = await spy_delivery_service.send_pending_deliveries(limit=50)
+    if poll_result.sources_checked or poll_result.posts_created or poll_result.deliveries_created or sent_count:
+        logger.info(
+            "Gremlin Spy tick: sources=%s posts=%s deliveries=%s sent=%s errors=%s",
+            poll_result.sources_checked,
+            poll_result.posts_created,
+            poll_result.deliveries_created,
+            sent_count,
+            poll_result.errors,
+        )
+
+
 @app.on_event("startup")
 async def on_startup():
     if spy_telegram_client is not None:
         await spy_telegram_client.start()
         logger.info("Gremlin Spy MTProto reader started")
+    elif spy_config.enabled:
+        logger.warning("Gremlin Spy enabled but Telegram API credentials are not configured; public channel subscriptions are unavailable")
 
     await persona_service.ensure_defaults()
     await configure_bot_commands(bot)
@@ -439,6 +463,15 @@ async def on_startup():
         replace_existing=True,
         max_instances=1,
     )
+    if spy_config.enabled:
+        scheduler.add_job(
+            _run_spy_tick,
+            "interval",
+            seconds=max(30, spy_config.poll_seconds),
+            id="spy_tick",
+            replace_existing=True,
+            max_instances=1,
+        )
     app.state.scheduler = scheduler
     _track_background_task(asyncio.create_task(network_monitor_service.probe_once()), label="Initial network probe")
     _track_background_task(

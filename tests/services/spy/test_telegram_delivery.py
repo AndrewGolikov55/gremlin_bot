@@ -31,12 +31,14 @@ async def _seed_delivery(
     *,
     comment_text: str | None = "Гремлин одобряет подозрительно полезный пост.",
     status: str = "pending",
+    chat_id: int = -1001,
+    external_post_id: str = "101",
 ) -> int:
     async with sessionmaker() as session:
         source = SpySource(
-            username="gospodindirectorpivs",
+            username=f"gospodindirectorpivs{external_post_id}",
             title="Господин <директор> Пивс",
-            public_url="https://t.me/gospodindirectorpivs",
+            public_url=f"https://t.me/gospodindirectorpivs{external_post_id}",
             reader_mode="mtproto",
             status="active",
         )
@@ -44,16 +46,16 @@ async def _seed_delivery(
         await session.flush()
         post = SpyPost(
             source_id=source.id,
-            external_post_id="101",
+            external_post_id=external_post_id,
             text="Пост с <важными> новостями & нюансами.",
-            source_url="https://t.me/gospodindirectorpivs/101",
+            source_url=f"https://t.me/gospodindirectorpivs/{external_post_id}",
             published_at=datetime(2026, 5, 27, 12, 0),
         )
         session.add(post)
         await session.flush()
         delivery = SpyDelivery(
             post_id=post.id,
-            chat_id=-1001,
+            chat_id=chat_id,
             status=status,
             comment_text=comment_text,
         )
@@ -106,6 +108,29 @@ async def test_send_pending_delivery_marks_sent_and_stores_message_id(
         assert delivery.delivered_message_id == 555
         assert delivery.delivered_at is not None
         assert delivery.error is None
+
+
+@pytest.mark.asyncio
+async def test_send_pending_deliveries_sends_pending_batch(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    first = await _seed_delivery(sessionmaker, chat_id=-1001, external_post_id="101")
+    second = await _seed_delivery(sessionmaker, chat_id=-1002, external_post_id="102")
+    ignored = await _seed_delivery(sessionmaker, status="sent", chat_id=-1003, external_post_id="103")
+    bot = FakeBot()
+    service = SpyTelegramDeliveryService(sessionmaker, bot)
+
+    sent_count = await service.send_pending_deliveries(limit=10)
+
+    assert sent_count == 2
+    assert [call["chat_id"] for call in bot.sent] == [-1001, -1002]
+    async with sessionmaker() as session:
+        first_delivery = await session.get(SpyDelivery, first)
+        second_delivery = await session.get(SpyDelivery, second)
+        ignored_delivery = await session.get(SpyDelivery, ignored)
+    assert first_delivery is not None and first_delivery.status == "sent"
+    assert second_delivery is not None and second_delivery.status == "sent"
+    assert ignored_delivery is not None and ignored_delivery.status == "sent"
 
 
 @pytest.mark.asyncio

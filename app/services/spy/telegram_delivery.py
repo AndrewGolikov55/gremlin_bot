@@ -2,22 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape
-from typing import Protocol
+from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.spy import SpyDelivery, SpyPost, SpySource
-
-
-class TelegramBotLike(Protocol):
-    async def send_message(self, **kwargs: object) -> object: ...
 
 
 class SpyTelegramDeliveryService:
     def __init__(
         self,
         sessionmaker: async_sessionmaker[AsyncSession],
-        bot: TelegramBotLike,
+        bot: Any,
     ) -> None:
         self._sessionmaker = sessionmaker
         self._bot = bot
@@ -43,6 +40,24 @@ class SpyTelegramDeliveryService:
         message_id = getattr(sent, "message_id", None)
         await self._mark_sent(delivery_id, message_id if isinstance(message_id, int) else None)
         return True
+
+    async def send_pending_deliveries(self, *, limit: int = 50) -> int:
+        delivery_ids = await self._load_pending_delivery_ids(limit=limit)
+        sent_count = 0
+        for delivery_id in delivery_ids:
+            if await self.send_pending_delivery(delivery_id):
+                sent_count += 1
+        return sent_count
+
+    async def _load_pending_delivery_ids(self, *, limit: int) -> list[int]:
+        async with self._sessionmaker() as session:
+            rows = await session.execute(
+                select(SpyDelivery.id)
+                .where(SpyDelivery.status == "pending")
+                .order_by(SpyDelivery.id)
+                .limit(max(1, limit))
+            )
+            return list(rows.scalars().all())
 
     async def _load_pending_delivery(self, delivery_id: int) -> tuple[SpyDelivery, SpyPost, SpySource] | None:
         async with self._sessionmaker() as session:
