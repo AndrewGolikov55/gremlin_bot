@@ -1053,7 +1053,9 @@ class RouletteService:
 
     async def run_auto_roll(self) -> None:
         async with self.sessionmaker() as session:
-            stmt = select(Chat.id).where(Chat.is_active.is_(True))
+            # Scheduled broadcasts are group-only. Until chats persist Telegram
+            # chat.type explicitly, positive Telegram ids are private/user chats.
+            stmt = select(Chat.id).where(Chat.is_active.is_(True), Chat.id < 0)
             chats = [row[0] for row in (await session.execute(stmt)).fetchall()]
         for chat_id in chats:
             conf = await self.settings.get_all(chat_id)

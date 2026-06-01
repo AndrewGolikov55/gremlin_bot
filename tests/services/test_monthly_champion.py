@@ -498,11 +498,12 @@ async def test_process_chat_telegram_forbidden_does_not_raise(sessionmaker):
 
 
 @pytest.mark.asyncio
-async def test_run_monthly_summary_iterates_active_chats(sessionmaker, monkeypatch):
+async def test_run_monthly_summary_iterates_active_group_chats_only(sessionmaker, monkeypatch):
     async with sessionmaker() as session:
-        session.add(Chat(id=1, title="A", is_active=True))
-        session.add(Chat(id=2, title="B", is_active=True))
-        session.add(Chat(id=3, title="C", is_active=False))  # inactive
+        session.add(Chat(id=-1001, title="Group A", is_active=True))
+        session.add(Chat(id=-1002, title="Group B", is_active=True))
+        session.add(Chat(id=-1003, title="Inactive group", is_active=False))
+        session.add(Chat(id=291444921, title="Private DM", is_active=True))
         await session.commit()
 
     bot = AsyncMock()
@@ -529,15 +530,15 @@ async def test_run_monthly_summary_iterates_active_chats(sessionmaker, monkeypat
 
     await svc.run_monthly_summary()
 
-    # Только активные чаты (Chat.is_active=True)
-    assert sorted(processed) == [1, 2]
+    # Только активные групповые чаты: private/user chat ids are positive.
+    assert sorted(processed) == [-1002, -1001]
 
 
 @pytest.mark.asyncio
 async def test_run_monthly_summary_continues_on_chat_failure(sessionmaker, monkeypatch):
     async with sessionmaker() as session:
-        session.add(Chat(id=1, title="A", is_active=True))
-        session.add(Chat(id=2, title="B", is_active=True))
+        session.add(Chat(id=-1001, title="A", is_active=True))
+        session.add(Chat(id=-1002, title="B", is_active=True))
         await session.commit()
 
     bot = AsyncMock()
@@ -547,7 +548,7 @@ async def test_run_monthly_summary_continues_on_chat_failure(sessionmaker, monke
 
     async def fake_process(*, chat_id, period_start, period_end_excl):
         processed.append(chat_id)
-        if chat_id == 1:
+        if chat_id == -1001:
             raise RuntimeError("simulated chat 1 failure")
 
     monkeypatch.setattr(svc, "process_chat", fake_process)
@@ -568,7 +569,7 @@ async def test_run_monthly_summary_continues_on_chat_failure(sessionmaker, monke
     await svc.run_monthly_summary()
 
     # Оба чата были попытаны
-    assert sorted(processed) == [1, 2]
+    assert sorted(processed) == [-1002, -1001]
 
 
 @pytest.mark.asyncio

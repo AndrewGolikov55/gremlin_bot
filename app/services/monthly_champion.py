@@ -389,7 +389,9 @@ class MonthlyChampionService:
 
     async def _list_candidate_chats(self) -> list[int]:
         async with self.sessionmaker() as session:
-            stmt = select(Chat.id).where(Chat.is_active.is_(True))
+            # Scheduled broadcasts are group-only. Until chats persist Telegram
+            # chat.type explicitly, positive Telegram ids are private/user chats.
+            stmt = select(Chat.id).where(Chat.is_active.is_(True), Chat.id < 0)
             return [row[0] for row in (await session.execute(stmt)).all()]
 
     async def run_monthly_summary(self) -> None:

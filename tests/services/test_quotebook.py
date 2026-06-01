@@ -79,7 +79,21 @@ def _make_svc(sessionmaker: Any, *, bot_username: str = "gremlin_bot") -> Quoteb
 
 
 @pytest.mark.asyncio
-async def test_collect_candidates_filters_bot_and_short_and_long(sessionmaker):
+async def test_list_candidate_chats_excludes_private_chats(sessionmaker):
+    async with sessionmaker() as session:
+        session.add(Chat(id=-1001, title="Group A", is_active=True))
+        session.add(Chat(id=-1002, title="Group B", is_active=True))
+        session.add(Chat(id=-1003, title="Inactive group", is_active=False))
+        session.add(Chat(id=291444921, title="Private DM", is_active=True))
+        await session.commit()
+
+    svc = _make_svc(sessionmaker)
+
+    assert sorted(await svc._list_candidate_chats()) == [-1002, -1001]
+
+
+@pytest.mark.asyncio
+async def test_collect_candidates_filters_short_and_bot_messages(sessionmaker):
     chat_id = 42
     now = datetime(2026, 5, 17, 20, 0, 0)  # naive UTC-like
 
@@ -826,9 +840,9 @@ async def test_process_chat_skips_when_settings_disabled(sessionmaker):
 @pytest.mark.asyncio
 async def test_tick_all_chats_iterates_active_with_isolation(sessionmaker, monkeypatch):
     async with sessionmaker() as session:
-        session.add(Chat(id=1, title="A", is_active=True))
-        session.add(Chat(id=2, title="B", is_active=True))
-        session.add(Chat(id=3, title="C", is_active=False))  # пропустится
+        session.add(Chat(id=-1001, title="A", is_active=True))
+        session.add(Chat(id=-1002, title="B", is_active=True))
+        session.add(Chat(id=-1003, title="C", is_active=False))  # пропустится
         await session.commit()
 
     svc = _make_svc(sessionmaker)
@@ -836,7 +850,7 @@ async def test_tick_all_chats_iterates_active_with_isolation(sessionmaker, monke
 
     async def fake_process(*, chat_id, now):
         processed.append(chat_id)
-        if chat_id == 1:
+        if chat_id == -1001:
             raise RuntimeError("simulated chat 1 failure")
 
     monkeypatch.setattr(svc, "process_chat", fake_process)
@@ -854,7 +868,7 @@ async def test_tick_all_chats_iterates_active_with_isolation(sessionmaker, monke
     await svc.tick_all_chats()
 
     # Оба активных чата попытаны (даже после исключения первого)
-    assert sorted(processed) == [1, 2]
+    assert sorted(processed) == [-1002, -1001]
 
 
 @pytest.mark.asyncio

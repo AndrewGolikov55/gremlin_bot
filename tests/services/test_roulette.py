@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models import Chat
 from app.models.roulette import RouletteParticipant
 from app.services.roulette import (
     DEFAULT_GENERATED_TITLE,
@@ -60,6 +61,25 @@ def build_service(
         personas=cast(Any, DummyPersonas()),
         memory=cast(Any, DummyMemory()),
     )
+
+
+async def test_run_auto_roll_excludes_private_chats(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    service = build_service(sessionmaker, settings_values={"roulette_auto_enabled": True})
+    async with sessionmaker() as session:
+        session.add(Chat(id=-1001, title="Group", is_active=True))
+        session.add(Chat(id=291444921, title="Private DM", is_active=True))
+        await session.commit()
+
+    service._has_winner_today = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    service._fetch_participants = AsyncMock(return_value=[object()])  # type: ignore[method-assign]
+    roll_result = type("RollResult", (), {"success": True, "message": "ok"})()
+    service.roll = AsyncMock(return_value=roll_result)  # type: ignore[method-assign]
+
+    await service.run_auto_roll()
+
+    service.roll.assert_awaited_once_with(-1001, initiator="auto", force=False)
 
 
 async def test_register_participant_rejects_bot_like_username_with_whitespace(
