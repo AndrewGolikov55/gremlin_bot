@@ -17,7 +17,7 @@ from ..models import Chat, ChatMemory, MonthlyChampion, RouletteWinner
 from .app_config import AppConfigService
 from .llm.client import LLMError, LLMRateLimitError, resolve_llm_options
 from .llm.client import generate as llm_generate
-from .roulette import RouletteService, StatsEntry
+from .roulette import RouletteService, StatsEntry, escape_html
 from .settings import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,23 @@ class MonthlyChampionService:
     @staticmethod
     def _fallback_winner_text(daily_title: str, champion_name: str) -> str:
         return f"🏆 Король «{daily_title}» месяца — {champion_name}."
+
+    @staticmethod
+    def _with_champion_mention(text: str, *, champion_name: str, user_id: int) -> str:
+        """Return HTML-safe monthly announcement with one clickable champion mention.
+
+        The LLM returns plain text. Escape it first, then replace the first exact
+        champion display name with a tg://user link. If the model ignored the
+        name, append a short winner suffix so the announcement still mentions the
+        champion properly.
+        """
+        escaped_text = escape_html(text.strip())
+        escaped_name = escape_html(champion_name)
+        mention = f"<a href='tg://user?id={user_id}'>{escaped_name}</a>"
+        if escaped_name in escaped_text:
+            return escaped_text.replace(escaped_name, mention, 1)
+        suffix = f" Победитель — {mention}."
+        return escaped_text.rstrip() + suffix
 
     async def _llm_call(self, user_prompt: str, *, system: str = "") -> str | None:
         conf = await self.app_config.get_all()
@@ -282,8 +299,11 @@ class MonthlyChampionService:
                     mem.monthly_champion = payload
                 await session.commit()
 
-    async def _send_text(self, chat_id: int, text: str) -> None:
-        await self.bot.send_message(chat_id=chat_id, text=text)
+    async def _send_text(self, chat_id: int, text: str, *, parse_mode: str | None = None) -> None:
+        if parse_mode is None:
+            await self.bot.send_message(chat_id=chat_id, text=text)
+            return
+        await self.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
 
     async def process_chat(
         self,
@@ -369,7 +389,12 @@ class MonthlyChampionService:
                         month_label=month_label,
                     )
 
-                await self._send_text(chat_id, text)
+                text = self._with_champion_mention(
+                    text,
+                    champion_name=champion_name,
+                    user_id=champion.user_id,
+                )
+                await self._send_text(chat_id, text, parse_mode="HTML")
                 await self._persist_announcement(
                     chat_id=chat_id,
                     period_start=period_start,

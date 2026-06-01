@@ -67,6 +67,17 @@ def _make_service(sessionmaker, bot):
     )
 
 
+def test_with_champion_mention_escapes_text_and_appends_when_llm_omits_name():
+    text = MonthlyChampionService._with_champion_mention(
+        "Месяц <жаркий>, корона вручена.",
+        champion_name="Sanchoyys",
+        user_id=123,
+    )
+
+    assert "&lt;жаркий&gt;" in text
+    assert "<a href='tg://user?id=123'>Sanchoyys</a>" in text
+
+
 @pytest.mark.asyncio
 async def test_resolve_display_name_active_member(sessionmaker):
     bot = AsyncMock()
@@ -290,6 +301,11 @@ async def test_process_chat_single_winner(sessionmaker):
 
     assert bot.send_message.await_count == 1
 
+    send_kwargs = bot.send_message.await_args.kwargs
+    assert send_kwargs["chat_id"] == chat_id
+    assert send_kwargs["parse_mode"] == "HTML"
+    assert "<a href='tg://user?id=100'>Андрей</a>" in send_kwargs["text"]
+
     async with sessionmaker() as session:
         row = (await session.execute(select(MonthlyChampion))).scalar_one()
         assert row.user_id == 100
@@ -424,6 +440,9 @@ async def test_process_chat_runoff(sessionmaker, monkeypatch):
 
     # 3 сообщения: ничья, кости, оглашение
     assert bot.send_message.await_count == 3
+    final_kwargs = bot.send_message.await_args.kwargs
+    assert final_kwargs["parse_mode"] == "HTML"
+    assert "<a href='tg://user?id=100'>Андрей</a>" in final_kwargs["text"]
 
     async with sessionmaker() as session:
         row = (await session.execute(select(MonthlyChampion))).scalar_one()
